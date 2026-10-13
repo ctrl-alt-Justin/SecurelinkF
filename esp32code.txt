@@ -66,7 +66,7 @@ size_t batchBufferLen = 0;
 
 // --- TIMEOUTS & TUNING ---
 unsigned long lastSpeechTime = 0;
-unsigned long SILENCE_TIMEOUT = 1400; // 1.4s silence endpointing timeout (responsive without clipping words)
+unsigned long SILENCE_TIMEOUT = 2200; // 2.2s silence timeout: preserves natural speech pauses & prevents word clipping
 const unsigned long WS_CONNECT_TIMEOUT_MS = 5000;
 const unsigned long WIFI_CONNECT_TIMEOUT_MS = 8000;
 

@@ -92,9 +92,10 @@ def load_tagalog_vocabulary(filepath: str = "tagalog_words.txt"):
         print(f"[SYS] Successfully loaded {len(words)} Tagalog words/phrases from {filepath}")
         
         prompt = (
-            "Usapan: Magandang tanghali! Ba't ganoon? 'Di ko alam. "
-            "Maingay ba doon? Walang kwenta 'yon! 'Di pa rin accurate. "
-            "Anong problema? Parang ampangit talaga. Hindi pa rin accurate."
+            "Usapan sa wikang Tagalog at Filipino. Mga karaniwang salita: "
+            "anong meron diyan, anong meron doon, anong ginagawa mo, mic check, "
+            "kumusta ka, saan ka pupunta, bakit ganyan, ano ba yan, sandali, "
+            "pakiusap, teka, pakinggan mo, tulong, baon, pera, ambag, walang kwenta."
         )
         return prompt, ""
     except Exception as e:
@@ -713,6 +714,12 @@ def process_audio_buffer(pcm_bytes: bytes) -> str:
     audio_int16 = np.frombuffer(pcm_bytes, dtype=np.int16)
     audio_float = audio_int16.astype(np.float32) / 32768.0
 
+    # Soft automatic gain boost if user speaks softly or mic is distant
+    peak = float(np.max(np.abs(audio_float)))
+    if 0.01 < peak < 0.40:
+        boost = min(4.0, 0.75 / peak)
+        audio_float = audio_float * boost
+
     # 2. Server-side Denoising (DeepFilterNet3 or NoiseReduce Spectral Gating)
     if has_deepfilternet and df_model is not None:
         try:
@@ -723,38 +730,43 @@ def process_audio_buffer(pcm_bytes: bytes) -> str:
             print(f"[WARN] DeepFilterNet error: {e}")
     elif has_noisereduce:
         try:
-            # Light stationary noise reduction (0.25) to avoid eating Tagalog vowels/formants
-            audio_float = nr.reduce_noise(y=audio_float, sr=16000, prop_decrease=0.25, stationary=True)
+            # Light stationary noise reduction (0.20) to avoid eating Tagalog vowels/formants
+            audio_float = nr.reduce_noise(y=audio_float, sr=16000, prop_decrease=0.20, stationary=True)
         except Exception as e:
             print(f"[WARN] NoiseReduce error: {e}")
 
-    # 3. Faster-Whisper Speech Recognition with Initial Prompt Conditioning (Fast GPU Path)
+    # 3. Faster-Whisper Speech Recognition with Silero VAD Trimming & Beam 5 Search
     if has_whisper and whisper_model is not None:
         try:
             transcribe_kwargs = {
                 "language": "tl",
                 "initial_prompt": INITIAL_TAGALOG_PROMPT,
-                "beam_size": 2, # 2 beams: balanced speed and accuracy (avoids 5-beam computational bottleneck)
-                "best_of": 2,
-                "temperature": 0.0, # Greedy decoding: eliminates expensive 6-step temperature fallback loop
+                "beam_size": 5, # Beam 5 provides high accuracy for nuanced Tagalog vocabulary
+                "temperature": [0.0, 0.2], # Only 2 temperatures max: fast on GPU without infinite fallback loops
                 "condition_on_previous_text": False,
                 "no_speech_threshold": 0.6, 
                 "log_prob_threshold": -1.0,
                 "compression_ratio_threshold": 2.4,
                 "word_timestamps": False,
+                "vad_parameters": dict(min_speech_duration_ms=150, speech_pad_ms=250),
             }
 
-            # Audio is already pre-filtered by ESP32 Speex hardware VAD, so vad_filter=False runs instantly
+            # Silero VAD trims leading/trailing silence, ensuring clean voice frames
             segments, info = whisper_model.transcribe(
                 audio_float,
-                vad_filter=False,
+                vad_filter=True,
                 **transcribe_kwargs
             )
             transcript = " ".join([seg.text for seg in segments]).strip()
+
+            # Ignore typical Whisper silence hallucinations on faint background noise
+            clean_t = transcript.lower().strip().rstrip(".")
+            if clean_t in ["thank you", "you", "thanks", "salamat", "maraming salamat"]:
+                return ""
+
             return transcript
         except Exception as e:
             print(f"[ERR] Whisper transcription error: {e}")
-            return ""
             return ""
     
     return ""
