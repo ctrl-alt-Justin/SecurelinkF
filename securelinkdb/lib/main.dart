@@ -836,6 +836,16 @@ class _DashboardShellState extends State<DashboardShell> with WindowListener {
               });
             } else if (eventType == 'incident') {
               final newIncident = Incident.fromJson(data);
+              // Deduplicate: ignore if exact same ID or identical transcript arrived from device in same time slot
+              final isDuplicate = liveIncidents.any((inc) =>
+                inc.id == newIncident.id ||
+                (inc.deviceId == newIncident.deviceId &&
+                 inc.transcript.trim().isNotEmpty &&
+                 inc.transcript.trim() == newIncident.transcript.trim() &&
+                 inc.time == newIncident.time)
+              );
+              if (isDuplicate) return;
+
               setState(() {
                 liveIncidents = [newIncident, ...liveIncidents];
 

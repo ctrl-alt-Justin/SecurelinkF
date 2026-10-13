@@ -17,6 +17,16 @@ from fastapi.staticfiles import StaticFiles
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 import uvicorn
 
+# Ensure Windows locates cuBLAS and cuDNN DLLs from PyTorch package for CTranslate2 / Faster-Whisper
+if torch.cuda.is_available():
+    torch_lib_dir = os.path.join(os.path.dirname(torch.__file__), "lib")
+    if os.path.exists(torch_lib_dir):
+        try:
+            os.add_dll_directory(torch_lib_dir)
+        except Exception:
+            pass
+        os.environ["PATH"] = torch_lib_dir + os.path.pathsep + os.environ.get("PATH", "")
+
 # Suppress verbose websocket protocol logs
 logging.getLogger("websockets.server").setLevel(logging.CRITICAL)
 logging.getLogger("websockets.protocol").setLevel(logging.CRITICAL)
@@ -44,7 +54,7 @@ try:
     print(f"[SYS] Loading Faster-Whisper ({model_size}) on {device.upper()} ({compute_type})...")
     whisper_model = WhisperModel(model_size, device=device, compute_type=compute_type)
     has_whisper = True
-    print("[SYS] Faster-Whisper loaded successfully!")
+    print(f"[SYS] Faster-Whisper ({model_size}) loaded successfully on {device.upper()}!")
 except Exception as e:
     print(f"[WARN] Failed to load Faster-Whisper: {e}")
     print("[WARN] Running with fallback transcription stub.")
@@ -126,8 +136,12 @@ MODEL_PATH = "./securelink_final_model"
 try:
     tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
     bert_model = AutoModelForSequenceClassification.from_pretrained(MODEL_PATH)
+    if torch.cuda.is_available():
+        bert_model = bert_model.to("cuda")
+        print("[SYS] TagalogBERT loaded successfully on CUDA!")
+    else:
+        print("[SYS] TagalogBERT loaded successfully on CPU.")
     bert_model.eval()
-    print("[SYS] Fine-tuned TagalogBERT loaded successfully!")
 except Exception as e:
     print(f"[ERR] Failed to load fine-tuned model from {MODEL_PATH}: {e}")
     tokenizer = None
@@ -150,7 +164,10 @@ class ContextEngine:
 
         # 1. Base Deep Learning Inference
         if bert_model and tokenizer:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
             inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=128)
+            if device == "cuda":
+                inputs = {k: v.to("cuda") for k, v in inputs.items()}
             with torch.no_grad():
                 outputs = bert_model(**inputs)
             
@@ -711,41 +728,33 @@ def process_audio_buffer(pcm_bytes: bytes) -> str:
         except Exception as e:
             print(f"[WARN] NoiseReduce error: {e}")
 
-    # 3. Faster-Whisper Speech Recognition with Initial Prompt Conditioning & Hotwords
+    # 3. Faster-Whisper Speech Recognition with Initial Prompt Conditioning (Fast GPU Path)
     if has_whisper and whisper_model is not None:
         try:
             transcribe_kwargs = {
                 "language": "tl",
                 "initial_prompt": INITIAL_TAGALOG_PROMPT,
-                "beam_size": 5,
-                "temperature": [0.0, 0.2, 0.4, 0.6, 0.8, 1.0], 
+                "beam_size": 2, # 2 beams: balanced speed and accuracy (avoids 5-beam computational bottleneck)
+                "best_of": 2,
+                "temperature": 0.0, # Greedy decoding: eliminates expensive 6-step temperature fallback loop
                 "condition_on_previous_text": False,
-                "no_speech_threshold": 0.5, 
+                "no_speech_threshold": 0.6, 
                 "log_prob_threshold": -1.0,
                 "compression_ratio_threshold": 2.4,
                 "word_timestamps": False,
-                "vad_parameters": dict(min_speech_duration_ms=250, speech_pad_ms=400)
             }
 
-            try:
-                segments, info = whisper_model.transcribe(
-                    audio_float,
-                    vad_filter=True,
-                    **transcribe_kwargs
-                )
-                transcript = " ".join([seg.text for seg in segments]).strip()
-                return transcript
-            except Exception as vad_err:
-                print(f"[WARN] VAD filter error ({vad_err}). Retrying without VAD filter...")
-                segments, info = whisper_model.transcribe(
-                    audio_float,
-                    vad_filter=False,
-                    **transcribe_kwargs
-                )
-                transcript = " ".join([seg.text for seg in segments]).strip()
-                return transcript
+            # Audio is already pre-filtered by ESP32 Speex hardware VAD, so vad_filter=False runs instantly
+            segments, info = whisper_model.transcribe(
+                audio_float,
+                vad_filter=False,
+                **transcribe_kwargs
+            )
+            transcript = " ".join([seg.text for seg in segments]).strip()
+            return transcript
         except Exception as e:
             print(f"[ERR] Whisper transcription error: {e}")
+            return ""
             return ""
     
     return ""
@@ -806,31 +815,9 @@ async def pin_websocket_endpoint(websocket: WebSocket):
                 message = await asyncio.wait_for(websocket.receive(), timeout=12.0)
             except asyncio.TimeoutError:
                 print(f"\n[WS] {device_id} silence timeout. Closing session.")
-                if len(audio_accumulator) > 32000:
-                    pcm_chunk = bytes(audio_accumulator)
-                    transcript = await asyncio.to_thread(process_audio_buffer, pcm_chunk)
-                    if transcript:
-                        print(f"\n[FINAL TRANSCRIPT] ({device_id}) -> \"{transcript}\"")
-                        score, category = await asyncio.to_thread(context_engine.evaluate, transcript)
-                        await broadcast_to_ui({
-                            "event_type": "incident", "id": f"EVT-{int(time.time()*1000)%1000000}",
-                            "device_id": device_id, "score": float(score), "category": category,
-                            "transcript": transcript, "audio": False, "video": False, "duration": "00:02"
-                        })
                 break
             except Exception as wsock_err:
-                print(f"\n[WS] {device_id} disconnected.")
-                if len(audio_accumulator) > 32000:
-                    pcm_chunk = bytes(audio_accumulator)
-                    transcript = await asyncio.to_thread(process_audio_buffer, pcm_chunk)
-                    if transcript:
-                        print(f"\n[FINAL TRANSCRIPT] ({device_id}) -> \"{transcript}\"")
-                        score, category = await asyncio.to_thread(context_engine.evaluate, transcript)
-                        await broadcast_to_ui({
-                            "event_type": "incident", "id": f"EVT-{int(time.time()*1000)%1000000}",
-                            "device_id": device_id, "score": float(score), "category": category,
-                            "transcript": transcript, "audio": False, "video": False, "duration": "00:02"
-                        })
+                print(f"\n[WS] {device_id} stream ended.")
                 break
 
             if "text" in message:
@@ -924,18 +911,23 @@ async def pin_websocket_endpoint(websocket: WebSocket):
     except (WebSocketDisconnect, RuntimeError, OSError):
         print(f"\n[WS] {device_id} Disconnected.")
     finally:
-        # Process any remaining audio in accumulator before closing
+        # Process voice stream ONCE upon stream completion
         if len(audio_accumulator) >= 16000:
+            final_pcm = bytes(audio_accumulator)
+            audio_accumulator.clear() # Clear immediately to prevent any re-processing
+
             if device_id in registered_devices:
                 registered_devices[device_id]["state"] = "ANALYZING SPEECH"
                 registered_devices[device_id]["online"] = True
                 registered_devices[device_id]["lastSeen"] = "Whisper inferencing..."
                 await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
 
-            final_pcm = bytes(audio_accumulator)
+            t_infer_start = time.time()
             final_transcript = await asyncio.to_thread(process_audio_buffer, final_pcm)
+            infer_dur = time.time() - t_infer_start
+
             if final_transcript:
-                print(f"[FINAL TRANSCRIPT] ({device_id}) -> \"{final_transcript}\"")
+                print(f"[FINAL TRANSCRIPT] ({device_id} in {infer_dur:.2f}s) -> \"{final_transcript}\"")
                 score, category = context_engine.evaluate(final_transcript)
                 is_danger = score >= 8.0
                 if is_danger:
@@ -947,7 +939,7 @@ async def pin_websocket_endpoint(websocket: WebSocket):
                 incident_id = f"EVT-{int(time.time() * 1000) % 1000000}"
                 wav_filename = f"{incident_id}.wav"
                 wav_path = os.path.join("recordings/audio", wav_filename)
-                save_wav(final_pcm, wav_path)
+                await asyncio.to_thread(save_wav, final_pcm, wav_path)
 
                 await broadcast_to_ui({
                     "event_type": "incident",
@@ -960,7 +952,7 @@ async def pin_websocket_endpoint(websocket: WebSocket):
                     "audio_url": f"http://127.0.0.1:8080/recordings/audio/{wav_filename}",
                     "audio_file": wav_filename,
                     "video": is_danger,
-                    "duration": f"00:{len(final_pcm) // 32000:02d}"
+                    "duration": f"00:{max(1, len(final_pcm) // 32000):02d}"
                 })
 
         if websocket in active_pins:
