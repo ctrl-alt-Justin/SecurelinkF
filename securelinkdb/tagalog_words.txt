@@ -1,0 +1,2850 @@
+
+[SECTION: COMMON GREETINGS & CONVERSATIONAL FILLERS]
+kumusta
+kumusta ka
+kumusta ka na
+kumusta po
+kumusta kayo
+magandang araw
+magandang araw po
+magandang umaga
+magandang umaga po
+magandang hapon
+magandang hapon po
+magandang gabi
+magandang gabi po
+oo nga
+oo nga pala
+sige na
+sige na nga
+talaga
+talaga ba
+talaga naman
+naman
+kasi
+kasi naman
+eh
+ano ba
+ano ba yan
+ah oo
+ay nako
+nako
+naku po
+syempre
+syempre naman
+siguro
+siguro nga
+parang
+parang ganun
+medyo
+ganoon
+ganoon ba
+ganyan
+ganyan nga
+ganito
+ganito kasi
+diba
+di ba
+kaya nga
+e di
+edi
+edi wow
+palibhasa
+samantalang
+imbis na
+upang
+dahil sa
+baka sakali
+di umano
+daw
+raw
+rin
+din
+man
+pati
+maski
+muna
+naman pala
+tuloy
+sana naman
+kaya pala
+basta
+
+[SECTION: COMMON PHRASES & DAILY QUESTIONS]
+anong ginagawa mo
+anong nangyari
+anong balita sayo
+anong oras na
+sino ka
+sino yan
+sino ba yun
+sinong kasama mo
+sinong nagturo sayo
+saan ka pupunta
+saan ka galing
+saan tayo pupunta
+saang banda yun
+kailan pa
+kailan tayo aalis
+kailan ang pasahan
+kailan ka uuwi
+bakit ganyan
+bakit ka ganyan
+bakit hindi
+bakit ngayon ka lang
+paano mo nagawa
+paano ba ito
+paano pumunta doon
+paano mo nalaman
+tara na
+tara kain
+tara na kain tayo
+tara sabay na tayo
+halika na
+halika rito
+'wag na
+wag na
+sige
+sige mauna ka na
+okay lang
+okay lang ako
+hindi ko alam
+ewan ko
+ewan ko sayo
+di ko alam
+wala akong alam dyan
+pwede ba
+pwede po ba
+paki naman
+pakiusap
+pakiusap lang
+salamat
+maraming salamat
+salamat po
+walang anuman
+walang anuman po
+pasensya na
+sorry na
+paumanhin po
+tuloy po kayo
+upo ka muna
+anong pangalan mo
+taga saan ka
+ilang taon ka na
+kumain ka na ba
+ano pong kailangan niyo
+may maitutulong ba ako
+saan mo nilagay
+nakita mo ba gamit ko
+sandali lang po
+antayin mo ako saglit
+ingat ka sa byahe
+tawagan mo ako mamaya
+magkita tayo bukas
+
+[SECTION: DISCOURSE & EMOTIONAL SLANG]
+eme
+eme lang
+char
+charot
+char lang
+marites
+marites ka talaga
+omsim
+omsim pre
+legit
+legit ba yan
+solid
+solid naman niyan
+taray
+taray mo naman
+sakalam
+sakalam talaga
+lodi
+lodi kita
+petmalu
+petmalu mo
+forda
+forda person
+sus
+jusko
+susmaryosep
+hala
+hala ka
+hoy
+hoy ka
+uy
+aray
+aray ko
+aba
+aba naman
+naku
+naku po
+ge
+sge
+taralets
+chika
+chika mo naman
+nakakainis
+nakakabaliw
+nakakagulat
+nakakatuwa
+nakakaiyak
+nakakakilig
+grabe
+grabe naman
+sobrang ganda
+sobrang pangit
+super pangit
+super ganda
+ang dami mo namang alam
+ang sama mo naman
+joke lang
+seryoso ako
+hindi joke
+totoo ito
+mali ka dyan
+tama ako
+bida-bida ka na naman
+pabibo kay maam
+sipsip sa teacher
+epal ka dyan
+walang basagan ng trip
+'wag kang mag-inarte
+wag kang mag-inarte
+nakakahiya sobra
+cringe malala
+ghosting malala
+toxic mo naman
+chill ka lang muna
+'wag kang praning
+wag kang praning
+spill the tea
+dasurv mo yan
+sana all
+main character vibes
+ramdam kita pre
+
+[SECTION: ENGINEERING, SYSTEMS & DEV TAGLISH]
+paki-compile
+nakacompile
+naka-deploy
+nakadeploy
+nag-crash
+nagcrash
+nag-error
+nagerror
+paki-push
+pakipush
+na-pull
+napull
+nag-conflict
+nagconflict
+i-debug
+idebug
+naka-local
+nakalocal
+paki-solder
+pakisolder
+naka-ground
+nakaground
+nag-short
+nagshort
+i-wire
+iwire
+naka-loop
+nakaloop
+nag-trigger
+nagtrigger
+paki-check yung code
+i-run mo
+irun mo
+naka-server
+nakaserver
+nag-restart
+nagrestart
+i-restart
+irestart
+na-save
+nasave
+paki-save
+pakisave
+naka-database
+i-connect
+iconnect
+naka-connect
+nakaconnect
+na-disconnect
+nadisconnect
+paki-test
+pakitest
+i-test
+itest
+naka-live
+nakalive
+nag-hang
+naghang
+nag-lag
+naglag
+paki-message
+i-forward
+iforward
+i-download
+idownload
+naka-on
+naka-off
+naka-mute
+i-unmute
+paki-screenshot
+i-clear mo cache
+mahina wifi signal
+lowbat na ako
+pahiram powerbank
+i-plug sa outlet
+
+[SECTION: GAMING, ESPORTS & CO-OP TAGLISH]
+paki-gank
+pakigank
+naka-ulti
+nakaulti
+pa-heal
+paheal
+i-revive
+irevive
+paki-revive
+pakirevive
+na-dc
+nadc
+paki-drop
+pakidrop
+pa-carry
+pacarry
+nag-feed
+nagfeed
+tara roshan
+tara push
+i-stun mo
+istun mo
+relic run
+pa-farm
+pafarm
+naka-bkb
+nakabkb
+naka-steel path
+tara laro
+i-party mo ko
+iparty mo ko
+game na
+ready na
+go na
+laban tayo
+ayaw ko na
+gg na
+good game
+nice one
+bobo gank
+'wag mag feed
+wag mag feed
+paki def
+pakidef
+i-defend
+idefend
+naka-cooldown
+naka cd
+walang mana
+ubos mana
+pa-buff
+pabuff
+i-loot mo
+iloot mo
+tara rank game
+one on one sa mid
+clutch play
+first blood agad
+
+[SECTION: EMERGENCY, DISTRESS & PHYSICAL THREATS]
+tulong
+tulong po
+saklolo
+tulungan niyo ako
+tulungan nyo ako
+tinakot ako
+sinaktan ako
+binugbog ako
+sinuntok ako
+sinipa ako
+hinablot gamit ko
+ninakaw pera ko
+magnanakaw
+may baril
+may kutsilyo
+'wag po
+wag po
+bitawan mo ako
+bitawan mo ko
+hawakan mo to
+takbo
+tumakbo ka na
+ibalik mo yan
+'wag mo hawakan
+wag mo hawakan
+sumama ka sa amin
+'wag ka lalapit
+wag ka lalapit
+'wag kang lalapit
+wag kang lalapit
+tinutukan ako
+patayin kita
+papatayin kita
+sasapakin kita
+sasapakin ko mukha mo
+sasakalin kita
+bugbugin kita
+bugbugin ka namin
+upakan kita
+hampasin kita
+sisiguruhin kita mamaya
+yari ka na
+yari ka sa akin
+'wag kang lumapit
+wag kang lumapit
+'wag kang maingay
+wag ka maingay
+lumayas ka dito
+alis ka na
+umalis ka na dyan
+'wag kang babalik
+wag kang babalik
+hahagupin kita
+suntukan tayo
+kalaban mo ako
+kaya mo ba ako
+resbak kita
+may resbak ako
+hahampas ako sayo
+isasalampak kita
+babalian kita ng buto
+subukan mo lang lumaban
+ipapahiya kita sa buong school
+haharapin mo kami sa labas ng gate
+itatumba kita dyan
+titirahin kita mamaya
+ubos ka sa amin
+wala kang kawala dito
+isang salita mo pa tatamaan ka
+
+[SECTION: INSULTS, SWEARS & SOCIAL EXCLUSION]
+bobo
+tanga
+gago
+tarantado
+inutil
+ulol
+siraulo
+walanghiya
+bwisit
+buwisit
+leche
+peste
+punyeta
+tarantada
+pakyu
+tangina
+tang ina
+putangina
+putang ina
+kupal
+hudas
+ungas
+mokong
+salot
+tarantado ka
+gago ka
+bobo mo
+tanga ka ba
+ang bobo mo naman
+walang kwenta
+pangit mo
+kapal ng mukha mo
+ang kapal mo
+mukha kang tanga
+mukha kang ewan
+layas
+lumayas ka
+umalis ka nga
+wag kang papapel
+epal
+pabida
+plastic
+plastikan
+chismosa
+tsismosa
+chismoso
+tsismoso
+sipsip
+traydor
+ahas
+manloloko
+sinungaling
+duwag
+duwag ka pala eh
+
+[SECTION: SCHOOL, WORK & STUDENT VOCABULARY]
+eskwelahan
+paaralan
+opisina
+klase
+kaklase
+guro
+titser
+propesor
+estudyante
+punong-guro
+principal
+adviser
+guidance
+canteen
+aklatan
+library
+silid-aralan
+classroom
+pisara
+blackboard
+whiteboard
+tsok
+chalk
+pambura
+eraser
+lapis
+ballpen
+papel
+kwaderno
+notebook
+aklat
+libro
+bag
+uniporme
+baon
+pera
+takdang-aralin
+assignment
+proyekto
+project
+pagsusulit
+quiz
+exam
+marka
+grades
+
+[SECTION: MASSIVE VERB CONJUGATION MATRIX]
+kumain
+kumakain
+kakain
+kainin
+kinain
+kinakain
+kakainin
+pakainin
+uminom
+umiinom
+iinom
+inumin
+ininom
+iniinom
+iinumin
+painumin
+pumunta
+pumupunta
+pupunta
+puntahan
+pinuntahan
+pinupuntahan
+pupuntahan
+umalis
+umaalis
+aalis
+alisan
+inalisan
+inaalisan
+aalisan
+dumating
+dumarating
+darating
+datingan
+dinatnan
+dinadatnan
+dadatnan
+pumasok
+pumapasok
+papasok
+pasukin
+pinasok
+pinapasok
+papasukin
+lumabas
+lumalabas
+lalabas
+labasan
+nilabasan
+nilalabasan
+lalabasan
+lumapit
+lumalapit
+lalapit
+lapitan
+nilapitan
+nilalapitan
+lalapitan
+lumayo
+lumalayo
+lalayo
+layuan
+nilayuan
+nilalayuan
+lalayuan
+tumingin
+tumitingin
+titingin
+tingnan
+tiningnan
+tinitingnan
+titingnan
+makinig
+nakikinig
+makikinig
+pakinggan
+pinakinggan
+pinakikinggan
+pakikinggan
+magsalita
+nagsasalita
+magsasalita
+salitain
+sinalita
+sinasalita
+sasalitain
+magsabi
+nagsasabi
+magsasabi
+sabihin
+sinabi
+sinasabi
+sasabihin
+magtanong
+nagtatanong
+magtatanong
+itanong
+itinanong
+itinatanong
+itatanong
+sumagot
+sumasagot
+sasagot
+sagutin
+sinagot
+sinasagot
+sasagutin
+magbasa
+nagbabasa
+magbabasa
+basahin
+binasa
+binabasa
+babasahin
+magsulat
+nagsusulat
+magsusulat
+isulat
+isinulat
+isinusulat
+isusulat
+mag-aral
+nag-aaral
+mag-aaral
+aralin
+inaral
+inaaral
+aaralin
+magturo
+nagtuturo
+magtuturo
+ituro
+itinuro
+itinuturo
+ituturo
+magdala
+nagdadala
+magdadala
+dalhin
+dinala
+dinadala
+dadalhin
+kumuha
+kumukuha
+kukuha
+kunin
+kinuha
+kinukuha
+kukunin
+magbigay
+nagbibigay
+magbibigay
+ibigay
+ibinigay
+ibinibigay
+ibibigay
+maglagay
+naglalagay
+maglalagay
+ilagay
+inilagay
+inilalagay
+ilalagay
+magtago
+nagtatago
+magtatago
+itago
+itinago
+itinatago
+itatago
+humawak
+humahawak
+hahawak
+hawakan
+hinawakan
+hinahawakan
+hahawakan
+bumitaw
+bumibitaw
+bibitaw
+bitawan
+binitawan
+binibitawan
+bibitawan
+tumakbo
+tumatakbo
+tatakbo
+takbuhan
+tinakbuhan
+tinatakbuhan
+tatakbuhan
+maglakad
+naglalakad
+maglalakad
+lakarin
+nilakad
+nilalakad
+lalakarin
+sumakay
+sumasakay
+sasakay
+sakyan
+sinakyan
+sinasakyan
+sasakyan
+bumaba
+bumababa
+bababa
+babaan
+binabaan
+binabababaan
+bababaan
+tumulong
+tumutulong
+tutulong
+tulungan
+tinulungan
+tinutulungan
+tutulungan
+mag-antay
+nag-aantay
+mag-aantay
+antayin
+inantay
+inaantay
+aantayin
+maghintay
+naghihintay
+maghihintay
+hintayin
+hinintay
+hinihintay
+hihintayin
+mag-away
+nag-aaway
+mag-aaway
+awayin
+inaway
+inaaway
+aawayin
+lumaban
+lumalaban
+lalaban
+labanan
+nilabanan
+nilalabanan
+lalabanan
+sumuntok
+sumusuntok
+sususntok
+suntukin
+sinuntok
+sinusuntok
+susuntukin
+sumipa
+sumisipa
+sisipa
+sipain
+sinipa
+sinisipa
+sisipain
+humampas
+humahampas
+hahampas
+hampasin
+hinampas
+hinahampas
+hahampasin
+
+[SECTION: COMMON NOUNS - ANATOMY & MEDICAL]
+ulo
+buhok
+mukha
+mata
+ilong
+bibig
+labi
+ngipin
+dila
+tainga
+leeg
+balikat
+braso
+kamay
+daliri
+palad
+dibdib
+tiyan
+likod
+baywang
+hita
+tuhod
+binti
+paa
+talampakan
+balat
+dugo
+buto
+kalamnan
+puso
+baga
+sugat
+pasa
+bukol
+lagnat
+ubo
+sipon
+sakit
+kirot
+hapdi
+hilo
+gamot
+benda
+ospital
+doktor
+nars
+
+[SECTION: COMMON NOUNS - HOUSEHOLD & OBJECTS]
+bahay
+pinto
+bintana
+sahig
+kisame
+bubong
+dingding
+kwarto
+kusina
+banyo
+sala
+mesa
+upuan
+kama
+unang
+kumot
+kurtina
+plato
+kutsara
+tinidor
+baso
+kawali
+sandok
+kalan
+gripo
+timba
+tabo
+walis
+dustpan
+basurahan
+telebisyon
+radyo
+cellphone
+telepono
+laptop
+internet
+wifi
+kamera
+relo
+susi
+pera
+pitaka
+bag
+payong
+sapatos
+tsinelas
+damit
+pantalon
+t-shirt
+medyas
+
+[SECTION: COMMON NOUNS - NATURE & ENVIRONMENT]
+araw
+buwan
+bituin
+langit
+ulap
+ulan
+hangin
+bagyo
+kidlat
+kulog
+lupa
+bundok
+dagat
+ilog
+buho
+buhangin
+bato
+puno
+halaman
+bulaklak
+dahon
+ugat
+damo
+hayop
+aso
+pusa
+ibon
+isda
+manok
+baboy
+baka
+kalabaw
+kabayo
+kambing
+ahas
+daga
+lamok
+langaw
+ipis
+gagamba
+
+[SECTION: ADJECTIVES & DESCRIPTORS]
+malaki
+maliit
+mahaba
+maikli
+mataas
+mababa
+malawak
+makitid
+mabuti
+masama
+maganda
+pangit
+maayos
+sira
+bago
+luma
+masaya
+malungkot
+galit
+takot
+gulat
+inis
+kilig
+selos
+hiya
+mabilis
+mabagal
+malakas
+mahina
+mabigat
+magaan
+matigas
+malambot
+mainit
+malamig
+basa
+tuyo
+madilim
+maliwanag
+maingay
+tahimik
+mahal
+mura
+mayaman
+mahirap
+marami
+kaunti
+buo
+kulang
+matalino
+bobo
+masipag
+tamad
+mabait
+salbahe
+matapang
+duwag
+payat
+mataba
+gutom
+busog
+uhaw
+antok
+pagod
+sariwa
+panis
+hinog
+hilaw
+matamis
+maasim
+maalat
+mapait
+maanghang
+
+[SECTION: FOOD, DRINKS & DINING]
+pagkain
+kanin
+ulam
+tubig
+kape
+gatas
+tsaa
+juice
+alak
+karneng baboy
+karneng baka
+manok
+isda
+itlog
+gulay
+prutas
+saging
+mangga
+mansanas
+kaimito
+papaya
+bawang
+sibuyas
+kamatis
+luya
+sili
+asukal
+asin
+toyo
+suka
+mantika
+patis
+bagoong
+kakanin
+tinapay
+palaman
+sorbetes
+kendi
+tsokolate
+
+[SECTION: PRONOUNS & POINTERS]
+ako
+ikaw
+siya
+tayo
+kami
+kayo
+sila
+ko
+mo
+niya
+natin
+namin
+ninyo
+nila
+akin
+iyo
+kanya
+atin
+amin
+inyo
+kanila
+ito
+iyan
+iyon
+nito
+niyan
+noon
+dito
+diyan
+doon
+ganito
+ganyan
+ganoon
+heto
+hayan
+hayun
+nandito
+nandiyan
+nandoon
+sino
+ano
+saan
+kailan
+bakit
+paano
+ilan
+gaano
+
+[SECTION: TIME, NUMBERS & CALENDAR]
+ngayon
+kanina
+mamaya
+bukas
+kahapon
+kaninang umaga
+mamayang gabi
+maghapon
+buong araw
+araw-araw
+gabi-gabi
+linggo-linggo
+buwan-buwan
+taon-taon
+sandali
+mamaya-maya
+maya-maya
+madaling araw
+umaga
+tanghali
+hapon
+gabi
+hatinggabi
+lunes
+martes
+miyerkules
+huwebes
+biyernes
+sabado
+linggo
+enero
+pebrero
+marso
+abril
+mayo
+hunyo
+hulyo
+agosto
+setyembre
+oktubre
+nobyembre
+disyembre
+isa
+dalawa
+tatlo
+apat
+lima
+anim
+pito
+walo
+siyam
+sampu
+labing-isa
+labing-dalawa
+dalawampu
+tatlumpu
+apatnapu
+limampu
+isang daan
+isang libo
+kalahati
+isa pa
+alas uno
+alas dos
+alas tres
+alas kwatro
+alas singko
+alas seis
+alas siete
+alas otso
+alas nuebe
+alas dies
+alas onse
+alas dose
+
+[SECTION: PLACES, DIRECTIONS & TRANSPORTATION]
+lugar
+bayan
+siyudad
+probinsya
+barangay
+kalsada
+kalye
+eskinita
+tulay
+gusali
+paaralan
+tahanan
+simbahan
+palengke
+tindahan
+mall
+sinehan
+parke
+sementeryo
+istasyon
+sakayan
+babaan
+kanan
+kaliwa
+deretso
+likod
+harap
+taas
+baba
+loob
+labas
+gitna
+tabi
+dulo
+sasakyan
+kotse
+jeep
+bus
+tren
+eroplano
+barko
+bangka
+bisikleta
+motorsiklo
+tricycle
+pedicab
+pamasahe
+bayad
+sukli
+preno
+manibela
+gulong
+
+[SECTION: ADDITIONAL NATURAL SPEECH & CONTEXT]
+Aantayin kita sa guidance office ngayong recess, 'wag ka mawawala ah.
+Hihintayin kita sa guidance office ngayong recess, 'wag kang mawawala ah.
+Kita tayo sa guidance office ngayong recess, sabay na tayong umuwi ah.
+Magkita na lang tayo sa guidance office ngayong recess para sabay tayong pumasok.
+Puntahan mo 'ko sa guidance office ngayong recess, may ibibigay ako sayo.
+Sabay na tayong pumunta sa guidance office ngayong recess, antayin kita sa tapat ng room.
+Aantayin kita sa guidance office ngayong lunch break, 'wag ka mawawala ah.
+Hihintayin kita sa guidance office ngayong lunch break, 'wag kang mawawala ah.
+Kita tayo sa guidance office ngayong lunch break, sabay na tayong umuwi ah.
+Magkita na lang tayo sa guidance office ngayong lunch break para sabay tayong pumasok.
+Puntahan mo 'ko sa guidance office ngayong lunch break, may ibibigay ako sayo.
+Sabay na tayong pumunta sa guidance office ngayong lunch break, antayin kita sa tapat ng room.
+Aantayin kita sa guidance office mamayang uwian, 'wag ka mawawala ah.
+Hihintayin kita sa guidance office mamayang uwian, 'wag kang mawawala ah.
+Kita tayo sa guidance office mamayang uwian, sabay na tayong umuwi ah.
+Magkita na lang tayo sa guidance office mamayang uwian para sabay tayong pumasok.
+Puntahan mo 'ko sa guidance office mamayang uwian, may ibibigay ako sayo.
+Sabay na tayong pumunta sa guidance office mamayang uwian, antayin kita sa tapat ng room.
+Aantayin kita sa guidance office mamayang hapon, 'wag ka mawawala ah.
+Hihintayin kita sa guidance office mamayang hapon, 'wag kang mawawala ah.
+Kita tayo sa guidance office mamayang hapon, sabay na tayong umuwi ah.
+Magkita na lang tayo sa guidance office mamayang hapon para sabay tayong pumasok.
+Puntahan mo 'ko sa guidance office mamayang hapon, may ibibigay ako sayo.
+Sabay na tayong pumunta sa guidance office mamayang hapon, antayin kita sa tapat ng room.
+Aantayin kita sa guidance office mamayang dismissal, 'wag ka mawawala ah.
+Hihintayin kita sa guidance office mamayang dismissal, 'wag kang mawawala ah.
+Kita tayo sa guidance office mamayang dismissal, sabay na tayong umuwi ah.
+Magkita na lang tayo sa guidance office mamayang dismissal para sabay tayong pumasok.
+Puntahan mo 'ko sa guidance office mamayang dismissal, may ibibigay ako sayo.
+Sabay na tayong pumunta sa guidance office mamayang dismissal, antayin kita sa tapat ng room.
+Aantayin kita sa guidance office bukas ng umaga, 'wag ka mawawala ah.
+Hihintayin kita sa guidance office bukas ng umaga, 'wag kang mawawala ah.
+Kita tayo sa guidance office bukas ng umaga, sabay na tayong umuwi ah.
+Magkita na lang tayo sa guidance office bukas ng umaga para sabay tayong pumasok.
+Puntahan mo 'ko sa guidance office bukas ng umaga, may ibibigay ako sayo.
+Sabay na tayong pumunta sa guidance office bukas ng umaga, antayin kita sa tapat ng room.
+Aantayin kita sa guidance office sa Lunes ng umaga, 'wag ka mawawala ah.
+Hihintayin kita sa guidance office sa Lunes ng umaga, 'wag kang mawawala ah.
+Kita tayo sa guidance office sa Lunes ng umaga, sabay na tayong umuwi ah.
+Magkita na lang tayo sa guidance office sa Lunes ng umaga para sabay tayong pumasok.
+Puntahan mo 'ko sa guidance office sa Lunes ng umaga, may ibibigay ako sayo.
+Sabay na tayong pumunta sa guidance office sa Lunes ng umaga, antayin kita sa tapat ng room.
+Aantayin kita sa guidance office sa Biyernes ng hapon, 'wag ka mawawala ah.
+Hihintayin kita sa guidance office sa Biyernes ng hapon, 'wag kang mawawala ah.
+Kita tayo sa guidance office sa Biyernes ng hapon, sabay na tayong umuwi ah.
+Magkita na lang tayo sa guidance office sa Biyernes ng hapon para sabay tayong pumasok.
+Puntahan mo 'ko sa guidance office sa Biyernes ng hapon, may ibibigay ako sayo.
+Sabay na tayong pumunta sa guidance office sa Biyernes ng hapon, antayin kita sa tapat ng room.
+Aantayin kita sa guidance ngayong recess, 'wag ka mawawala ah.
+Hihintayin kita sa guidance ngayong recess, 'wag kang mawawala ah.
+Kita tayo sa guidance ngayong recess, sabay na tayong umuwi ah.
+Magkita na lang tayo sa guidance ngayong recess para sabay tayong pumasok.
+Puntahan mo 'ko sa guidance ngayong recess, may ibibigay ako sayo.
+Sabay na tayong pumunta sa guidance ngayong recess, antayin kita sa tapat ng room.
+Aantayin kita sa guidance ngayong lunch break, 'wag ka mawawala ah.
+Hihintayin kita sa guidance ngayong lunch break, 'wag kang mawawala ah.
+Kita tayo sa guidance ngayong lunch break, sabay na tayong umuwi ah.
+Magkita na lang tayo sa guidance ngayong lunch break para sabay tayong pumasok.
+Puntahan mo 'ko sa guidance ngayong lunch break, may ibibigay ako sayo.
+Sabay na tayong pumunta sa guidance ngayong lunch break, antayin kita sa tapat ng room.
+Aantayin kita sa guidance mamayang uwian, 'wag ka mawawala ah.
+Hihintayin kita sa guidance mamayang uwian, 'wag kang mawawala ah.
+Kita tayo sa guidance mamayang uwian, sabay na tayong umuwi ah.
+Magkita na lang tayo sa guidance mamayang uwian para sabay tayong pumasok.
+Puntahan mo 'ko sa guidance mamayang uwian, may ibibigay ako sayo.
+Sabay na tayong pumunta sa guidance mamayang uwian, antayin kita sa tapat ng room.
+Aantayin kita sa guidance mamayang hapon, 'wag ka mawawala ah.
+Hihintayin kita sa guidance mamayang hapon, 'wag kang mawawala ah.
+Kita tayo sa guidance mamayang hapon, sabay na tayong umuwi ah.
+Magkita na lang tayo sa guidance mamayang hapon para sabay tayong pumasok.
+Puntahan mo 'ko sa guidance mamayang hapon, may ibibigay ako sayo.
+Sabay na tayong pumunta sa guidance mamayang hapon, antayin kita sa tapat ng room.
+Aantayin kita sa guidance mamayang dismissal, 'wag ka mawawala ah.
+Hihintayin kita sa guidance mamayang dismissal, 'wag kang mawawala ah.
+Kita tayo sa guidance mamayang dismissal, sabay na tayong umuwi ah.
+Magkita na lang tayo sa guidance mamayang dismissal para sabay tayong pumasok.
+Puntahan mo 'ko sa guidance mamayang dismissal, may ibibigay ako sayo.
+Sabay na tayong pumunta sa guidance mamayang dismissal, antayin kita sa tapat ng room.
+Aantayin kita sa guidance bukas ng umaga, 'wag ka mawawala ah.
+Hihintayin kita sa guidance bukas ng umaga, 'wag kang mawawala ah.
+Kita tayo sa guidance bukas ng umaga, sabay na tayong umuwi ah.
+Magkita na lang tayo sa guidance bukas ng umaga para sabay tayong pumasok.
+Puntahan mo 'ko sa guidance bukas ng umaga, may ibibigay ako sayo.
+Sabay na tayong pumunta sa guidance bukas ng umaga, antayin kita sa tapat ng room.
+Aantayin kita sa guidance sa Lunes ng umaga, 'wag ka mawawala ah.
+Hihintayin kita sa guidance sa Lunes ng umaga, 'wag kang mawawala ah.
+Kita tayo sa guidance sa Lunes ng umaga, sabay na tayong umuwi ah.
+Magkita na lang tayo sa guidance sa Lunes ng umaga para sabay tayong pumasok.
+Puntahan mo 'ko sa guidance sa Lunes ng umaga, may ibibigay ako sayo.
+Sabay na tayong pumunta sa guidance sa Lunes ng umaga, antayin kita sa tapat ng room.
+Aantayin kita sa guidance sa Biyernes ng hapon, 'wag ka mawawala ah.
+Hihintayin kita sa guidance sa Biyernes ng hapon, 'wag kang mawawala ah.
+Kita tayo sa guidance sa Biyernes ng hapon, sabay na tayong umuwi ah.
+Magkita na lang tayo sa guidance sa Biyernes ng hapon para sabay tayong pumasok.
+Puntahan mo 'ko sa guidance sa Biyernes ng hapon, may ibibigay ako sayo.
+Sabay na tayong pumunta sa guidance sa Biyernes ng hapon, antayin kita sa tapat ng room.
+Aantayin kita sa canteen ngayong recess, 'wag ka mawawala ah.
+Hihintayin kita sa canteen ngayong recess, 'wag kang mawawala ah.
+Kita tayo sa canteen ngayong recess, sabay na tayong umuwi ah.
+Magkita na lang tayo sa canteen ngayong recess para sabay tayong pumasok.
+Puntahan mo 'ko sa canteen ngayong recess, may ibibigay ako sayo.
+Sabay na tayong pumunta sa canteen ngayong recess, antayin kita sa tapat ng room.
+Aantayin kita sa canteen ngayong lunch break, 'wag ka mawawala ah.
+Hihintayin kita sa canteen ngayong lunch break, 'wag kang mawawala ah.
+Kita tayo sa canteen ngayong lunch break, sabay na tayong umuwi ah.
+Magkita na lang tayo sa canteen ngayong lunch break para sabay tayong pumasok.
+Puntahan mo 'ko sa canteen ngayong lunch break, may ibibigay ako sayo.
+Sabay na tayong pumunta sa canteen ngayong lunch break, antayin kita sa tapat ng room.
+Aantayin kita sa canteen mamayang uwian, 'wag ka mawawala ah.
+Hihintayin kita sa canteen mamayang uwian, 'wag kang mawawala ah.
+Kita tayo sa canteen mamayang uwian, sabay na tayong umuwi ah.
+Magkita na lang tayo sa canteen mamayang uwian para sabay tayong pumasok.
+Puntahan mo 'ko sa canteen mamayang uwian, may ibibigay ako sayo.
+Sabay na tayong pumunta sa canteen mamayang uwian, antayin kita sa tapat ng room.
+Aantayin kita sa canteen mamayang hapon, 'wag ka mawawala ah.
+Hihintayin kita sa canteen mamayang hapon, 'wag kang mawawala ah.
+Kita tayo sa canteen mamayang hapon, sabay na tayong umuwi ah.
+Magkita na lang tayo sa canteen mamayang hapon para sabay tayong pumasok.
+Puntahan mo 'ko sa canteen mamayang hapon, may ibibigay ako sayo.
+Sabay na tayong pumunta sa canteen mamayang hapon, antayin kita sa tapat ng room.
+Aantayin kita sa canteen mamayang dismissal, 'wag ka mawawala ah.
+Hihintayin kita sa canteen mamayang dismissal, 'wag kang mawawala ah.
+Kita tayo sa canteen mamayang dismissal, sabay na tayong umuwi ah.
+Magkita na lang tayo sa canteen mamayang dismissal para sabay tayong pumasok.
+Puntahan mo 'ko sa canteen mamayang dismissal, may ibibigay ako sayo.
+Sabay na tayong pumunta sa canteen mamayang dismissal, antayin kita sa tapat ng room.
+Aantayin kita sa canteen bukas ng umaga, 'wag ka mawawala ah.
+Hihintayin kita sa canteen bukas ng umaga, 'wag kang mawawala ah.
+Kita tayo sa canteen bukas ng umaga, sabay na tayong umuwi ah.
+Magkita na lang tayo sa canteen bukas ng umaga para sabay tayong pumasok.
+Puntahan mo 'ko sa canteen bukas ng umaga, may ibibigay ako sayo.
+Sabay na tayong pumunta sa canteen bukas ng umaga, antayin kita sa tapat ng room.
+Aantayin kita sa canteen sa Lunes ng umaga, 'wag ka mawawala ah.
+Hihintayin kita sa canteen sa Lunes ng umaga, 'wag kang mawawala ah.
+Kita tayo sa canteen sa Lunes ng umaga, sabay na tayong umuwi ah.
+Magkita na lang tayo sa canteen sa Lunes ng umaga para sabay tayong pumasok.
+Puntahan mo 'ko sa canteen sa Lunes ng umaga, may ibibigay ako sayo.
+Sabay na tayong pumunta sa canteen sa Lunes ng umaga, antayin kita sa tapat ng room.
+Aantayin kita sa canteen sa Biyernes ng hapon, 'wag ka mawawala ah.
+Hihintayin kita sa canteen sa Biyernes ng hapon, 'wag kang mawawala ah.
+Kita tayo sa canteen sa Biyernes ng hapon, sabay na tayong umuwi ah.
+Magkita na lang tayo sa canteen sa Biyernes ng hapon para sabay tayong pumasok.
+Puntahan mo 'ko sa canteen sa Biyernes ng hapon, may ibibigay ako sayo.
+Sabay na tayong pumunta sa canteen sa Biyernes ng hapon, antayin kita sa tapat ng room.
+Aantayin kita sa library ngayong recess, 'wag ka mawawala ah.
+Hihintayin kita sa library ngayong recess, 'wag kang mawawala ah.
+Kita tayo sa library ngayong recess, sabay na tayong umuwi ah.
+Magkita na lang tayo sa library ngayong recess para sabay tayong pumasok.
+Puntahan mo 'ko sa library ngayong recess, may ibibigay ako sayo.
+Sabay na tayong pumunta sa library ngayong recess, antayin kita sa tapat ng room.
+Aantayin kita sa library ngayong lunch break, 'wag ka mawawala ah.
+Hihintayin kita sa library ngayong lunch break, 'wag kang mawawala ah.
+Kita tayo sa library ngayong lunch break, sabay na tayong umuwi ah.
+Magkita na lang tayo sa library ngayong lunch break para sabay tayong pumasok.
+Puntahan mo 'ko sa library ngayong lunch break, may ibibigay ako sayo.
+Sabay na tayong pumunta sa library ngayong lunch break, antayin kita sa tapat ng room.
+Aantayin kita sa library mamayang uwian, 'wag ka mawawala ah.
+Hihintayin kita sa library mamayang uwian, 'wag kang mawawala ah.
+Kita tayo sa library mamayang uwian, sabay na tayong umuwi ah.
+Magkita na lang tayo sa library mamayang uwian para sabay tayong pumasok.
+Puntahan mo 'ko sa library mamayang uwian, may ibibigay ako sayo.
+Sabay na tayong pumunta sa library mamayang uwian, antayin kita sa tapat ng room.
+Aantayin kita sa library mamayang hapon, 'wag ka mawawala ah.
+Hihintayin kita sa library mamayang hapon, 'wag kang mawawala ah.
+Kita tayo sa library mamayang hapon, sabay na tayong umuwi ah.
+Magkita na lang tayo sa library mamayang hapon para sabay tayong pumasok.
+Puntahan mo 'ko sa library mamayang hapon, may ibibigay ako sayo.
+Sabay na tayong pumunta sa library mamayang hapon, antayin kita sa tapat ng room.
+Aantayin kita sa library mamayang dismissal, 'wag ka mawawala ah.
+Hihintayin kita sa library mamayang dismissal, 'wag kang mawawala ah.
+Kita tayo sa library mamayang dismissal, sabay na tayong umuwi ah.
+Magkita na lang tayo sa library mamayang dismissal para sabay tayong pumasok.
+Puntahan mo 'ko sa library mamayang dismissal, may ibibigay ako sayo.
+Sabay na tayong pumunta sa library mamayang dismissal, antayin kita sa tapat ng room.
+Aantayin kita sa library bukas ng umaga, 'wag ka mawawala ah.
+Hihintayin kita sa library bukas ng umaga, 'wag kang mawawala ah.
+Kita tayo sa library bukas ng umaga, sabay na tayong umuwi ah.
+Magkita na lang tayo sa library bukas ng umaga para sabay tayong pumasok.
+Puntahan mo 'ko sa library bukas ng umaga, may ibibigay ako sayo.
+Sabay na tayong pumunta sa library bukas ng umaga, antayin kita sa tapat ng room.
+Aantayin kita sa library sa Lunes ng umaga, 'wag ka mawawala ah.
+Hihintayin kita sa library sa Lunes ng umaga, 'wag kang mawawala ah.
+Kita tayo sa library sa Lunes ng umaga, sabay na tayong umuwi ah.
+Magkita na lang tayo sa library sa Lunes ng umaga para sabay tayong pumasok.
+Puntahan mo 'ko sa library sa Lunes ng umaga, may ibibigay ako sayo.
+Sabay na tayong pumunta sa library sa Lunes ng umaga, antayin kita sa tapat ng room.
+Aantayin kita sa library sa Biyernes ng hapon, 'wag ka mawawala ah.
+Hihintayin kita sa library sa Biyernes ng hapon, 'wag kang mawawala ah.
+Kita tayo sa library sa Biyernes ng hapon, sabay na tayong umuwi ah.
+Magkita na lang tayo sa library sa Biyernes ng hapon para sabay tayong pumasok.
+Puntahan mo 'ko sa library sa Biyernes ng hapon, may ibibigay ako sayo.
+Sabay na tayong pumunta sa library sa Biyernes ng hapon, antayin kita sa tapat ng room.
+Aantayin kita sa covered court ngayong recess, 'wag ka mawawala ah.
+Hihintayin kita sa covered court ngayong recess, 'wag kang mawawala ah.
+Kita tayo sa covered court ngayong recess, sabay na tayong umuwi ah.
+Magkita na lang tayo sa covered court ngayong recess para sabay tayong pumasok.
+Puntahan mo 'ko sa covered court ngayong recess, may ibibigay ako sayo.
+Sabay na tayong pumunta sa covered court ngayong recess, antayin kita sa tapat ng room.
+Aantayin kita sa covered court ngayong lunch break, 'wag ka mawawala ah.
+Hihintayin kita sa covered court ngayong lunch break, 'wag kang mawawala ah.
+Kita tayo sa covered court ngayong lunch break, sabay na tayong umuwi ah.
+Magkita na lang tayo sa covered court ngayong lunch break para sabay tayong pumasok.
+Puntahan mo 'ko sa covered court ngayong lunch break, may ibibigay ako sayo.
+Sabay na tayong pumunta sa covered court ngayong lunch break, antayin kita sa tapat ng room.
+Aantayin kita sa covered court mamayang uwian, 'wag ka mawawala ah.
+Hihintayin kita sa covered court mamayang uwian, 'wag kang mawawala ah.
+Kita tayo sa covered court mamayang uwian, sabay na tayong umuwi ah.
+Magkita na lang tayo sa covered court mamayang uwian para sabay tayong pumasok.
+Puntahan mo 'ko sa covered court mamayang uwian, may ibibigay ako sayo.
+Sabay na tayong pumunta sa covered court mamayang uwian, antayin kita sa tapat ng room.
+Aantayin kita sa covered court mamayang hapon, 'wag ka mawawala ah.
+Hihintayin kita sa covered court mamayang hapon, 'wag kang mawawala ah.
+Kita tayo sa covered court mamayang hapon, sabay na tayong umuwi ah.
+Magkita na lang tayo sa covered court mamayang hapon para sabay tayong pumasok.
+Puntahan mo 'ko sa covered court mamayang hapon, may ibibigay ako sayo.
+Sabay na tayong pumunta sa covered court mamayang hapon, antayin kita sa tapat ng room.
+Aantayin kita sa covered court mamayang dismissal, 'wag ka mawawala ah.
+Hihintayin kita sa covered court mamayang dismissal, 'wag kang mawawala ah.
+Kita tayo sa covered court mamayang dismissal, sabay na tayong umuwi ah.
+Magkita na lang tayo sa covered court mamayang dismissal para sabay tayong pumasok.
+Puntahan mo 'ko sa covered court mamayang dismissal, may ibibigay ako sayo.
+Sabay na tayong pumunta sa covered court mamayang dismissal, antayin kita sa tapat ng room.
+Aantayin kita sa covered court bukas ng umaga, 'wag ka mawawala ah.
+Hihintayin kita sa covered court bukas ng umaga, 'wag kang mawawala ah.
+Kita tayo sa covered court bukas ng umaga, sabay na tayong umuwi ah.
+Magkita na lang tayo sa covered court bukas ng umaga para sabay tayong pumasok.
+Puntahan mo 'ko sa covered court bukas ng umaga, may ibibigay ako sayo.
+Sabay na tayong pumunta sa covered court bukas ng umaga, antayin kita sa tapat ng room.
+Aantayin kita sa covered court sa Lunes ng umaga, 'wag ka mawawala ah.
+Hihintayin kita sa covered court sa Lunes ng umaga, 'wag kang mawawala ah.
+Kita tayo sa covered court sa Lunes ng umaga, sabay na tayong umuwi ah.
+Magkita na lang tayo sa covered court sa Lunes ng umaga para sabay tayong pumasok.
+Puntahan mo 'ko sa covered court sa Lunes ng umaga, may ibibigay ako sayo.
+Sabay na tayong pumunta sa covered court sa Lunes ng umaga, antayin kita sa tapat ng room.
+Aantayin kita sa covered court sa Biyernes ng hapon, 'wag ka mawawala ah.
+Hihintayin kita sa covered court sa Biyernes ng hapon, 'wag kang mawawala ah.
+Kita tayo sa covered court sa Biyernes ng hapon, sabay na tayong umuwi ah.
+Magkita na lang tayo sa covered court sa Biyernes ng hapon para sabay tayong pumasok.
+Puntahan mo 'ko sa covered court sa Biyernes ng hapon, may ibibigay ako sayo.
+Sabay na tayong pumunta sa covered court sa Biyernes ng hapon, antayin kita sa tapat ng room.
+Aantayin kita sa labas ng gate ngayong recess, 'wag ka mawawala ah.
+Hihintayin kita sa labas ng gate ngayong recess, 'wag kang mawawala ah.
+Kita tayo sa labas ng gate ngayong recess, sabay na tayong umuwi ah.
+Magkita na lang tayo sa labas ng gate ngayong recess para sabay tayong pumasok.
+Puntahan mo 'ko sa labas ng gate ngayong recess, may ibibigay ako sayo.
+Sabay na tayong pumunta sa labas ng gate ngayong recess, antayin kita sa tapat ng room.
+Aantayin kita sa labas ng gate ngayong lunch break, 'wag ka mawawala ah.
+Hihintayin kita sa labas ng gate ngayong lunch break, 'wag kang mawawala ah.
+Kita tayo sa labas ng gate ngayong lunch break, sabay na tayong umuwi ah.
+Magkita na lang tayo sa labas ng gate ngayong lunch break para sabay tayong pumasok.
+Puntahan mo 'ko sa labas ng gate ngayong lunch break, may ibibigay ako sayo.
+Sabay na tayong pumunta sa labas ng gate ngayong lunch break, antayin kita sa tapat ng room.
+Aantayin kita sa labas ng gate mamayang uwian, 'wag ka mawawala ah.
+Hihintayin kita sa labas ng gate mamayang uwian, 'wag kang mawawala ah.
+Kita tayo sa labas ng gate mamayang uwian, sabay na tayong umuwi ah.
+Magkita na lang tayo sa labas ng gate mamayang uwian para sabay tayong pumasok.
+Puntahan mo 'ko sa labas ng gate mamayang uwian, may ibibigay ako sayo.
+Sabay na tayong pumunta sa labas ng gate mamayang uwian, antayin kita sa tapat ng room.
+Aantayin kita sa labas ng gate mamayang hapon, 'wag ka mawawala ah.
+Hihintayin kita sa labas ng gate mamayang hapon, 'wag kang mawawala ah.
+Kita tayo sa labas ng gate mamayang hapon, sabay na tayong umuwi ah.
+Magkita na lang tayo sa labas ng gate mamayang hapon para sabay tayong pumasok.
+Puntahan mo 'ko sa labas ng gate mamayang hapon, may ibibigay ako sayo.
+Sabay na tayong pumunta sa labas ng gate mamayang hapon, antayin kita sa tapat ng room.
+Aantayin kita sa labas ng gate mamayang dismissal, 'wag ka mawawala ah.
+Hihintayin kita sa labas ng gate mamayang dismissal, 'wag kang mawawala ah.
+Kita tayo sa labas ng gate mamayang dismissal, sabay na tayong umuwi ah.
+Magkita na lang tayo sa labas ng gate mamayang dismissal para sabay tayong pumasok.
+Puntahan mo 'ko sa labas ng gate mamayang dismissal, may ibibigay ako sayo.
+Sabay na tayong pumunta sa labas ng gate mamayang dismissal, antayin kita sa tapat ng room.
+Aantayin kita sa labas ng gate bukas ng umaga, 'wag ka mawawala ah.
+Hihintayin kita sa labas ng gate bukas ng umaga, 'wag kang mawawala ah.
+Kita tayo sa labas ng gate bukas ng umaga, sabay na tayong umuwi ah.
+Magkita na lang tayo sa labas ng gate bukas ng umaga para sabay tayong pumasok.
+Puntahan mo 'ko sa labas ng gate bukas ng umaga, may ibibigay ako sayo.
+Sabay na tayong pumunta sa labas ng gate bukas ng umaga, antayin kita sa tapat ng room.
+Aantayin kita sa labas ng gate sa Lunes ng umaga, 'wag ka mawawala ah.
+Hihintayin kita sa labas ng gate sa Lunes ng umaga, 'wag kang mawawala ah.
+Kita tayo sa labas ng gate sa Lunes ng umaga, sabay na tayong umuwi ah.
+Magkita na lang tayo sa labas ng gate sa Lunes ng umaga para sabay tayong pumasok.
+Puntahan mo 'ko sa labas ng gate sa Lunes ng umaga, may ibibigay ako sayo.
+Sabay na tayong pumunta sa labas ng gate sa Lunes ng umaga, antayin kita sa tapat ng room.
+Aantayin kita sa labas ng gate sa Biyernes ng hapon, 'wag ka mawawala ah.
+Hihintayin kita sa labas ng gate sa Biyernes ng hapon, 'wag kang mawawala ah.
+Kita tayo sa labas ng gate sa Biyernes ng hapon, sabay na tayong umuwi ah.
+Magkita na lang tayo sa labas ng gate sa Biyernes ng hapon para sabay tayong pumasok.
+Puntahan mo 'ko sa labas ng gate sa Biyernes ng hapon, may ibibigay ako sayo.
+Sabay na tayong pumunta sa labas ng gate sa Biyernes ng hapon, antayin kita sa tapat ng room.
+Aantayin kita sa clinic ngayong recess, 'wag ka mawawala ah.
+Hihintayin kita sa clinic ngayong recess, 'wag kang mawawala ah.
+Kita tayo sa clinic ngayong recess, sabay na tayong umuwi ah.
+Magkita na lang tayo sa clinic ngayong recess para sabay tayong pumasok.
+Puntahan mo 'ko sa clinic ngayong recess, may ibibigay ako sayo.
+Sabay na tayong pumunta sa clinic ngayong recess, antayin kita sa tapat ng room.
+Aantayin kita sa clinic ngayong lunch break, 'wag ka mawawala ah.
+Hihintayin kita sa clinic ngayong lunch break, 'wag kang mawawala ah.
+Kita tayo sa clinic ngayong lunch break, sabay na tayong umuwi ah.
+Magkita na lang tayo sa clinic ngayong lunch break para sabay tayong pumasok.
+Puntahan mo 'ko sa clinic ngayong lunch break, may ibibigay ako sayo.
+Sabay na tayong pumunta sa clinic ngayong lunch break, antayin kita sa tapat ng room.
+Aantayin kita sa clinic mamayang uwian, 'wag ka mawawala ah.
+Hihintayin kita sa clinic mamayang uwian, 'wag kang mawawala ah.
+Kita tayo sa clinic mamayang uwian, sabay na tayong umuwi ah.
+Magkita na lang tayo sa clinic mamayang uwian para sabay tayong pumasok.
+Puntahan mo 'ko sa clinic mamayang uwian, may ibibigay ako sayo.
+Sabay na tayong pumunta sa clinic mamayang uwian, antayin kita sa tapat ng room.
+Aantayin kita sa clinic mamayang hapon, 'wag ka mawawala ah.
+Hihintayin kita sa clinic mamayang hapon, 'wag kang mawawala ah.
+Kita tayo sa clinic mamayang hapon, sabay na tayong umuwi ah.
+Magkita na lang tayo sa clinic mamayang hapon para sabay tayong pumasok.
+Puntahan mo 'ko sa clinic mamayang hapon, may ibibigay ako sayo.
+Sabay na tayong pumunta sa clinic mamayang hapon, antayin kita sa tapat ng room.
+Aantayin kita sa clinic mamayang dismissal, 'wag ka mawawala ah.
+Hihintayin kita sa clinic mamayang dismissal, 'wag kang mawawala ah.
+Kita tayo sa clinic mamayang dismissal, sabay na tayong umuwi ah.
+Magkita na lang tayo sa clinic mamayang dismissal para sabay tayong pumasok.
+Puntahan mo 'ko sa clinic mamayang dismissal, may ibibigay ako sayo.
+Sabay na tayong pumunta sa clinic mamayang dismissal, antayin kita sa tapat ng room.
+Aantayin kita sa clinic bukas ng umaga, 'wag ka mawawala ah.
+Hihintayin kita sa clinic bukas ng umaga, 'wag kang mawawala ah.
+Kita tayo sa clinic bukas ng umaga, sabay na tayong umuwi ah.
+Magkita na lang tayo sa clinic bukas ng umaga para sabay tayong pumasok.
+Puntahan mo 'ko sa clinic bukas ng umaga, may ibibigay ako sayo.
+Sabay na tayong pumunta sa clinic bukas ng umaga, antayin kita sa tapat ng room.
+Aantayin kita sa clinic sa Lunes ng umaga, 'wag ka mawawala ah.
+Hihintayin kita sa clinic sa Lunes ng umaga, 'wag kang mawawala ah.
+Kita tayo sa clinic sa Lunes ng umaga, sabay na tayong umuwi ah.
+Magkita na lang tayo sa clinic sa Lunes ng umaga para sabay tayong pumasok.
+Puntahan mo 'ko sa clinic sa Lunes ng umaga, may ibibigay ako sayo.
+Sabay na tayong pumunta sa clinic sa Lunes ng umaga, antayin kita sa tapat ng room.
+Aantayin kita sa clinic sa Biyernes ng hapon, 'wag ka mawawala ah.
+Hihintayin kita sa clinic sa Biyernes ng hapon, 'wag kang mawawala ah.
+Kita tayo sa clinic sa Biyernes ng hapon, sabay na tayong umuwi ah.
+Magkita na lang tayo sa clinic sa Biyernes ng hapon para sabay tayong pumasok.
+Puntahan mo 'ko sa clinic sa Biyernes ng hapon, may ibibigay ako sayo.
+Sabay na tayong pumunta sa clinic sa Biyernes ng hapon, antayin kita sa tapat ng room.
+Aantayin kita sa hallway ngayong recess, 'wag ka mawawala ah.
+Hihintayin kita sa hallway ngayong recess, 'wag kang mawawala ah.
+Kita tayo sa hallway ngayong recess, sabay na tayong umuwi ah.
+Magkita na lang tayo sa hallway ngayong recess para sabay tayong pumasok.
+Puntahan mo 'ko sa hallway ngayong recess, may ibibigay ako sayo.
+Sabay na tayong pumunta sa hallway ngayong recess, antayin kita sa tapat ng room.
+Aantayin kita sa hallway ngayong lunch break, 'wag ka mawawala ah.
+Hihintayin kita sa hallway ngayong lunch break, 'wag kang mawawala ah.
+Kita tayo sa hallway ngayong lunch break, sabay na tayong umuwi ah.
+Magkita na lang tayo sa hallway ngayong lunch break para sabay tayong pumasok.
+Puntahan mo 'ko sa hallway ngayong lunch break, may ibibigay ako sayo.
+Sabay na tayong pumunta sa hallway ngayong lunch break, antayin kita sa tapat ng room.
+Aantayin kita sa hallway mamayang uwian, 'wag ka mawawala ah.
+Hihintayin kita sa hallway mamayang uwian, 'wag kang mawawala ah.
+Kita tayo sa hallway mamayang uwian, sabay na tayong umuwi ah.
+Magkita na lang tayo sa hallway mamayang uwian para sabay tayong pumasok.
+Puntahan mo 'ko sa hallway mamayang uwian, may ibibigay ako sayo.
+Sabay na tayong pumunta sa hallway mamayang uwian, antayin kita sa tapat ng room.
+Aantayin kita sa hallway mamayang hapon, 'wag ka mawawala ah.
+Hihintayin kita sa hallway mamayang hapon, 'wag kang mawawala ah.
+Kita tayo sa hallway mamayang hapon, sabay na tayong umuwi ah.
+Magkita na lang tayo sa hallway mamayang hapon para sabay tayong pumasok.
+Puntahan mo 'ko sa hallway mamayang hapon, may ibibigay ako sayo.
+Sabay na tayong pumunta sa hallway mamayang hapon, antayin kita sa tapat ng room.
+Aantayin kita sa hallway mamayang dismissal, 'wag ka mawawala ah.
+Hihintayin kita sa hallway mamayang dismissal, 'wag kang mawawala ah.
+Kita tayo sa hallway mamayang dismissal, sabay na tayong umuwi ah.
+Magkita na lang tayo sa hallway mamayang dismissal para sabay tayong pumasok.
+Puntahan mo 'ko sa hallway mamayang dismissal, may ibibigay ako sayo.
+Sabay na tayong pumunta sa hallway mamayang dismissal, antayin kita sa tapat ng room.
+Aantayin kita sa hallway bukas ng umaga, 'wag ka mawawala ah.
+Hihintayin kita sa hallway bukas ng umaga, 'wag kang mawawala ah.
+Kita tayo sa hallway bukas ng umaga, sabay na tayong umuwi ah.
+Magkita na lang tayo sa hallway bukas ng umaga para sabay tayong pumasok.
+Puntahan mo 'ko sa hallway bukas ng umaga, may ibibigay ako sayo.
+Sabay na tayong pumunta sa hallway bukas ng umaga, antayin kita sa tapat ng room.
+Aantayin kita sa hallway sa Lunes ng umaga, 'wag ka mawawala ah.
+Hihintayin kita sa hallway sa Lunes ng umaga, 'wag kang mawawala ah.
+Kita tayo sa hallway sa Lunes ng umaga, sabay na tayong umuwi ah.
+Magkita na lang tayo sa hallway sa Lunes ng umaga para sabay tayong pumasok.
+Puntahan mo 'ko sa hallway sa Lunes ng umaga, may ibibigay ako sayo.
+Sabay na tayong pumunta sa hallway sa Lunes ng umaga, antayin kita sa tapat ng room.
+Aantayin kita sa hallway sa Biyernes ng hapon, 'wag ka mawawala ah.
+Hihintayin kita sa hallway sa Biyernes ng hapon, 'wag kang mawawala ah.
+Kita tayo sa hallway sa Biyernes ng hapon, sabay na tayong umuwi ah.
+Magkita na lang tayo sa hallway sa Biyernes ng hapon para sabay tayong pumasok.
+Puntahan mo 'ko sa hallway sa Biyernes ng hapon, may ibibigay ako sayo.
+Sabay na tayong pumunta sa hallway sa Biyernes ng hapon, antayin kita sa tapat ng room.
+Aantayin kita sa tapat ng principal office ngayong recess, 'wag ka mawawala ah.
+Hihintayin kita sa tapat ng principal office ngayong recess, 'wag kang mawawala ah.
+Kita tayo sa tapat ng principal office ngayong recess, sabay na tayong umuwi ah.
+Magkita na lang tayo sa tapat ng principal office ngayong recess para sabay tayong pumasok.
+Puntahan mo 'ko sa tapat ng principal office ngayong recess, may ibibigay ako sayo.
+Sabay na tayong pumunta sa tapat ng principal office ngayong recess, antayin kita sa tapat ng room.
+Aantayin kita sa tapat ng principal office ngayong lunch break, 'wag ka mawawala ah.
+Hihintayin kita sa tapat ng principal office ngayong lunch break, 'wag kang mawawala ah.
+Kita tayo sa tapat ng principal office ngayong lunch break, sabay na tayong umuwi ah.
+Magkita na lang tayo sa tapat ng principal office ngayong lunch break para sabay tayong pumasok.
+Puntahan mo 'ko sa tapat ng principal office ngayong lunch break, may ibibigay ako sayo.
+Sabay na tayong pumunta sa tapat ng principal office ngayong lunch break, antayin kita sa tapat ng room.
+Aantayin kita sa tapat ng principal office mamayang uwian, 'wag ka mawawala ah.
+Hihintayin kita sa tapat ng principal office mamayang uwian, 'wag kang mawawala ah.
+Kita tayo sa tapat ng principal office mamayang uwian, sabay na tayong umuwi ah.
+Magkita na lang tayo sa tapat ng principal office mamayang uwian para sabay tayong pumasok.
+Puntahan mo 'ko sa tapat ng principal office mamayang uwian, may ibibigay ako sayo.
+Sabay na tayong pumunta sa tapat ng principal office mamayang uwian, antayin kita sa tapat ng room.
+Aantayin kita sa tapat ng principal office mamayang hapon, 'wag ka mawawala ah.
+Hihintayin kita sa tapat ng principal office mamayang hapon, 'wag kang mawawala ah.
+Kita tayo sa tapat ng principal office mamayang hapon, sabay na tayong umuwi ah.
+Magkita na lang tayo sa tapat ng principal office mamayang hapon para sabay tayong pumasok.
+Puntahan mo 'ko sa tapat ng principal office mamayang hapon, may ibibigay ako sayo.
+Sabay na tayong pumunta sa tapat ng principal office mamayang hapon, antayin kita sa tapat ng room.
+Aantayin kita sa tapat ng principal office mamayang dismissal, 'wag ka mawawala ah.
+Hihintayin kita sa tapat ng principal office mamayang dismissal, 'wag kang mawawala ah.
+Kita tayo sa tapat ng principal office mamayang dismissal, sabay na tayong umuwi ah.
+Magkita na lang tayo sa tapat ng principal office mamayang dismissal para sabay tayong pumasok.
+Puntahan mo 'ko sa tapat ng principal office mamayang dismissal, may ibibigay ako sayo.
+Sabay na tayong pumunta sa tapat ng principal office mamayang dismissal, antayin kita sa tapat ng room.
+Aantayin kita sa tapat ng principal office bukas ng umaga, 'wag ka mawawala ah.
+Hihintayin kita sa tapat ng principal office bukas ng umaga, 'wag kang mawawala ah.
+Kita tayo sa tapat ng principal office bukas ng umaga, sabay na tayong umuwi ah.
+Magkita na lang tayo sa tapat ng principal office bukas ng umaga para sabay tayong pumasok.
+Puntahan mo 'ko sa tapat ng principal office bukas ng umaga, may ibibigay ako sayo.
+Sabay na tayong pumunta sa tapat ng principal office bukas ng umaga, antayin kita sa tapat ng room.
+Aantayin kita sa tapat ng principal office sa Lunes ng umaga, 'wag ka mawawala ah.
+Hihintayin kita sa tapat ng principal office sa Lunes ng umaga, 'wag kang mawawala ah.
+Kita tayo sa tapat ng principal office sa Lunes ng umaga, sabay na tayong umuwi ah.
+Magkita na lang tayo sa tapat ng principal office sa Lunes ng umaga para sabay tayong pumasok.
+Puntahan mo 'ko sa tapat ng principal office sa Lunes ng umaga, may ibibigay ako sayo.
+Sabay na tayong pumunta sa tapat ng principal office sa Lunes ng umaga, antayin kita sa tapat ng room.
+Aantayin kita sa tapat ng principal office sa Biyernes ng hapon, 'wag ka mawawala ah.
+Hihintayin kita sa tapat ng principal office sa Biyernes ng hapon, 'wag kang mawawala ah.
+Kita tayo sa tapat ng principal office sa Biyernes ng hapon, sabay na tayong umuwi ah.
+Magkita na lang tayo sa tapat ng principal office sa Biyernes ng hapon para sabay tayong pumasok.
+Puntahan mo 'ko sa tapat ng principal office sa Biyernes ng hapon, may ibibigay ako sayo.
+Sabay na tayong pumunta sa tapat ng principal office sa Biyernes ng hapon, antayin kita sa tapat ng room.
+Aantayin kita sa sakayan ng jeep ngayong recess, 'wag ka mawawala ah.
+Hihintayin kita sa sakayan ng jeep ngayong recess, 'wag kang mawawala ah.
+Kita tayo sa sakayan ng jeep ngayong recess, sabay na tayong umuwi ah.
+Magkita na lang tayo sa sakayan ng jeep ngayong recess para sabay tayong pumasok.
+Puntahan mo 'ko sa sakayan ng jeep ngayong recess, may ibibigay ako sayo.
+Sabay na tayong pumunta sa sakayan ng jeep ngayong recess, antayin kita sa tapat ng room.
+Aantayin kita sa sakayan ng jeep ngayong lunch break, 'wag ka mawawala ah.
+Hihintayin kita sa sakayan ng jeep ngayong lunch break, 'wag kang mawawala ah.
+Kita tayo sa sakayan ng jeep ngayong lunch break, sabay na tayong umuwi ah.
+Magkita na lang tayo sa sakayan ng jeep ngayong lunch break para sabay tayong pumasok.
+Puntahan mo 'ko sa sakayan ng jeep ngayong lunch break, may ibibigay ako sayo.
+Sabay na tayong pumunta sa sakayan ng jeep ngayong lunch break, antayin kita sa tapat ng room.
+Aantayin kita sa sakayan ng jeep mamayang uwian, 'wag ka mawawala ah.
+Hihintayin kita sa sakayan ng jeep mamayang uwian, 'wag kang mawawala ah.
+Kita tayo sa sakayan ng jeep mamayang uwian, sabay na tayong umuwi ah.
+Magkita na lang tayo sa sakayan ng jeep mamayang uwian para sabay tayong pumasok.
+Puntahan mo 'ko sa sakayan ng jeep mamayang uwian, may ibibigay ako sayo.
+Sabay na tayong pumunta sa sakayan ng jeep mamayang uwian, antayin kita sa tapat ng room.
+Aantayin kita sa sakayan ng jeep mamayang hapon, 'wag ka mawawala ah.
+Hihintayin kita sa sakayan ng jeep mamayang hapon, 'wag kang mawawala ah.
+Kita tayo sa sakayan ng jeep mamayang hapon, sabay na tayong umuwi ah.
+Magkita na lang tayo sa sakayan ng jeep mamayang hapon para sabay tayong pumasok.
+Puntahan mo 'ko sa sakayan ng jeep mamayang hapon, may ibibigay ako sayo.
+Sabay na tayong pumunta sa sakayan ng jeep mamayang hapon, antayin kita sa tapat ng room.
+Aantayin kita sa sakayan ng jeep mamayang dismissal, 'wag ka mawawala ah.
+Hihintayin kita sa sakayan ng jeep mamayang dismissal, 'wag kang mawawala ah.
+Kita tayo sa sakayan ng jeep mamayang dismissal, sabay na tayong umuwi ah.
+Magkita na lang tayo sa sakayan ng jeep mamayang dismissal para sabay tayong pumasok.
+Puntahan mo 'ko sa sakayan ng jeep mamayang dismissal, may ibibigay ako sayo.
+Sabay na tayong pumunta sa sakayan ng jeep mamayang dismissal, antayin kita sa tapat ng room.
+Aantayin kita sa sakayan ng jeep bukas ng umaga, 'wag ka mawawala ah.
+Hihintayin kita sa sakayan ng jeep bukas ng umaga, 'wag kang mawawala ah.
+Kita tayo sa sakayan ng jeep bukas ng umaga, sabay na tayong umuwi ah.
+Magkita na lang tayo sa sakayan ng jeep bukas ng umaga para sabay tayong pumasok.
+Puntahan mo 'ko sa sakayan ng jeep bukas ng umaga, may ibibigay ako sayo.
+Sabay na tayong pumunta sa sakayan ng jeep bukas ng umaga, antayin kita sa tapat ng room.
+Aantayin kita sa sakayan ng jeep sa Lunes ng umaga, 'wag ka mawawala ah.
+Hihintayin kita sa sakayan ng jeep sa Lunes ng umaga, 'wag kang mawawala ah.
+Kita tayo sa sakayan ng jeep sa Lunes ng umaga, sabay na tayong umuwi ah.
+Magkita na lang tayo sa sakayan ng jeep sa Lunes ng umaga para sabay tayong pumasok.
+Puntahan mo 'ko sa sakayan ng jeep sa Lunes ng umaga, may ibibigay ako sayo.
+Sabay na tayong pumunta sa sakayan ng jeep sa Lunes ng umaga, antayin kita sa tapat ng room.
+Aantayin kita sa sakayan ng jeep sa Biyernes ng hapon, 'wag ka mawawala ah.
+Hihintayin kita sa sakayan ng jeep sa Biyernes ng hapon, 'wag kang mawawala ah.
+Kita tayo sa sakayan ng jeep sa Biyernes ng hapon, sabay na tayong umuwi ah.
+Magkita na lang tayo sa sakayan ng jeep sa Biyernes ng hapon para sabay tayong pumasok.
+Puntahan mo 'ko sa sakayan ng jeep sa Biyernes ng hapon, may ibibigay ako sayo.
+Sabay na tayong pumunta sa sakayan ng jeep sa Biyernes ng hapon, antayin kita sa tapat ng room.
+Aantayin kita sa may terminal ngayong recess, 'wag ka mawawala ah.
+Hihintayin kita sa may terminal ngayong recess, 'wag kang mawawala ah.
+Kita tayo sa may terminal ngayong recess, sabay na tayong umuwi ah.
+Magkita na lang tayo sa may terminal ngayong recess para sabay tayong pumasok.
+Puntahan mo 'ko sa may terminal ngayong recess, may ibibigay ako sayo.
+Sabay na tayong pumunta sa may terminal ngayong recess, antayin kita sa tapat ng room.
+Aantayin kita sa may terminal ngayong lunch break, 'wag ka mawawala ah.
+Hihintayin kita sa may terminal ngayong lunch break, 'wag kang mawawala ah.
+Kita tayo sa may terminal ngayong lunch break, sabay na tayong umuwi ah.
+Magkita na lang tayo sa may terminal ngayong lunch break para sabay tayong pumasok.
+Puntahan mo 'ko sa may terminal ngayong lunch break, may ibibigay ako sayo.
+Sabay na tayong pumunta sa may terminal ngayong lunch break, antayin kita sa tapat ng room.
+Aantayin kita sa may terminal mamayang uwian, 'wag ka mawawala ah.
+Hihintayin kita sa may terminal mamayang uwian, 'wag kang mawawala ah.
+Kita tayo sa may terminal mamayang uwian, sabay na tayong umuwi ah.
+Magkita na lang tayo sa may terminal mamayang uwian para sabay tayong pumasok.
+Puntahan mo 'ko sa may terminal mamayang uwian, may ibibigay ako sayo.
+Sabay na tayong pumunta sa may terminal mamayang uwian, antayin kita sa tapat ng room.
+Aantayin kita sa may terminal mamayang hapon, 'wag ka mawawala ah.
+Hihintayin kita sa may terminal mamayang hapon, 'wag kang mawawala ah.
+Kita tayo sa may terminal mamayang hapon, sabay na tayong umuwi ah.
+Magkita na lang tayo sa may terminal mamayang hapon para sabay tayong pumasok.
+Puntahan mo 'ko sa may terminal mamayang hapon, may ibibigay ako sayo.
+Sabay na tayong pumunta sa may terminal mamayang hapon, antayin kita sa tapat ng room.
+Aantayin kita sa may terminal mamayang dismissal, 'wag ka mawawala ah.
+Hihintayin kita sa may terminal mamayang dismissal, 'wag kang mawawala ah.
+Kita tayo sa may terminal mamayang dismissal, sabay na tayong umuwi ah.
+Magkita na lang tayo sa may terminal mamayang dismissal para sabay tayong pumasok.
+Puntahan mo 'ko sa may terminal mamayang dismissal, may ibibigay ako sayo.
+Sabay na tayong pumunta sa may terminal mamayang dismissal, antayin kita sa tapat ng room.
+Aantayin kita sa may terminal bukas ng umaga, 'wag ka mawawala ah.
+Hihintayin kita sa may terminal bukas ng umaga, 'wag kang mawawala ah.
+Kita tayo sa may terminal bukas ng umaga, sabay na tayong umuwi ah.
+Magkita na lang tayo sa may terminal bukas ng umaga para sabay tayong pumasok.
+Puntahan mo 'ko sa may terminal bukas ng umaga, may ibibigay ako sayo.
+Sabay na tayong pumunta sa may terminal bukas ng umaga, antayin kita sa tapat ng room.
+Aantayin kita sa may terminal sa Lunes ng umaga, 'wag ka mawawala ah.
+Hihintayin kita sa may terminal sa Lunes ng umaga, 'wag kang mawawala ah.
+Kita tayo sa may terminal sa Lunes ng umaga, sabay na tayong umuwi ah.
+Magkita na lang tayo sa may terminal sa Lunes ng umaga para sabay tayong pumasok.
+Puntahan mo 'ko sa may terminal sa Lunes ng umaga, may ibibigay ako sayo.
+Sabay na tayong pumunta sa may terminal sa Lunes ng umaga, antayin kita sa tapat ng room.
+Aantayin kita sa may terminal sa Biyernes ng hapon, 'wag ka mawawala ah.
+Hihintayin kita sa may terminal sa Biyernes ng hapon, 'wag kang mawawala ah.
+Kita tayo sa may terminal sa Biyernes ng hapon, sabay na tayong umuwi ah.
+Magkita na lang tayo sa may terminal sa Biyernes ng hapon para sabay tayong pumasok.
+Puntahan mo 'ko sa may terminal sa Biyernes ng hapon, may ibibigay ako sayo.
+Sabay na tayong pumunta sa may terminal sa Biyernes ng hapon, antayin kita sa tapat ng room.
+Aantayin kita sa computer lab ngayong recess, 'wag ka mawawala ah.
+Hihintayin kita sa computer lab ngayong recess, 'wag kang mawawala ah.
+Kita tayo sa computer lab ngayong recess, sabay na tayong umuwi ah.
+Magkita na lang tayo sa computer lab ngayong recess para sabay tayong pumasok.
+Puntahan mo 'ko sa computer lab ngayong recess, may ibibigay ako sayo.
+Sabay na tayong pumunta sa computer lab ngayong recess, antayin kita sa tapat ng room.
+Aantayin kita sa computer lab ngayong lunch break, 'wag ka mawawala ah.
+Hihintayin kita sa computer lab ngayong lunch break, 'wag kang mawawala ah.
+Kita tayo sa computer lab ngayong lunch break, sabay na tayong umuwi ah.
+Magkita na lang tayo sa computer lab ngayong lunch break para sabay tayong pumasok.
+Puntahan mo 'ko sa computer lab ngayong lunch break, may ibibigay ako sayo.
+Sabay na tayong pumunta sa computer lab ngayong lunch break, antayin kita sa tapat ng room.
+Aantayin kita sa computer lab mamayang uwian, 'wag ka mawawala ah.
+Hihintayin kita sa computer lab mamayang uwian, 'wag kang mawawala ah.
+Kita tayo sa computer lab mamayang uwian, sabay na tayong umuwi ah.
+Magkita na lang tayo sa computer lab mamayang uwian para sabay tayong pumasok.
+Puntahan mo 'ko sa computer lab mamayang uwian, may ibibigay ako sayo.
+Sabay na tayong pumunta sa computer lab mamayang uwian, antayin kita sa tapat ng room.
+Aantayin kita sa computer lab mamayang hapon, 'wag ka mawawala ah.
+Hihintayin kita sa computer lab mamayang hapon, 'wag kang mawawala ah.
+Kita tayo sa computer lab mamayang hapon, sabay na tayong umuwi ah.
+Magkita na lang tayo sa computer lab mamayang hapon para sabay tayong pumasok.
+Puntahan mo 'ko sa computer lab mamayang hapon, may ibibigay ako sayo.
+Sabay na tayong pumunta sa computer lab mamayang hapon, antayin kita sa tapat ng room.
+Aantayin kita sa computer lab mamayang dismissal, 'wag ka mawawala ah.
+Hihintayin kita sa computer lab mamayang dismissal, 'wag kang mawawala ah.
+Kita tayo sa computer lab mamayang dismissal, sabay na tayong umuwi ah.
+Magkita na lang tayo sa computer lab mamayang dismissal para sabay tayong pumasok.
+Puntahan mo 'ko sa computer lab mamayang dismissal, may ibibigay ako sayo.
+Sabay na tayong pumunta sa computer lab mamayang dismissal, antayin kita sa tapat ng room.
+Aantayin kita sa computer lab bukas ng umaga, 'wag ka mawawala ah.
+Hihintayin kita sa computer lab bukas ng umaga, 'wag kang mawawala ah.
+Kita tayo sa computer lab bukas ng umaga, sabay na tayong umuwi ah.
+Magkita na lang tayo sa computer lab bukas ng umaga para sabay tayong pumasok.
+Puntahan mo 'ko sa computer lab bukas ng umaga, may ibibigay ako sayo.
+Sabay na tayong pumunta sa computer lab bukas ng umaga, antayin kita sa tapat ng room.
+Aantayin kita sa computer lab sa Lunes ng umaga, 'wag ka mawawala ah.
+Hihintayin kita sa computer lab sa Lunes ng umaga, 'wag kang mawawala ah.
+Kita tayo sa computer lab sa Lunes ng umaga, sabay na tayong umuwi ah.
+Magkita na lang tayo sa computer lab sa Lunes ng umaga para sabay tayong pumasok.
+Puntahan mo 'ko sa computer lab sa Lunes ng umaga, may ibibigay ako sayo.
+Sabay na tayong pumunta sa computer lab sa Lunes ng umaga, antayin kita sa tapat ng room.
+Aantayin kita sa computer lab sa Biyernes ng hapon, 'wag ka mawawala ah.
+Hihintayin kita sa computer lab sa Biyernes ng hapon, 'wag kang mawawala ah.
+Kita tayo sa computer lab sa Biyernes ng hapon, sabay na tayong umuwi ah.
+Magkita na lang tayo sa computer lab sa Biyernes ng hapon para sabay tayong pumasok.
+Puntahan mo 'ko sa computer lab sa Biyernes ng hapon, may ibibigay ako sayo.
+Sabay na tayong pumunta sa computer lab sa Biyernes ng hapon, antayin kita sa tapat ng room.
+Aantayin kita sa may locker area ngayong recess, 'wag ka mawawala ah.
+Hihintayin kita sa may locker area ngayong recess, 'wag kang mawawala ah.
+Kita tayo sa may locker area ngayong recess, sabay na tayong umuwi ah.
+Magkita na lang tayo sa may locker area ngayong recess para sabay tayong pumasok.
+Puntahan mo 'ko sa may locker area ngayong recess, may ibibigay ako sayo.
+Sabay na tayong pumunta sa may locker area ngayong recess, antayin kita sa tapat ng room.
+Aantayin kita sa may locker area ngayong lunch break, 'wag ka mawawala ah.
+Hihintayin kita sa may locker area ngayong lunch break, 'wag kang mawawala ah.
+Kita tayo sa may locker area ngayong lunch break, sabay na tayong umuwi ah.
+Magkita na lang tayo sa may locker area ngayong lunch break para sabay tayong pumasok.
+Puntahan mo 'ko sa may locker area ngayong lunch break, may ibibigay ako sayo.
+Sabay na tayong pumunta sa may locker area ngayong lunch break, antayin kita sa tapat ng room.
+Aantayin kita sa may locker area mamayang uwian, 'wag ka mawawala ah.
+Hihintayin kita sa may locker area mamayang uwian, 'wag kang mawawala ah.
+Kita tayo sa may locker area mamayang uwian, sabay na tayong umuwi ah.
+Magkita na lang tayo sa may locker area mamayang uwian para sabay tayong pumasok.
+Puntahan mo 'ko sa may locker area mamayang uwian, may ibibigay ako sayo.
+Sabay na tayong pumunta sa may locker area mamayang uwian, antayin kita sa tapat ng room.
+Aantayin kita sa may locker area mamayang hapon, 'wag ka mawawala ah.
+Hihintayin kita sa may locker area mamayang hapon, 'wag kang mawawala ah.
+Kita tayo sa may locker area mamayang hapon, sabay na tayong umuwi ah.
+Magkita na lang tayo sa may locker area mamayang hapon para sabay tayong pumasok.
+Puntahan mo 'ko sa may locker area mamayang hapon, may ibibigay ako sayo.
+Sabay na tayong pumunta sa may locker area mamayang hapon, antayin kita sa tapat ng room.
+Aantayin kita sa may locker area mamayang dismissal, 'wag ka mawawala ah.
+Hihintayin kita sa may locker area mamayang dismissal, 'wag kang mawawala ah.
+Kita tayo sa may locker area mamayang dismissal, sabay na tayong umuwi ah.
+Magkita na lang tayo sa may locker area mamayang dismissal para sabay tayong pumasok.
+Puntahan mo 'ko sa may locker area mamayang dismissal, may ibibigay ako sayo.
+Sabay na tayong pumunta sa may locker area mamayang dismissal, antayin kita sa tapat ng room.
+Aantayin kita sa may locker area bukas ng umaga, 'wag ka mawawala ah.
+Hihintayin kita sa may locker area bukas ng umaga, 'wag kang mawawala ah.
+Kita tayo sa may locker area bukas ng umaga, sabay na tayong umuwi ah.
+Magkita na lang tayo sa may locker area bukas ng umaga para sabay tayong pumasok.
+Puntahan mo 'ko sa may locker area bukas ng umaga, may ibibigay ako sayo.
+Sabay na tayong pumunta sa may locker area bukas ng umaga, antayin kita sa tapat ng room.
+Aantayin kita sa may locker area sa Lunes ng umaga, 'wag ka mawawala ah.
+Hihintayin kita sa may locker area sa Lunes ng umaga, 'wag kang mawawala ah.
+Kita tayo sa may locker area sa Lunes ng umaga, sabay na tayong umuwi ah.
+Magkita na lang tayo sa may locker area sa Lunes ng umaga para sabay tayong pumasok.
+Puntahan mo 'ko sa may locker area sa Lunes ng umaga, may ibibigay ako sayo.
+Sabay na tayong pumunta sa may locker area sa Lunes ng umaga, antayin kita sa tapat ng room.
+Aantayin kita sa may locker area sa Biyernes ng hapon, 'wag ka mawawala ah.
+Hihintayin kita sa may locker area sa Biyernes ng hapon, 'wag kang mawawala ah.
+Kita tayo sa may locker area sa Biyernes ng hapon, sabay na tayong umuwi ah.
+Magkita na lang tayo sa may locker area sa Biyernes ng hapon para sabay tayong pumasok.
+Puntahan mo 'ko sa may locker area sa Biyernes ng hapon, may ibibigay ako sayo.
+Sabay na tayong pumunta sa may locker area sa Biyernes ng hapon, antayin kita sa tapat ng room.
+Aantayin kita sa likod ng building ngayong recess, 'wag ka mawawala ah.
+Hihintayin kita sa likod ng building ngayong recess, 'wag kang mawawala ah.
+Kita tayo sa likod ng building ngayong recess, sabay na tayong umuwi ah.
+Magkita na lang tayo sa likod ng building ngayong recess para sabay tayong pumasok.
+Puntahan mo 'ko sa likod ng building ngayong recess, may ibibigay ako sayo.
+Sabay na tayong pumunta sa likod ng building ngayong recess, antayin kita sa tapat ng room.
+Aantayin kita sa likod ng building ngayong lunch break, 'wag ka mawawala ah.
+Hihintayin kita sa likod ng building ngayong lunch break, 'wag kang mawawala ah.
+Kita tayo sa likod ng building ngayong lunch break, sabay na tayong umuwi ah.
+Magkita na lang tayo sa likod ng building ngayong lunch break para sabay tayong pumasok.
+Puntahan mo 'ko sa likod ng building ngayong lunch break, may ibibigay ako sayo.
+Sabay na tayong pumunta sa likod ng building ngayong lunch break, antayin kita sa tapat ng room.
+Aantayin kita sa likod ng building mamayang uwian, 'wag ka mawawala ah.
+Hihintayin kita sa likod ng building mamayang uwian, 'wag kang mawawala ah.
+Kita tayo sa likod ng building mamayang uwian, sabay na tayong umuwi ah.
+Magkita na lang tayo sa likod ng building mamayang uwian para sabay tayong pumasok.
+Puntahan mo 'ko sa likod ng building mamayang uwian, may ibibigay ako sayo.
+Sabay na tayong pumunta sa likod ng building mamayang uwian, antayin kita sa tapat ng room.
+Aantayin kita sa likod ng building mamayang hapon, 'wag ka mawawala ah.
+Hihintayin kita sa likod ng building mamayang hapon, 'wag kang mawawala ah.
+Kita tayo sa likod ng building mamayang hapon, sabay na tayong umuwi ah.
+Magkita na lang tayo sa likod ng building mamayang hapon para sabay tayong pumasok.
+Puntahan mo 'ko sa likod ng building mamayang hapon, may ibibigay ako sayo.
+Sabay na tayong pumunta sa likod ng building mamayang hapon, antayin kita sa tapat ng room.
+Aantayin kita sa likod ng building mamayang dismissal, 'wag ka mawawala ah.
+Hihintayin kita sa likod ng building mamayang dismissal, 'wag kang mawawala ah.
+Kita tayo sa likod ng building mamayang dismissal, sabay na tayong umuwi ah.
+Magkita na lang tayo sa likod ng building mamayang dismissal para sabay tayong pumasok.
+Puntahan mo 'ko sa likod ng building mamayang dismissal, may ibibigay ako sayo.
+Sabay na tayong pumunta sa likod ng building mamayang dismissal, antayin kita sa tapat ng room.
+Aantayin kita sa likod ng building bukas ng umaga, 'wag ka mawawala ah.
+Hihintayin kita sa likod ng building bukas ng umaga, 'wag kang mawawala ah.
+Kita tayo sa likod ng building bukas ng umaga, sabay na tayong umuwi ah.
+Magkita na lang tayo sa likod ng building bukas ng umaga para sabay tayong pumasok.
+Puntahan mo 'ko sa likod ng building bukas ng umaga, may ibibigay ako sayo.
+Sabay na tayong pumunta sa likod ng building bukas ng umaga, antayin kita sa tapat ng room.
+Aantayin kita sa likod ng building sa Lunes ng umaga, 'wag ka mawawala ah.
+Hihintayin kita sa likod ng building sa Lunes ng umaga, 'wag kang mawawala ah.
+Kita tayo sa likod ng building sa Lunes ng umaga, sabay na tayong umuwi ah.
+Magkita na lang tayo sa likod ng building sa Lunes ng umaga para sabay tayong pumasok.
+Puntahan mo 'ko sa likod ng building sa Lunes ng umaga, may ibibigay ako sayo.
+Sabay na tayong pumunta sa likod ng building sa Lunes ng umaga, antayin kita sa tapat ng room.
+Aantayin kita sa likod ng building sa Biyernes ng hapon, 'wag ka mawawala ah.
+Hihintayin kita sa likod ng building sa Biyernes ng hapon, 'wag kang mawawala ah.
+Kita tayo sa likod ng building sa Biyernes ng hapon, sabay na tayong umuwi ah.
+Magkita na lang tayo sa likod ng building sa Biyernes ng hapon para sabay tayong pumasok.
+Puntahan mo 'ko sa likod ng building sa Biyernes ng hapon, may ibibigay ako sayo.
+Sabay na tayong pumunta sa likod ng building sa Biyernes ng hapon, antayin kita sa tapat ng room.
+Aantayin kita sa may bleachers ngayong recess, 'wag ka mawawala ah.
+Hihintayin kita sa may bleachers ngayong recess, 'wag kang mawawala ah.
+Kita tayo sa may bleachers ngayong recess, sabay na tayong umuwi ah.
+Magkita na lang tayo sa may bleachers ngayong recess para sabay tayong pumasok.
+Puntahan mo 'ko sa may bleachers ngayong recess, may ibibigay ako sayo.
+Sabay na tayong pumunta sa may bleachers ngayong recess, antayin kita sa tapat ng room.
+Aantayin kita sa may bleachers ngayong lunch break, 'wag ka mawawala ah.
+Hihintayin kita sa may bleachers ngayong lunch break, 'wag kang mawawala ah.
+Kita tayo sa may bleachers ngayong lunch break, sabay na tayong umuwi ah.
+Magkita na lang tayo sa may bleachers ngayong lunch break para sabay tayong pumasok.
+Puntahan mo 'ko sa may bleachers ngayong lunch break, may ibibigay ako sayo.
+Sabay na tayong pumunta sa may bleachers ngayong lunch break, antayin kita sa tapat ng room.
+Aantayin kita sa may bleachers mamayang uwian, 'wag ka mawawala ah.
+Hihintayin kita sa may bleachers mamayang uwian, 'wag kang mawawala ah.
+Kita tayo sa may bleachers mamayang uwian, sabay na tayong umuwi ah.
+Magkita na lang tayo sa may bleachers mamayang uwian para sabay tayong pumasok.
+Puntahan mo 'ko sa may bleachers mamayang uwian, may ibibigay ako sayo.
+Sabay na tayong pumunta sa may bleachers mamayang uwian, antayin kita sa tapat ng room.
+Aantayin kita sa may bleachers mamayang hapon, 'wag ka mawawala ah.
+Hihintayin kita sa may bleachers mamayang hapon, 'wag kang mawawala ah.
+Kita tayo sa may bleachers mamayang hapon, sabay na tayong umuwi ah.
+Magkita na lang tayo sa may bleachers mamayang hapon para sabay tayong pumasok.
+Puntahan mo 'ko sa may bleachers mamayang hapon, may ibibigay ako sayo.
+Sabay na tayong pumunta sa may bleachers mamayang hapon, antayin kita sa tapat ng room.
+Aantayin kita sa may bleachers mamayang dismissal, 'wag ka mawawala ah.
+Hihintayin kita sa may bleachers mamayang dismissal, 'wag kang mawawala ah.
+Kita tayo sa may bleachers mamayang dismissal, sabay na tayong umuwi ah.
+Magkita na lang tayo sa may bleachers mamayang dismissal para sabay tayong pumasok.
+Puntahan mo 'ko sa may bleachers mamayang dismissal, may ibibigay ako sayo.
+Sabay na tayong pumunta sa may bleachers mamayang dismissal, antayin kita sa tapat ng room.
+Aantayin kita sa may bleachers bukas ng umaga, 'wag ka mawawala ah.
+Hihintayin kita sa may bleachers bukas ng umaga, 'wag kang mawawala ah.
+Kita tayo sa may bleachers bukas ng umaga, sabay na tayong umuwi ah.
+Magkita na lang tayo sa may bleachers bukas ng umaga para sabay tayong pumasok.
+Puntahan mo 'ko sa may bleachers bukas ng umaga, may ibibigay ako sayo.
+Sabay na tayong pumunta sa may bleachers bukas ng umaga, antayin kita sa tapat ng room.
+Aantayin kita sa may bleachers sa Lunes ng umaga, 'wag ka mawawala ah.
+Hihintayin kita sa may bleachers sa Lunes ng umaga, 'wag kang mawawala ah.
+Kita tayo sa may bleachers sa Lunes ng umaga, sabay na tayong umuwi ah.
+Magkita na lang tayo sa may bleachers sa Lunes ng umaga para sabay tayong pumasok.
+Puntahan mo 'ko sa may bleachers sa Lunes ng umaga, may ibibigay ako sayo.
+Sabay na tayong pumunta sa may bleachers sa Lunes ng umaga, antayin kita sa tapat ng room.
+Aantayin kita sa may bleachers sa Biyernes ng hapon, 'wag ka mawawala ah.
+Hihintayin kita sa may bleachers sa Biyernes ng hapon, 'wag kang mawawala ah.
+Kita tayo sa may bleachers sa Biyernes ng hapon, sabay na tayong umuwi ah.
+Magkita na lang tayo sa may bleachers sa Biyernes ng hapon para sabay tayong pumasok.
+Puntahan mo 'ko sa may bleachers sa Biyernes ng hapon, may ibibigay ako sayo.
+Sabay na tayong pumunta sa may bleachers sa Biyernes ng hapon, antayin kita sa tapat ng room.
+Aantayin kita sa tindahan sa labas ngayong recess, 'wag ka mawawala ah.
+Hihintayin kita sa tindahan sa labas ngayong recess, 'wag kang mawawala ah.
+Kita tayo sa tindahan sa labas ngayong recess, sabay na tayong umuwi ah.
+Magkita na lang tayo sa tindahan sa labas ngayong recess para sabay tayong pumasok.
+Puntahan mo 'ko sa tindahan sa labas ngayong recess, may ibibigay ako sayo.
+Sabay na tayong pumunta sa tindahan sa labas ngayong recess, antayin kita sa tapat ng room.
+Aantayin kita sa tindahan sa labas ngayong lunch break, 'wag ka mawawala ah.
+Hihintayin kita sa tindahan sa labas ngayong lunch break, 'wag kang mawawala ah.
+Kita tayo sa tindahan sa labas ngayong lunch break, sabay na tayong umuwi ah.
+Magkita na lang tayo sa tindahan sa labas ngayong lunch break para sabay tayong pumasok.
+Puntahan mo 'ko sa tindahan sa labas ngayong lunch break, may ibibigay ako sayo.
+Sabay na tayong pumunta sa tindahan sa labas ngayong lunch break, antayin kita sa tapat ng room.
+Aantayin kita sa tindahan sa labas mamayang uwian, 'wag ka mawawala ah.
+Hihintayin kita sa tindahan sa labas mamayang uwian, 'wag kang mawawala ah.
+Kita tayo sa tindahan sa labas mamayang uwian, sabay na tayong umuwi ah.
+Magkita na lang tayo sa tindahan sa labas mamayang uwian para sabay tayong pumasok.
+Puntahan mo 'ko sa tindahan sa labas mamayang uwian, may ibibigay ako sayo.
+Sabay na tayong pumunta sa tindahan sa labas mamayang uwian, antayin kita sa tapat ng room.
+Aantayin kita sa tindahan sa labas mamayang hapon, 'wag ka mawawala ah.
+Hihintayin kita sa tindahan sa labas mamayang hapon, 'wag kang mawawala ah.
+Kita tayo sa tindahan sa labas mamayang hapon, sabay na tayong umuwi ah.
+Magkita na lang tayo sa tindahan sa labas mamayang hapon para sabay tayong pumasok.
+Puntahan mo 'ko sa tindahan sa labas mamayang hapon, may ibibigay ako sayo.
+Sabay na tayong pumunta sa tindahan sa labas mamayang hapon, antayin kita sa tapat ng room.
+Aantayin kita sa tindahan sa labas mamayang dismissal, 'wag ka mawawala ah.
+Hihintayin kita sa tindahan sa labas mamayang dismissal, 'wag kang mawawala ah.
+Kita tayo sa tindahan sa labas mamayang dismissal, sabay na tayong umuwi ah.
+Magkita na lang tayo sa tindahan sa labas mamayang dismissal para sabay tayong pumasok.
+Puntahan mo 'ko sa tindahan sa labas mamayang dismissal, may ibibigay ako sayo.
+Sabay na tayong pumunta sa tindahan sa labas mamayang dismissal, antayin kita sa tapat ng room.
+Aantayin kita sa tindahan sa labas bukas ng umaga, 'wag ka mawawala ah.
+Hihintayin kita sa tindahan sa labas bukas ng umaga, 'wag kang mawawala ah.
+Kita tayo sa tindahan sa labas bukas ng umaga, sabay na tayong umuwi ah.
+Magkita na lang tayo sa tindahan sa labas bukas ng umaga para sabay tayong pumasok.
+Puntahan mo 'ko sa tindahan sa labas bukas ng umaga, may ibibigay ako sayo.
+Sabay na tayong pumunta sa tindahan sa labas bukas ng umaga, antayin kita sa tapat ng room.
+Aantayin kita sa tindahan sa labas sa Lunes ng umaga, 'wag ka mawawala ah.
+Hihintayin kita sa tindahan sa labas sa Lunes ng umaga, 'wag kang mawawala ah.
+Kita tayo sa tindahan sa labas sa Lunes ng umaga, sabay na tayong umuwi ah.
+Magkita na lang tayo sa tindahan sa labas sa Lunes ng umaga para sabay tayong pumasok.
+Puntahan mo 'ko sa tindahan sa labas sa Lunes ng umaga, may ibibigay ako sayo.
+Sabay na tayong pumunta sa tindahan sa labas sa Lunes ng umaga, antayin kita sa tapat ng room.
+Aantayin kita sa tindahan sa labas sa Biyernes ng hapon, 'wag ka mawawala ah.
+Hihintayin kita sa tindahan sa labas sa Biyernes ng hapon, 'wag kang mawawala ah.
+Kita tayo sa tindahan sa labas sa Biyernes ng hapon, sabay na tayong umuwi ah.
+Magkita na lang tayo sa tindahan sa labas sa Biyernes ng hapon para sabay tayong pumasok.
+Puntahan mo 'ko sa tindahan sa labas sa Biyernes ng hapon, may ibibigay ako sayo.
+Sabay na tayong pumunta sa tindahan sa labas sa Biyernes ng hapon, antayin kita sa tapat ng room.
+Sabay na tayong mag-aral sa guidance office ngayong recess, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa guidance office ngayong lunch break, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa guidance office mamayang uwian, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa guidance office mamayang hapon, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa guidance office bukas ng umaga, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa guidance ngayong recess, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa guidance ngayong lunch break, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa guidance mamayang uwian, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa guidance mamayang hapon, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa guidance bukas ng umaga, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa canteen ngayong recess, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa canteen ngayong lunch break, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa canteen mamayang uwian, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa canteen mamayang hapon, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa canteen bukas ng umaga, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa library ngayong recess, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa library ngayong lunch break, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa library mamayang uwian, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa library mamayang hapon, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa library bukas ng umaga, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa covered court ngayong recess, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa covered court ngayong lunch break, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa covered court mamayang uwian, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa covered court mamayang hapon, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa covered court bukas ng umaga, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa labas ng gate ngayong recess, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa labas ng gate ngayong lunch break, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa labas ng gate mamayang uwian, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa labas ng gate mamayang hapon, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa labas ng gate bukas ng umaga, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa clinic ngayong recess, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa clinic ngayong lunch break, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa clinic mamayang uwian, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa clinic mamayang hapon, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa clinic bukas ng umaga, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa hallway ngayong recess, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa hallway ngayong lunch break, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa hallway mamayang uwian, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa hallway mamayang hapon, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa hallway bukas ng umaga, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa tapat ng principal office ngayong recess, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa tapat ng principal office ngayong lunch break, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa tapat ng principal office mamayang uwian, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa tapat ng principal office mamayang hapon, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa tapat ng principal office bukas ng umaga, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa sakayan ng jeep ngayong recess, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa sakayan ng jeep ngayong lunch break, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa sakayan ng jeep mamayang uwian, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa sakayan ng jeep mamayang hapon, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa sakayan ng jeep bukas ng umaga, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa may terminal ngayong recess, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa may terminal ngayong lunch break, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa may terminal mamayang uwian, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa may terminal mamayang hapon, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa may terminal bukas ng umaga, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa computer lab ngayong recess, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa computer lab ngayong lunch break, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa computer lab mamayang uwian, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa computer lab mamayang hapon, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa computer lab bukas ng umaga, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa may locker area ngayong recess, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa may locker area ngayong lunch break, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa may locker area mamayang uwian, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa may locker area mamayang hapon, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa may locker area bukas ng umaga, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa likod ng building ngayong recess, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa likod ng building ngayong lunch break, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa likod ng building mamayang uwian, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa likod ng building mamayang hapon, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa likod ng building bukas ng umaga, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa may bleachers ngayong recess, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa may bleachers ngayong lunch break, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa may bleachers mamayang uwian, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa may bleachers mamayang hapon, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa may bleachers bukas ng umaga, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa tindahan sa labas ngayong recess, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa tindahan sa labas ngayong lunch break, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa tindahan sa labas mamayang uwian, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa tindahan sa labas mamayang hapon, dalhin mo reviewer mo ah.
+Sabay na tayong mag-aral sa tindahan sa labas bukas ng umaga, dalhin mo reviewer mo ah.
+May nakita akong nagkakagulo sa guidance office kaninang umaga.
+Naiwan ko pala yung gamit ko sa guidance office kaninang umaga eh.
+Naghintay ako sayo sa guidance office kaninang umaga, pero hindi ka dumating.
+May nakita akong nagkakagulo sa guidance office kaninang recess.
+Naiwan ko pala yung gamit ko sa guidance office kaninang recess eh.
+Naghintay ako sayo sa guidance office kaninang recess, pero hindi ka dumating.
+May nakita akong nagkakagulo sa guidance office kaninang lunch break.
+Naiwan ko pala yung gamit ko sa guidance office kaninang lunch break eh.
+Naghintay ako sayo sa guidance office kaninang lunch break, pero hindi ka dumating.
+May nakita akong nagkakagulo sa guidance office kahapon ng hapon.
+Naiwan ko pala yung gamit ko sa guidance office kahapon ng hapon eh.
+Naghintay ako sayo sa guidance office kahapon ng hapon, pero hindi ka dumating.
+May nakita akong nagkakagulo sa guidance office kaninang dismissal.
+Naiwan ko pala yung gamit ko sa guidance office kaninang dismissal eh.
+Naghintay ako sayo sa guidance office kaninang dismissal, pero hindi ka dumating.
+May nakita akong nagkakagulo sa guidance office kaninang break time.
+Naiwan ko pala yung gamit ko sa guidance office kaninang break time eh.
+Naghintay ako sayo sa guidance office kaninang break time, pero hindi ka dumating.
+May nakita akong nagkakagulo sa guidance kaninang umaga.
+Naiwan ko pala yung gamit ko sa guidance kaninang umaga eh.
+Naghintay ako sayo sa guidance kaninang umaga, pero hindi ka dumating.
+May nakita akong nagkakagulo sa guidance kaninang recess.
+Naiwan ko pala yung gamit ko sa guidance kaninang recess eh.
+Naghintay ako sayo sa guidance kaninang recess, pero hindi ka dumating.
+May nakita akong nagkakagulo sa guidance kaninang lunch break.
+Naiwan ko pala yung gamit ko sa guidance kaninang lunch break eh.
+Naghintay ako sayo sa guidance kaninang lunch break, pero hindi ka dumating.
+May nakita akong nagkakagulo sa guidance kahapon ng hapon.
+Naiwan ko pala yung gamit ko sa guidance kahapon ng hapon eh.
+Naghintay ako sayo sa guidance kahapon ng hapon, pero hindi ka dumating.
+May nakita akong nagkakagulo sa guidance kaninang dismissal.
+Naiwan ko pala yung gamit ko sa guidance kaninang dismissal eh.
+Naghintay ako sayo sa guidance kaninang dismissal, pero hindi ka dumating.
+May nakita akong nagkakagulo sa guidance kaninang break time.
+Naiwan ko pala yung gamit ko sa guidance kaninang break time eh.
+Naghintay ako sayo sa guidance kaninang break time, pero hindi ka dumating.
+May nakita akong nagkakagulo sa canteen kaninang umaga.
+Naiwan ko pala yung gamit ko sa canteen kaninang umaga eh.
+Naghintay ako sayo sa canteen kaninang umaga, pero hindi ka dumating.
+May nakita akong nagkakagulo sa canteen kaninang recess.
+Naiwan ko pala yung gamit ko sa canteen kaninang recess eh.
+Naghintay ako sayo sa canteen kaninang recess, pero hindi ka dumating.
+May nakita akong nagkakagulo sa canteen kaninang lunch break.
+Naiwan ko pala yung gamit ko sa canteen kaninang lunch break eh.
+Naghintay ako sayo sa canteen kaninang lunch break, pero hindi ka dumating.
+May nakita akong nagkakagulo sa canteen kahapon ng hapon.
+Naiwan ko pala yung gamit ko sa canteen kahapon ng hapon eh.
+Naghintay ako sayo sa canteen kahapon ng hapon, pero hindi ka dumating.
+May nakita akong nagkakagulo sa canteen kaninang dismissal.
+Naiwan ko pala yung gamit ko sa canteen kaninang dismissal eh.
+Naghintay ako sayo sa canteen kaninang dismissal, pero hindi ka dumating.
+May nakita akong nagkakagulo sa canteen kaninang break time.
+Naiwan ko pala yung gamit ko sa canteen kaninang break time eh.
+Naghintay ako sayo sa canteen kaninang break time, pero hindi ka dumating.
+May nakita akong nagkakagulo sa library kaninang umaga.
+Naiwan ko pala yung gamit ko sa library kaninang umaga eh.
+Naghintay ako sayo sa library kaninang umaga, pero hindi ka dumating.
+May nakita akong nagkakagulo sa library kaninang recess.
+Naiwan ko pala yung gamit ko sa library kaninang recess eh.
+Naghintay ako sayo sa library kaninang recess, pero hindi ka dumating.
+May nakita akong nagkakagulo sa library kaninang lunch break.
+Naiwan ko pala yung gamit ko sa library kaninang lunch break eh.
+Naghintay ako sayo sa library kaninang lunch break, pero hindi ka dumating.
+May nakita akong nagkakagulo sa library kahapon ng hapon.
+Naiwan ko pala yung gamit ko sa library kahapon ng hapon eh.
+Naghintay ako sayo sa library kahapon ng hapon, pero hindi ka dumating.
+May nakita akong nagkakagulo sa library kaninang dismissal.
+Naiwan ko pala yung gamit ko sa library kaninang dismissal eh.
+Naghintay ako sayo sa library kaninang dismissal, pero hindi ka dumating.
+May nakita akong nagkakagulo sa library kaninang break time.
+Naiwan ko pala yung gamit ko sa library kaninang break time eh.
+Naghintay ako sayo sa library kaninang break time, pero hindi ka dumating.
+May nakita akong nagkakagulo sa covered court kaninang umaga.
+Naiwan ko pala yung gamit ko sa covered court kaninang umaga eh.
+Naghintay ako sayo sa covered court kaninang umaga, pero hindi ka dumating.
+May nakita akong nagkakagulo sa covered court kaninang recess.
+Naiwan ko pala yung gamit ko sa covered court kaninang recess eh.
+Naghintay ako sayo sa covered court kaninang recess, pero hindi ka dumating.
+May nakita akong nagkakagulo sa covered court kaninang lunch break.
+Naiwan ko pala yung gamit ko sa covered court kaninang lunch break eh.
+Naghintay ako sayo sa covered court kaninang lunch break, pero hindi ka dumating.
+May nakita akong nagkakagulo sa covered court kahapon ng hapon.
+Naiwan ko pala yung gamit ko sa covered court kahapon ng hapon eh.
+Naghintay ako sayo sa covered court kahapon ng hapon, pero hindi ka dumating.
+May nakita akong nagkakagulo sa covered court kaninang dismissal.
+Naiwan ko pala yung gamit ko sa covered court kaninang dismissal eh.
+Naghintay ako sayo sa covered court kaninang dismissal, pero hindi ka dumating.
+May nakita akong nagkakagulo sa covered court kaninang break time.
+Naiwan ko pala yung gamit ko sa covered court kaninang break time eh.
+Naghintay ako sayo sa covered court kaninang break time, pero hindi ka dumating.
+May nakita akong nagkakagulo sa labas ng gate kaninang umaga.
+Naiwan ko pala yung gamit ko sa labas ng gate kaninang umaga eh.
+Naghintay ako sayo sa labas ng gate kaninang umaga, pero hindi ka dumating.
+May nakita akong nagkakagulo sa labas ng gate kaninang recess.
+Naiwan ko pala yung gamit ko sa labas ng gate kaninang recess eh.
+Naghintay ako sayo sa labas ng gate kaninang recess, pero hindi ka dumating.
+May nakita akong nagkakagulo sa labas ng gate kaninang lunch break.
+Naiwan ko pala yung gamit ko sa labas ng gate kaninang lunch break eh.
+Naghintay ako sayo sa labas ng gate kaninang lunch break, pero hindi ka dumating.
+May nakita akong nagkakagulo sa labas ng gate kahapon ng hapon.
+Naiwan ko pala yung gamit ko sa labas ng gate kahapon ng hapon eh.
+Naghintay ako sayo sa labas ng gate kahapon ng hapon, pero hindi ka dumating.
+May nakita akong nagkakagulo sa labas ng gate kaninang dismissal.
+Naiwan ko pala yung gamit ko sa labas ng gate kaninang dismissal eh.
+Naghintay ako sayo sa labas ng gate kaninang dismissal, pero hindi ka dumating.
+May nakita akong nagkakagulo sa labas ng gate kaninang break time.
+Naiwan ko pala yung gamit ko sa labas ng gate kaninang break time eh.
+Naghintay ako sayo sa labas ng gate kaninang break time, pero hindi ka dumating.
+May nakita akong nagkakagulo sa clinic kaninang umaga.
+Naiwan ko pala yung gamit ko sa clinic kaninang umaga eh.
+Naghintay ako sayo sa clinic kaninang umaga, pero hindi ka dumating.
+May nakita akong nagkakagulo sa clinic kaninang recess.
+Naiwan ko pala yung gamit ko sa clinic kaninang recess eh.
+Naghintay ako sayo sa clinic kaninang recess, pero hindi ka dumating.
+May nakita akong nagkakagulo sa clinic kaninang lunch break.
+Naiwan ko pala yung gamit ko sa clinic kaninang lunch break eh.
+Naghintay ako sayo sa clinic kaninang lunch break, pero hindi ka dumating.
+May nakita akong nagkakagulo sa clinic kahapon ng hapon.
+Naiwan ko pala yung gamit ko sa clinic kahapon ng hapon eh.
+Naghintay ako sayo sa clinic kahapon ng hapon, pero hindi ka dumating.
+May nakita akong nagkakagulo sa clinic kaninang dismissal.
+Naiwan ko pala yung gamit ko sa clinic kaninang dismissal eh.
+Naghintay ako sayo sa clinic kaninang dismissal, pero hindi ka dumating.
+May nakita akong nagkakagulo sa clinic kaninang break time.
+Naiwan ko pala yung gamit ko sa clinic kaninang break time eh.
+Naghintay ako sayo sa clinic kaninang break time, pero hindi ka dumating.
+May nakita akong nagkakagulo sa hallway kaninang umaga.
+Naiwan ko pala yung gamit ko sa hallway kaninang umaga eh.
+Naghintay ako sayo sa hallway kaninang umaga, pero hindi ka dumating.
+May nakita akong nagkakagulo sa hallway kaninang recess.
+Naiwan ko pala yung gamit ko sa hallway kaninang recess eh.
+Naghintay ako sayo sa hallway kaninang recess, pero hindi ka dumating.
+May nakita akong nagkakagulo sa hallway kaninang lunch break.
+Naiwan ko pala yung gamit ko sa hallway kaninang lunch break eh.
+Naghintay ako sayo sa hallway kaninang lunch break, pero hindi ka dumating.
+May nakita akong nagkakagulo sa hallway kahapon ng hapon.
+Naiwan ko pala yung gamit ko sa hallway kahapon ng hapon eh.
+Naghintay ako sayo sa hallway kahapon ng hapon, pero hindi ka dumating.
+May nakita akong nagkakagulo sa hallway kaninang dismissal.
+Naiwan ko pala yung gamit ko sa hallway kaninang dismissal eh.
+Naghintay ako sayo sa hallway kaninang dismissal, pero hindi ka dumating.
+May nakita akong nagkakagulo sa hallway kaninang break time.
+Naiwan ko pala yung gamit ko sa hallway kaninang break time eh.
+Naghintay ako sayo sa hallway kaninang break time, pero hindi ka dumating.
+May nakita akong nagkakagulo sa tapat ng principal office kaninang umaga.
+Naiwan ko pala yung gamit ko sa tapat ng principal office kaninang umaga eh.
+Naghintay ako sayo sa tapat ng principal office kaninang umaga, pero hindi ka dumating.
+May nakita akong nagkakagulo sa tapat ng principal office kaninang recess.
+Naiwan ko pala yung gamit ko sa tapat ng principal office kaninang recess eh.
+Naghintay ako sayo sa tapat ng principal office kaninang recess, pero hindi ka dumating.
+May nakita akong nagkakagulo sa tapat ng principal office kaninang lunch break.
+Naiwan ko pala yung gamit ko sa tapat ng principal office kaninang lunch break eh.
+Naghintay ako sayo sa tapat ng principal office kaninang lunch break, pero hindi ka dumating.
+May nakita akong nagkakagulo sa tapat ng principal office kahapon ng hapon.
+Naiwan ko pala yung gamit ko sa tapat ng principal office kahapon ng hapon eh.
+Naghintay ako sayo sa tapat ng principal office kahapon ng hapon, pero hindi ka dumating.
+May nakita akong nagkakagulo sa tapat ng principal office kaninang dismissal.
+Naiwan ko pala yung gamit ko sa tapat ng principal office kaninang dismissal eh.
+Naghintay ako sayo sa tapat ng principal office kaninang dismissal, pero hindi ka dumating.
+May nakita akong nagkakagulo sa tapat ng principal office kaninang break time.
+Naiwan ko pala yung gamit ko sa tapat ng principal office kaninang break time eh.
+Naghintay ako sayo sa tapat ng principal office kaninang break time, pero hindi ka dumating.
+May nakita akong nagkakagulo sa sakayan ng jeep kaninang umaga.
+Naiwan ko pala yung gamit ko sa sakayan ng jeep kaninang umaga eh.
+Naghintay ako sayo sa sakayan ng jeep kaninang umaga, pero hindi ka dumating.
+May nakita akong nagkakagulo sa sakayan ng jeep kaninang recess.
+Naiwan ko pala yung gamit ko sa sakayan ng jeep kaninang recess eh.
+Naghintay ako sayo sa sakayan ng jeep kaninang recess, pero hindi ka dumating.
+May nakita akong nagkakagulo sa sakayan ng jeep kaninang lunch break.
+Naiwan ko pala yung gamit ko sa sakayan ng jeep kaninang lunch break eh.
+Naghintay ako sayo sa sakayan ng jeep kaninang lunch break, pero hindi ka dumating.
+May nakita akong nagkakagulo sa sakayan ng jeep kahapon ng hapon.
+Naiwan ko pala yung gamit ko sa sakayan ng jeep kahapon ng hapon eh.
+Naghintay ako sayo sa sakayan ng jeep kahapon ng hapon, pero hindi ka dumating.
+May nakita akong nagkakagulo sa sakayan ng jeep kaninang dismissal.
+Naiwan ko pala yung gamit ko sa sakayan ng jeep kaninang dismissal eh.
+Naghintay ako sayo sa sakayan ng jeep kaninang dismissal, pero hindi ka dumating.
+May nakita akong nagkakagulo sa sakayan ng jeep kaninang break time.
+Naiwan ko pala yung gamit ko sa sakayan ng jeep kaninang break time eh.
+Naghintay ako sayo sa sakayan ng jeep kaninang break time, pero hindi ka dumating.
+May nakita akong nagkakagulo sa may terminal kaninang umaga.
+Naiwan ko pala yung gamit ko sa may terminal kaninang umaga eh.
+Naghintay ako sayo sa may terminal kaninang umaga, pero hindi ka dumating.
+May nakita akong nagkakagulo sa may terminal kaninang recess.
+Naiwan ko pala yung gamit ko sa may terminal kaninang recess eh.
+Naghintay ako sayo sa may terminal kaninang recess, pero hindi ka dumating.
+May nakita akong nagkakagulo sa may terminal kaninang lunch break.
+Naiwan ko pala yung gamit ko sa may terminal kaninang lunch break eh.
+Naghintay ako sayo sa may terminal kaninang lunch break, pero hindi ka dumating.
+May nakita akong nagkakagulo sa may terminal kahapon ng hapon.
+Naiwan ko pala yung gamit ko sa may terminal kahapon ng hapon eh.
+Naghintay ako sayo sa may terminal kahapon ng hapon, pero hindi ka dumating.
+May nakita akong nagkakagulo sa may terminal kaninang dismissal.
+Naiwan ko pala yung gamit ko sa may terminal kaninang dismissal eh.
+Naghintay ako sayo sa may terminal kaninang dismissal, pero hindi ka dumating.
+May nakita akong nagkakagulo sa may terminal kaninang break time.
+Naiwan ko pala yung gamit ko sa may terminal kaninang break time eh.
+Naghintay ako sayo sa may terminal kaninang break time, pero hindi ka dumating.
+May nakita akong nagkakagulo sa computer lab kaninang umaga.
+Naiwan ko pala yung gamit ko sa computer lab kaninang umaga eh.
+Naghintay ako sayo sa computer lab kaninang umaga, pero hindi ka dumating.
+May nakita akong nagkakagulo sa computer lab kaninang recess.
+Naiwan ko pala yung gamit ko sa computer lab kaninang recess eh.
+Naghintay ako sayo sa computer lab kaninang recess, pero hindi ka dumating.
+May nakita akong nagkakagulo sa computer lab kaninang lunch break.
+Naiwan ko pala yung gamit ko sa computer lab kaninang lunch break eh.
+Naghintay ako sayo sa computer lab kaninang lunch break, pero hindi ka dumating.
+May nakita akong nagkakagulo sa computer lab kahapon ng hapon.
+Naiwan ko pala yung gamit ko sa computer lab kahapon ng hapon eh.
+Naghintay ako sayo sa computer lab kahapon ng hapon, pero hindi ka dumating.
+May nakita akong nagkakagulo sa computer lab kaninang dismissal.
+Naiwan ko pala yung gamit ko sa computer lab kaninang dismissal eh.
+Naghintay ako sayo sa computer lab kaninang dismissal, pero hindi ka dumating.
+May nakita akong nagkakagulo sa computer lab kaninang break time.
+Naiwan ko pala yung gamit ko sa computer lab kaninang break time eh.
+Naghintay ako sayo sa computer lab kaninang break time, pero hindi ka dumating.
+May nakita akong nagkakagulo sa may locker area kaninang umaga.
+Naiwan ko pala yung gamit ko sa may locker area kaninang umaga eh.
+Naghintay ako sayo sa may locker area kaninang umaga, pero hindi ka dumating.
+May nakita akong nagkakagulo sa may locker area kaninang recess.
+Naiwan ko pala yung gamit ko sa may locker area kaninang recess eh.
+Naghintay ako sayo sa may locker area kaninang recess, pero hindi ka dumating.
+May nakita akong nagkakagulo sa may locker area kaninang lunch break.
+Naiwan ko pala yung gamit ko sa may locker area kaninang lunch break eh.
+Naghintay ako sayo sa may locker area kaninang lunch break, pero hindi ka dumating.
+May nakita akong nagkakagulo sa may locker area kahapon ng hapon.
+Naiwan ko pala yung gamit ko sa may locker area kahapon ng hapon eh.
+Naghintay ako sayo sa may locker area kahapon ng hapon, pero hindi ka dumating.
+May nakita akong nagkakagulo sa may locker area kaninang dismissal.
+Naiwan ko pala yung gamit ko sa may locker area kaninang dismissal eh.
+Naghintay ako sayo sa may locker area kaninang dismissal, pero hindi ka dumating.
+May nakita akong nagkakagulo sa may locker area kaninang break time.
+Naiwan ko pala yung gamit ko sa may locker area kaninang break time eh.
+Naghintay ako sayo sa may locker area kaninang break time, pero hindi ka dumating.
+May nakita akong nagkakagulo sa likod ng building kaninang umaga.
+Naiwan ko pala yung gamit ko sa likod ng building kaninang umaga eh.
+Naghintay ako sayo sa likod ng building kaninang umaga, pero hindi ka dumating.
+May nakita akong nagkakagulo sa likod ng building kaninang recess.
+Naiwan ko pala yung gamit ko sa likod ng building kaninang recess eh.
+Naghintay ako sayo sa likod ng building kaninang recess, pero hindi ka dumating.
+May nakita akong nagkakagulo sa likod ng building kaninang lunch break.
+Naiwan ko pala yung gamit ko sa likod ng building kaninang lunch break eh.
+Naghintay ako sayo sa likod ng building kaninang lunch break, pero hindi ka dumating.
+May nakita akong nagkakagulo sa likod ng building kahapon ng hapon.
+Naiwan ko pala yung gamit ko sa likod ng building kahapon ng hapon eh.
+Naghintay ako sayo sa likod ng building kahapon ng hapon, pero hindi ka dumating.
+May nakita akong nagkakagulo sa likod ng building kaninang dismissal.
+Naiwan ko pala yung gamit ko sa likod ng building kaninang dismissal eh.
+Naghintay ako sayo sa likod ng building kaninang dismissal, pero hindi ka dumating.
+May nakita akong nagkakagulo sa likod ng building kaninang break time.
+Naiwan ko pala yung gamit ko sa likod ng building kaninang break time eh.
+Naghintay ako sayo sa likod ng building kaninang break time, pero hindi ka dumating.
+May nakita akong nagkakagulo sa may bleachers kaninang umaga.
+Naiwan ko pala yung gamit ko sa may bleachers kaninang umaga eh.
+Naghintay ako sayo sa may bleachers kaninang umaga, pero hindi ka dumating.
+May nakita akong nagkakagulo sa may bleachers kaninang recess.
+Naiwan ko pala yung gamit ko sa may bleachers kaninang recess eh.
+Naghintay ako sayo sa may bleachers kaninang recess, pero hindi ka dumating.
+May nakita akong nagkakagulo sa may bleachers kaninang lunch break.
+Naiwan ko pala yung gamit ko sa may bleachers kaninang lunch break eh.
+Naghintay ako sayo sa may bleachers kaninang lunch break, pero hindi ka dumating.
+May nakita akong nagkakagulo sa may bleachers kahapon ng hapon.
+Naiwan ko pala yung gamit ko sa may bleachers kahapon ng hapon eh.
+Naghintay ako sayo sa may bleachers kahapon ng hapon, pero hindi ka dumating.
+May nakita akong nagkakagulo sa may bleachers kaninang dismissal.
+Naiwan ko pala yung gamit ko sa may bleachers kaninang dismissal eh.
+Naghintay ako sayo sa may bleachers kaninang dismissal, pero hindi ka dumating.
+May nakita akong nagkakagulo sa may bleachers kaninang break time.
+Naiwan ko pala yung gamit ko sa may bleachers kaninang break time eh.
+Naghintay ako sayo sa may bleachers kaninang break time, pero hindi ka dumating.
+May nakita akong nagkakagulo sa tindahan sa labas kaninang umaga.
+Naiwan ko pala yung gamit ko sa tindahan sa labas kaninang umaga eh.
+Naghintay ako sayo sa tindahan sa labas kaninang umaga, pero hindi ka dumating.
+May nakita akong nagkakagulo sa tindahan sa labas kaninang recess.
+Naiwan ko pala yung gamit ko sa tindahan sa labas kaninang recess eh.
+Naghintay ako sayo sa tindahan sa labas kaninang recess, pero hindi ka dumating.
+May nakita akong nagkakagulo sa tindahan sa labas kaninang lunch break.
+Naiwan ko pala yung gamit ko sa tindahan sa labas kaninang lunch break eh.
+Naghintay ako sayo sa tindahan sa labas kaninang lunch break, pero hindi ka dumating.
+May nakita akong nagkakagulo sa tindahan sa labas kahapon ng hapon.
+Naiwan ko pala yung gamit ko sa tindahan sa labas kahapon ng hapon eh.
+Naghintay ako sayo sa tindahan sa labas kahapon ng hapon, pero hindi ka dumating.
+May nakita akong nagkakagulo sa tindahan sa labas kaninang dismissal.
+Naiwan ko pala yung gamit ko sa tindahan sa labas kaninang dismissal eh.
+Naghintay ako sayo sa tindahan sa labas kaninang dismissal, pero hindi ka dumating.
+May nakita akong nagkakagulo sa tindahan sa labas kaninang break time.
+Naiwan ko pala yung gamit ko sa tindahan sa labas kaninang break time eh.
+Naghintay ako sayo sa tindahan sa labas kaninang break time, pero hindi ka dumating.
+Pahiram naman ng ballpen, nawawala kasi yung akin eh.
+Pahiram naman ng one whole sheet of paper, nawawala kasi yung akin eh.
+Pahiram naman ng yellow pad, nawawala kasi yung akin eh.
+Pahiram naman ng intermediate pad, nawawala kasi yung akin eh.
+Pahiram naman ng notebook, nawawala kasi yung akin eh.
+Pahiram naman ng calculator, nawawala kasi yung akin eh.
+Pahiram naman ng charger, nawawala kasi yung akin eh.
+Pahiram naman ng powerbank, nawawala kasi yung akin eh.
+Pahiram naman ng payong, nawawala kasi yung akin eh.
+Pahiram naman ng jacket, nawawala kasi yung akin eh.
+Pahiram naman ng correction tape, nawawala kasi yung akin eh.
+Pahiram naman ng ruler, nawawala kasi yung akin eh.
+Pahiram naman ng gunting, nawawala kasi yung akin eh.
+Pahiram naman ng glue, nawawala kasi yung akin eh.
+Pahiram naman ng highlighter, nawawala kasi yung akin eh.
+Pahiram naman ng index card, nawawala kasi yung akin eh.
+May extra ballpen ka pa ba dyan? Pahiram naman saglit para sa klase.
+May extra one whole sheet of paper ka pa ba dyan? Pahiram naman saglit para sa klase.
+May extra yellow pad ka pa ba dyan? Pahiram naman saglit para sa klase.
+May extra intermediate pad ka pa ba dyan? Pahiram naman saglit para sa klase.
+May extra notebook ka pa ba dyan? Pahiram naman saglit para sa klase.
+May extra calculator ka pa ba dyan? Pahiram naman saglit para sa klase.
+May extra charger ka pa ba dyan? Pahiram naman saglit para sa klase.
+May extra powerbank ka pa ba dyan? Pahiram naman saglit para sa klase.
+May extra payong ka pa ba dyan? Pahiram naman saglit para sa klase.
+May extra jacket ka pa ba dyan? Pahiram naman saglit para sa klase.
+May extra correction tape ka pa ba dyan? Pahiram naman saglit para sa klase.
+May extra ruler ka pa ba dyan? Pahiram naman saglit para sa klase.
+May extra gunting ka pa ba dyan? Pahiram naman saglit para sa klase.
+May extra glue ka pa ba dyan? Pahiram naman saglit para sa klase.
+May extra highlighter ka pa ba dyan? Pahiram naman saglit para sa klase.
+May extra index card ka pa ba dyan? Pahiram naman saglit para sa klase.
+Pre, pahiram muna ng ballpen, ibabalik ko rin agad bago mag-uwian.
+Pre, pahiram muna ng one whole sheet of paper, ibabalik ko rin agad bago mag-uwian.
+Pre, pahiram muna ng yellow pad, ibabalik ko rin agad bago mag-uwian.
+Pre, pahiram muna ng intermediate pad, ibabalik ko rin agad bago mag-uwian.
+Pre, pahiram muna ng notebook, ibabalik ko rin agad bago mag-uwian.
+Pre, pahiram muna ng calculator, ibabalik ko rin agad bago mag-uwian.
+Pre, pahiram muna ng charger, ibabalik ko rin agad bago mag-uwian.
+Pre, pahiram muna ng powerbank, ibabalik ko rin agad bago mag-uwian.
+Pre, pahiram muna ng payong, ibabalik ko rin agad bago mag-uwian.
+Pre, pahiram muna ng jacket, ibabalik ko rin agad bago mag-uwian.
+Pre, pahiram muna ng correction tape, ibabalik ko rin agad bago mag-uwian.
+Pre, pahiram muna ng ruler, ibabalik ko rin agad bago mag-uwian.
+Pre, pahiram muna ng gunting, ibabalik ko rin agad bago mag-uwian.
+Pre, pahiram muna ng glue, ibabalik ko rin agad bago mag-uwian.
+Pre, pahiram muna ng highlighter, ibabalik ko rin agad bago mag-uwian.
+Pre, pahiram muna ng index card, ibabalik ko rin agad bago mag-uwian.
+Naiwan ko yung ballpen ko sa bahay, pwede bang makihiram muna?
+Naiwan ko yung one whole sheet of paper ko sa bahay, pwede bang makihiram muna?
+Naiwan ko yung yellow pad ko sa bahay, pwede bang makihiram muna?
+Naiwan ko yung intermediate pad ko sa bahay, pwede bang makihiram muna?
+Naiwan ko yung notebook ko sa bahay, pwede bang makihiram muna?
+Naiwan ko yung calculator ko sa bahay, pwede bang makihiram muna?
+Naiwan ko yung charger ko sa bahay, pwede bang makihiram muna?
+Naiwan ko yung powerbank ko sa bahay, pwede bang makihiram muna?
+Naiwan ko yung payong ko sa bahay, pwede bang makihiram muna?
+Naiwan ko yung jacket ko sa bahay, pwede bang makihiram muna?
+Naiwan ko yung correction tape ko sa bahay, pwede bang makihiram muna?
+Naiwan ko yung ruler ko sa bahay, pwede bang makihiram muna?
+Naiwan ko yung gunting ko sa bahay, pwede bang makihiram muna?
+Naiwan ko yung glue ko sa bahay, pwede bang makihiram muna?
+Naiwan ko yung highlighter ko sa bahay, pwede bang makihiram muna?
+Naiwan ko yung index card ko sa bahay, pwede bang makihiram muna?
+Pakibalik na lang agad yung ballpen ko pagkatapos mong gamitin ah.
+Pakibalik na lang agad yung one whole sheet of paper ko pagkatapos mong gamitin ah.
+Pakibalik na lang agad yung yellow pad ko pagkatapos mong gamitin ah.
+Pakibalik na lang agad yung intermediate pad ko pagkatapos mong gamitin ah.
+Pakibalik na lang agad yung notebook ko pagkatapos mong gamitin ah.
+Pakibalik na lang agad yung calculator ko pagkatapos mong gamitin ah.
+Pakibalik na lang agad yung charger ko pagkatapos mong gamitin ah.
+Pakibalik na lang agad yung powerbank ko pagkatapos mong gamitin ah.
+Pakibalik na lang agad yung payong ko pagkatapos mong gamitin ah.
+Pakibalik na lang agad yung jacket ko pagkatapos mong gamitin ah.
+Pakibalik na lang agad yung correction tape ko pagkatapos mong gamitin ah.
+Pakibalik na lang agad yung ruler ko pagkatapos mong gamitin ah.
+Pakibalik na lang agad yung gunting ko pagkatapos mong gamitin ah.
+Pakibalik na lang agad yung glue ko pagkatapos mong gamitin ah.
+Pakibalik na lang agad yung highlighter ko pagkatapos mong gamitin ah.
+Pakibalik na lang agad yung index card ko pagkatapos mong gamitin ah.
+Ingatan mo yang ballpen ko, bago pa yan binili sakin ni nanay.
+Ingatan mo yang one whole sheet of paper ko, bago pa yan binili sakin ni nanay.
+Ingatan mo yang yellow pad ko, bago pa yan binili sakin ni nanay.
+Ingatan mo yang intermediate pad ko, bago pa yan binili sakin ni nanay.
+Ingatan mo yang notebook ko, bago pa yan binili sakin ni nanay.
+Ingatan mo yang calculator ko, bago pa yan binili sakin ni nanay.
+Ingatan mo yang charger ko, bago pa yan binili sakin ni nanay.
+Ingatan mo yang powerbank ko, bago pa yan binili sakin ni nanay.
+Ingatan mo yang payong ko, bago pa yan binili sakin ni nanay.
+Ingatan mo yang jacket ko, bago pa yan binili sakin ni nanay.
+Ingatan mo yang correction tape ko, bago pa yan binili sakin ni nanay.
+Ingatan mo yang ruler ko, bago pa yan binili sakin ni nanay.
+Ingatan mo yang gunting ko, bago pa yan binili sakin ni nanay.
+Ingatan mo yang glue ko, bago pa yan binili sakin ni nanay.
+Ingatan mo yang highlighter ko, bago pa yan binili sakin ni nanay.
+Ingatan mo yang index card ko, bago pa yan binili sakin ni nanay.
+Uy, nakita mo ba yung ballpen ko? Naiwan ko ata kanina sa desk.
+Uy, nakita mo ba yung one whole sheet of paper ko? Naiwan ko ata kanina sa desk.
+Uy, nakita mo ba yung yellow pad ko? Naiwan ko ata kanina sa desk.
+Uy, nakita mo ba yung intermediate pad ko? Naiwan ko ata kanina sa desk.
+Uy, nakita mo ba yung notebook ko? Naiwan ko ata kanina sa desk.
+Uy, nakita mo ba yung calculator ko? Naiwan ko ata kanina sa desk.
+Uy, nakita mo ba yung charger ko? Naiwan ko ata kanina sa desk.
+Uy, nakita mo ba yung powerbank ko? Naiwan ko ata kanina sa desk.
+Uy, nakita mo ba yung payong ko? Naiwan ko ata kanina sa desk.
+Uy, nakita mo ba yung jacket ko? Naiwan ko ata kanina sa desk.
+Uy, nakita mo ba yung correction tape ko? Naiwan ko ata kanina sa desk.
+Uy, nakita mo ba yung ruler ko? Naiwan ko ata kanina sa desk.
+Uy, nakita mo ba yung gunting ko? Naiwan ko ata kanina sa desk.
+Uy, nakita mo ba yung glue ko? Naiwan ko ata kanina sa desk.
+Uy, nakita mo ba yung highlighter ko? Naiwan ko ata kanina sa desk.
+Uy, nakita mo ba yung index card ko? Naiwan ko ata kanina sa desk.
+'Wag mong kalimutang ibalik yung ballpen ko mamaya pagkatapos ng activity ah.
+'Wag mong kalimutang ibalik yung one whole sheet of paper ko mamaya pagkatapos ng activity ah.
+'Wag mong kalimutang ibalik yung yellow pad ko mamaya pagkatapos ng activity ah.
+'Wag mong kalimutang ibalik yung intermediate pad ko mamaya pagkatapos ng activity ah.
+'Wag mong kalimutang ibalik yung notebook ko mamaya pagkatapos ng activity ah.
+'Wag mong kalimutang ibalik yung calculator ko mamaya pagkatapos ng activity ah.
+'Wag mong kalimutang ibalik yung charger ko mamaya pagkatapos ng activity ah.
+'Wag mong kalimutang ibalik yung powerbank ko mamaya pagkatapos ng activity ah.
+'Wag mong kalimutang ibalik yung payong ko mamaya pagkatapos ng activity ah.
+'Wag mong kalimutang ibalik yung jacket ko mamaya pagkatapos ng activity ah.
+'Wag mong kalimutang ibalik yung correction tape ko mamaya pagkatapos ng activity ah.
+'Wag mong kalimutang ibalik yung ruler ko mamaya pagkatapos ng activity ah.
+'Wag mong kalimutang ibalik yung gunting ko mamaya pagkatapos ng activity ah.
+'Wag mong kalimutang ibalik yung glue ko mamaya pagkatapos ng activity ah.
+'Wag mong kalimutang ibalik yung highlighter ko mamaya pagkatapos ng activity ah.
+'Wag mong kalimutang ibalik yung index card ko mamaya pagkatapos ng activity ah.
+Tapos mo na ba yung assignment natin sa Math para mamaya?
+Tapos mo na ba yung assignment natin sa Science para mamaya?
+Tapos mo na ba yung assignment natin sa English para mamaya?
+Tapos mo na ba yung assignment natin sa Filipino para mamaya?
+Tapos mo na ba yung assignment natin sa History para mamaya?
+Tapos mo na ba yung assignment natin sa Research para mamaya?
+Tapos mo na ba yung assignment natin sa Programming para mamaya?
+Pre, patulong naman sa project natin sa Math, ang hirap intindihin nung instructions eh.
+Pre, patulong naman sa project natin sa Science, ang hirap intindihin nung instructions eh.
+Pre, patulong naman sa project natin sa English, ang hirap intindihin nung instructions eh.
+Pre, patulong naman sa project natin sa Filipino, ang hirap intindihin nung instructions eh.
+Pre, patulong naman sa project natin sa History, ang hirap intindihin nung instructions eh.
+Pre, patulong naman sa project natin sa Research, ang hirap intindihin nung instructions eh.
+Pre, patulong naman sa project natin sa Programming, ang hirap intindihin nung instructions eh.
+Kailan daw ang deadline nung presentation natin sa Math? Bukas na ba o sa susunod na linggo pa?
+Kailan daw ang deadline nung presentation natin sa Science? Bukas na ba o sa susunod na linggo pa?
+Kailan daw ang deadline nung presentation natin sa English? Bukas na ba o sa susunod na linggo pa?
+Kailan daw ang deadline nung presentation natin sa Filipino? Bukas na ba o sa susunod na linggo pa?
+Kailan daw ang deadline nung presentation natin sa History? Bukas na ba o sa susunod na linggo pa?
+Kailan daw ang deadline nung presentation natin sa Research? Bukas na ba o sa susunod na linggo pa?
+Kailan daw ang deadline nung presentation natin sa Programming? Bukas na ba o sa susunod na linggo pa?
+Patingin naman ng reviewer mo sa Math, magbabasa lang ako saglit bago mag-start ang exam.
+Patingin naman ng reviewer mo sa Science, magbabasa lang ako saglit bago mag-start ang exam.
+Patingin naman ng reviewer mo sa English, magbabasa lang ako saglit bago mag-start ang exam.
+Patingin naman ng reviewer mo sa Filipino, magbabasa lang ako saglit bago mag-start ang exam.
+Patingin naman ng reviewer mo sa History, magbabasa lang ako saglit bago mag-start ang exam.
+Patingin naman ng reviewer mo sa Research, magbabasa lang ako saglit bago mag-start ang exam.
+Patingin naman ng reviewer mo sa Programming, magbabasa lang ako saglit bago mag-start ang exam.
+Pumasok na ba si maam sa Math o may emergency meeting pa sa faculty?
+Pumasok na ba si maam sa Science o may emergency meeting pa sa faculty?
+Pumasok na ba si maam sa English o may emergency meeting pa sa faculty?
+Pumasok na ba si maam sa Filipino o may emergency meeting pa sa faculty?
+Pumasok na ba si maam sa History o may emergency meeting pa sa faculty?
+Pumasok na ba si maam sa Research o may emergency meeting pa sa faculty?
+Pumasok na ba si maam sa Programming o may emergency meeting pa sa faculty?
+Nagpa-attendance na ba sa Math? Baka ma-late ako ng ilang minuto dahil traffic eh.
+Nagpa-attendance na ba sa Science? Baka ma-late ako ng ilang minuto dahil traffic eh.
+Nagpa-attendance na ba sa English? Baka ma-late ako ng ilang minuto dahil traffic eh.
+Nagpa-attendance na ba sa Filipino? Baka ma-late ako ng ilang minuto dahil traffic eh.
+Nagpa-attendance na ba sa History? Baka ma-late ako ng ilang minuto dahil traffic eh.
+Nagpa-attendance na ba sa Research? Baka ma-late ako ng ilang minuto dahil traffic eh.
+Nagpa-attendance na ba sa Programming? Baka ma-late ako ng ilang minuto dahil traffic eh.
+May surprise quiz daw sa Math mamaya, mag-review na kayo dyan para makapasa tayo.
+May surprise quiz daw sa Science mamaya, mag-review na kayo dyan para makapasa tayo.
+May surprise quiz daw sa English mamaya, mag-review na kayo dyan para makapasa tayo.
+May surprise quiz daw sa Filipino mamaya, mag-review na kayo dyan para makapasa tayo.
+May surprise quiz daw sa History mamaya, mag-review na kayo dyan para makapasa tayo.
+May surprise quiz daw sa Research mamaya, mag-review na kayo dyan para makapasa tayo.
+May surprise quiz daw sa Programming mamaya, mag-review na kayo dyan para makapasa tayo.
+Naintindihan mo ba yung lesson kanina sa Math? Pwede mo ba akong turuan mamayang uwian?
+Naintindihan mo ba yung lesson kanina sa Science? Pwede mo ba akong turuan mamayang uwian?
+Naintindihan mo ba yung lesson kanina sa English? Pwede mo ba akong turuan mamayang uwian?
+Naintindihan mo ba yung lesson kanina sa Filipino? Pwede mo ba akong turuan mamayang uwian?
+Naintindihan mo ba yung lesson kanina sa History? Pwede mo ba akong turuan mamayang uwian?
+Naintindihan mo ba yung lesson kanina sa Research? Pwede mo ba akong turuan mamayang uwian?
+Naintindihan mo ba yung lesson kanina sa Programming? Pwede mo ba akong turuan mamayang uwian?
+'Wag kang magsusumbong kahit kanino kung ayaw mong mapahamak.
+'Wag kang papapel dito, baka gusto mong masapak ngayon din.
+'Wag na 'wag kang lalapit sa pwesto namin kung ayaw mong magkagulo.
+'Wag mo 'kong tinititigan nang ganyan baka dukutin ko mata mo.
+'Wag kang aalis dyan, kakausapin ka pa namin sa labas mamaya.
+'Wag kang magmalinis, alam naming lahat ang baho mo.
+'Wag mo 'kong hawakan nang ganyan, bitawan mo 'ko ngayon din!
+'Wag ka nang pumasok bukas kung ayaw mong abangan ka namin sa kanto.
+'Wag kang iiyak-iyak dyan pag tinamaan ka sakin mamaya.
+'Wag kang magpanggap na matapang, duwag ka naman talaga eh.
+'Wag kang sasabay samin kumain, wala kang kaibigan dito.
+'Wag mong ipagyabang yang gamit mo, aagawin lang namin yan sayo.
+'Wag ka nang lumapit sa kanya kung ayaw mong mabugbog.
+'Wag kang tatakas, aabutan ka rin namin mamaya sa labasan.
+'Wag kang sumigaw kung ayaw mong lalong lumala 'tong sitwasyon mo.
+Subukan mo lang magsumbong kay maam, yari ka talaga sakin mamayang uwian.
+Akin na yang baon mo kung ayaw mong saktan kita dito.
+Ilabas mo na yang wallet mo bago pa may mangyaring masama sayo.
+Papalag ka pa ba? Suntukan na lang tayo sa likod ng building mamaya!
+Kala mo kung sino kang magaling, sapakin kita dyan eh.
+Isang salita mo pa tatamaan ka na talaga sakin, subukan mo lang.
+Aabangan ka namin sa labas ng gate mamayang uwian, tignan natin tapang mo.
+Ipapahiya kita sa buong school at ipapakalat ko picture mo sa group chat.
+Wala kang kawala samin, kahit saan ka magtago hahanapin ka namin.
+Bayaran mo na utang mo ngayon din kung ayaw mong guluhin kita araw-araw.
+Bakit mo kinukuha gamit ko nang walang paalam? Magnanakaw ka ba?
+Bitawan mo bag ko bago kita isumbong sa guidance office!
+Umalis ka sa upuan ko bago kita itulak dyan sa sahig.
+Pano kung ayaw kong ibigay sayo? Sasaktan mo ba ako?
+Wala kang karapatang pagsalitaan ako nang ganyan sa harap ng mga kaklase natin.
+Itigil niyo na yan bago pa kayo makita ng guard sa CCTV!
+Ano bang problema mo sakin, bakit lagi mo na lang akong pinag-iinitan?
+Haharapin mo kami mamaya sa tambayan, 'wag kang tatakas.
+Huling babala mo na 'to, 'wag mo nang uulitin yung ginawa mo.
+Tandaan mo mukha ko, hindi pa tayo tapos mag-usap.
+Hindi kita tatantanan hangga't hindi mo binibigay yung hinihingi ko sayo.
+Bakit mo sinisira yung gamit ko? Ano bang kasalanan ko sayo?
+Haharangin ka namin sa sakayan, tignan natin kung may magliligtas sayo.
+Kukunin ko 'tong cellphone mo kapag hindi ka sumunod sa sinabi ko.
+Sasabihin ko sa lahat yung pinakatatago mong lihim para mapahiya ka.
+Sisirain namin yang project mo para bumagsak ka sa klase.
+'Wag mo 'kong saktan, ibibigay ko na lahat ng pera ko sayo!
+Wala kang kwenta, walang may gusto sayo dito sa klase.
+Umalis ka sa paningin ko bago pa kita maabutan dyan sa sulok.
+Kahit magsumbong ka sa principal, walang maniniwala sayo.
+Gusto mo bang magka-pasa bago ka umuwi sa mga magulang mo?
+Kapag may nakakita satin, sabihin mo nadulas ka lang sa hagdan.
+Pilitin mo mang lumaban, mas marami kami kaysa sayo.
+Hahabulin ka namin kahit saan ka tumakbo sa campus.
+Iwanan mo yang gamit mo dito kung gusto mo pang makalabas nang buo.
+Lahat kami dito galit sayo, kaya 'wag ka nang magpakita pa bukas.
+Pagsisisihan mo 'tong ginawa mo kapag nagkita tayo ulit mamaya.
+Walang tutulong sayo dito, lahat sila takot makialam.
+Ibigay mo na yung sagot sa exam kung ayaw mong abangan kita sa gate.
+Subukan mong magsalita sa adviser natin, malilintikan ka talaga samin.
+Wala kang laban sakin, kaya manahimik ka na lang dyan sa sulok.
+Sisiguraduhin kong hindi ka na makakapasok sa susunod na semester.
+Akala mo ba nakakatawa yung ginawa mo? Patitikimin kita ng leksyon.
+Hihilahin kita palabas ng classroom kapag hindi ka sumama samin.
+Isa pang reklamo mo tatakpan ko yang bibig mo gamit 'tong panyo.
+'Wag ka nang lumaban pre, wala kang mapapala kung magmamatigas ka pa.
+Kung ayaw mong kumalat 'tong video mo sa school, sumunod ka na lang.
+Binabalaan kita, 'wag na 'wag mong ipagsasabi 'tong nakita mo kanina.
+Sasaktan kita kapag hindi mo binigay yung baon mo sakin bukas.
+Iiyak ka na ba dyan? Kala ko ba matapang ka sa harap ng mga kaklase mo?
+Tulong po! May sumusunod po sa aking lalaki sa labas ng gate!
+Kuya guard, tulong po, may nag-aaway po sa may covered court!
+Maam, tulungan niyo po ako, binubully po nila ako dito sa likod ng classroom.
+Sir, kinukuha po nila yung pera at cellphone ko sa loob ng banyo.
+Tulong po, sinasaktan po nila yung kaklase namin sa likod ng gym!
+Kuya guard, may nakita po kaming kutsilyo sa bag nung isang estudyante.
+Kailangan po namin ng tulong sa clinic, may nahimatay po sa gitna ng initan.
+Pakitawag po agad si guidance counselor, nagkakagulo na po sa hallway.
+'Wag po please, tama na po nasasaktan na po talaga ako nang sobra.
+Hindi na po ako makahinga, pakiusap dalhin niyo po ako sa clinic agad.
+Bakit niyo po ako pinagtutulungan? Wala naman po akong ginagawang masama sa inyo.
+Sinuntok po niya ako sa tiyan bigla habang naglalakad ako papuntang banyo.
+Tinutulak po nila ako palagi sa hagdan kapag walang nakatinging teacher.
+Kinuha po nila yung project ko tapos pinunit sa harap ng maraming tao.
+Natatakot na po akong pumasok sa school dahil araw-araw nila akong tinatakot.
+Sasamahan kita pumunta sa principal office para i-report 'tong nangyari.
+'Wag kang matakot magsumbong, nandito kaming mga kaibigan mo para protektahan ka.
+I-save mo lahat ng screenshots ng pananakot nila para may ebidensya tayo.
+Sasabihin natin 'to sa mga magulang mo para makausap agad ang school admin.
+Hinding-hindi ka namin iiwan mag-isa, sasamahan ka namin hanggang makauwi.
+Tulong po, may pumasok na taga-labas sa loob ng campus nang walang ID!
+Kuya guard, binasag po nila yung bintana sa likod ng building!
+Nasusuka po ako at nahihilo, pwede po bang humingi ng gamot sa clinic?
+Tulungan niyo po kaming buhatin 'tong kaklase natin na nawalan ng malay.
+Pakiusap, tumawag kayo ng ambulansya, dumudugo po yung ulo niya!
+Sir, may nagbabanta po na magdadala ng patalim bukas ng umaga.
+'Wag po kayong matakot magsalita, poprotektahan po kayo ng school administration.
+May sumabog po na electrical wire sa science laboratory, lumikas na po kayo!
+Amoy usok po dito sa hallway, baka may sunog sa cafeteria!
+Sir, may nang-aagaw po ng bag sa sakayan sa harap ng gate!
+Hawakan niyo po yung kamay ko, dadalhin kita sa emergency clinic.
+Nawawala po yung kapatid kong grade seven, hindi pa po umuuwi hanggang ngayon.
+'Wag po kayong mag-panic, maglakad lang po tayo nang maayos papunta sa fire exit.
+Tinutukan po kami ng patalim nung mga tambay sa labas ng bakod.
+Tumakbo na kayo papunta sa guard house, bilisan niyo baka maabutan tayo!
+Sinipa po niya ako sa likod habang nakapila kami sa canteen.
+Kailangan po namin ng ice pack, namaga po yung braso nung nabangga kanina.
+Kuya guard, may naiwan pong kahina-hinalang bag sa ilalim ng hagdan.
+Maam, umiiyak po yung kaklase natin sa loob ng cubicle, ayaw pong lumabas.
+Nandito na po ang mga barangay tanod para tumulong magpanatili ng kaayusan.
+Sir, may nananakit po ng estudyante sa likod ng canteen, bilisan niyo po!
+Tulong po, may naipit po ang kamay sa mabigat na pinto ng classroom!
+Omsim pre, ganyan din yung nangyari sakin nung isang araw.
+Legit ba talaga yang sinasabi mo o gawa-gawa mo lang para maging trending?
+Eme lang pala yung kwento niya kanina, naniwala naman agad kayong lahat.
+Charot lang naman yun tol, 'wag ka na magtampo dyan sa tabi.
+Solid nung tugtugan kanina sa gym, halos lahat tumalon sa saya.
+Sakalam talaga nung nag-recite kanina, nasagot lahat ng mahihirap na tanong.
+Lodi kita sa math pre, paturo naman ako ng formula mamaya ah.
+Petmalu nung depensa niyo sa basketball kanina, muntik pa kayong makahabol.
+Forda aral ang buong section ngayon kasi prelims week na.
+Marites ka talaga, pati issue nung kabilang section alam na alam mo.
+Bida-bida na naman siya sa harap ng teacher para lang magpapuri.
+Dasurv mo yan kasi nagpuyat ka talaga para matapos yung research paper.
+Sana all nakapasa sa quiz kanina kahit walang tulog kagabi.
+Walang basagan ng trip mga pre, masaya lang kaming nagkukulitan dito.
+Cringe malala nung hirit niya kanina, walang tumawa kahit isa sa room.
+Toxic mo naman kausap, puro paninira at reklamo lang ang sinasabi mo.
+Chill ka lang muna dyan, 'wag mong daanin sa init ng ulo.
+'Wag kang praning pre, walang nagagalit sayo sa group natin.
+Ramdam kita pre, mahirap talaga kapag sabay-sabay ang deadline ng projects.
+Spill the tea naman, anong pinag-uusapan niyo kanina dyan sa hallway?
+Main character vibes na naman si kuya, ang lakas ng dating kanina sa stage.
+Pabibo masyado sa klase, kala mo naman perpekto lahat ng alam.
+Bagsak na naman ako sa quiz, parang gusto ko na lang maglaho bigla.
+Kape na lang ang bumubuhay sakin ngayong finals week, grabe ang puyat.
+Sobrang wholesome nung ginawa niyo para sa birthday nung adviser natin.
+Ghosting malala yung kagrupo natin, hindi na nagparamdam hanggang submission.
+Walang ambag sa group project tapos nagrereklamo pa sa naging score natin.
+Deserve nating kumain ng masarap mamaya pagkatapos ng nakakapagod na exam.
+Bawi na lang tayo sa susunod na quarter, kaya pa nating hilahin 'to pataas.
+Pumalakpak kayong lahat para sa group na nag-present sa unahan.
+Grabe yung kaba ko kanina habang tinatawag ang mga pangalan para sa recitation.
+Slay na slay yung outfit mo kanina sa intramurals opening ceremony!
+Walang tulugan 'to hanggang matapos ang coding project natin bukas.
+Gusto ko na lang maging patatas kaysa mag-solve ng calculus problems.
+Hindi ako ready para sa long quiz mamaya, kailangan ko ng milagro.
+Bakit ba ang bilis ng weekend, parang kakasimula pa lang ng Sabado kahapon?
+I-celebrate natin mamaya pagkatapos ng presentation, deserve natin mag-milk tea.
+Ang galing nung play kanina sa auditorium, proud na proud ako sa block natin.
+Tigilan mo na yang kaka-selpon mo at simulan mo na mag-aral dyan.
+Nakaka-drain yung energy nung subject kanina, gusto ko na lang matulog.
+Heto na naman tayo sa puyatan para sa thesis defense bukas ng umaga.
+Pagkatapos ng school year na 'to, mag-beach trip tayong buong barkada ah.
+Ang swerte nung mga excused sa klase dahil varsity player sila.
+Napakalamig sa room kanina, parang nasa loob tayo ng ref.
+Wala na akong gana pumasok bukas, pero kailangan para sa attendance.
+Paki-tag ako sa social media post pag na-upload na yung group picture natin.
+Sobrang supportive nung mga kaklase natin nung nag-perform tayo kanina.
+Wala akong masabi sa ganda ng visual aid niyo, panalo talaga yan.
+Tara milk tea tayo sa may kanto bago mag-uwian ang lahat.
+Good luck satin mamaya sa defense, kayang-kaya natin 'to mga pre!
+Paki-check nung message ko sayo sa messenger, importante yun tungkol sa project.
+Pa-send naman sa group chat nung picture nung sinulat ni maam sa board.
+I-download mo na yung pdf file sa Google Classroom para mabasa mo agad.
+Sobrang hina ng wifi signal dito sa sulok ng room natin, nakakainis.
+Lowbat na cellphone ko, may dala ka bang powerbank dyan na pwede mahiram?
+Naka-connect ka ba sa hotspot ko? Paki-pause muna ng download mo saglit.
+Biglang nag-hang yung laptop ko habang nagko-compile ako ng code kanina.
+Na-save mo ba yung file bago nag-brownout kaninang alas diyes ng umaga?
+Paki-screenshot yung final grade para may proof tayo kung sakaling magka-error.
+Naka-unmute ka pala kanina habang nagsasalita si sir sa online class.
+Tara ML mamayang gabi pagkatapos nating tapusin 'tong mga assignment natin.
+Pa-carry naman ako papuntang Mythic pre, puro talo sa solo queue eh.
+Nag-feed na naman yung kasama nating kakampi kaya na-wipe out tayo sa clash.
+Lag ako sobra ngayon, biglang pumalo sa four hundred ms yung ping ko.
+Paki-defend nung base natin, binabasag na nung kalaban yung tore sa mid!
+'Wag kayong greedy sa clash, mag-antay tayo ng tamang tiyempo bago pumasok.
+Nice game mga pre, ganda nung comeback natin kanina kahit dehado sa gold.
+Na-disconnect yung kakampi natin kaya apat na lang tayong lumalaban.
+Tara custom match, subukan natin yung bagong hero pagkatapos ng maintenance.
+Paki-mute nung mic mo pre, rinig na rinig yung tunog ng electric fan sa inyo.
+I-charge mo muna phone mo bago tayo maglaro para hindi ka ma-lowbat sa gitna ng laban.
+Naka-lock pa yung account ko, kailangan ko pang mag-request ng password reset.
+Paki-forward nung link nung video meeting sa group chat natin ngayon din.
+Naka-off yung camera ko kanina kasi medyo magulo yung kwarto ko eh.
+I-clear mo yung cache ng browser mo para bumilis yung loading nung portal.
+Paki-push na nung commits mo sa GitHub repo bago mag-midnight deadline.
+May merge conflict tayo sa main branch, sino pwedeng tumulong mag-ayos?
+Na-corrupt yung USB flash drive ko, nandoon pa naman lahat ng presentation slides.
+Pahiram naman ng type-c cable saglit, kailangan ko lang maglipat ng files sa laptop.
+I-update mo yung operating system mo para mawala yung bug sa audio driver.
+Mag-install ka muna ng antivirus bago mo buksan yung na-download na zip file.
+Naka-backup ba sa cloud storage yung documentation natin para safe?
+Paki-screen share nung error log sa console para makita namin kung saan sumabog.
+Mahina ang bluetooth connection dito kapag maraming naka-on na devices.
+I-unplug mo muna yung charger kapag full charge na para hindi lumobo ang battery.
+Naka-mute ka pa rin bro, hindi namin marinig yung sinasabi mo dyan.
+Tara laro mamayang madaling araw kapag mabilis na ang internet connection.
+Na-ban yung account niya sa game dahil nahuling gumagamit ng cheat.
+Paki-check nung link kung clickable ba o kailangan pang i-copy-paste sa browser.
+Tapos na mag-render yung video project natin, ready na i-submit kay sir!
+'Wag na tayong mag-away pre, pwede naman nating pag-usapan 'to nang maayos.
+Sabi ko naman sayo kanina, hindi ko sinasadyang mabangga ka eh.
+Bawiin mo yung masakit na sinabi mo para matapos na 'tong alitan natin.
+Humingi na ako ng tawad sayo nang tapat, sana magkaayos na tayong dalawa.
+Walang patutunguhan ang away, pareho lang tayong mapapahamak sa school.
+Isipin mo yung mga magulang mo bago ka gumawa ng gulo sa campus.
+Ayusin na natin 'to bago pa may makakita sa atin at dalhin tayo sa guidance.
+Wala akong masamang tinapay sayo, gusto ko lang linawin yung mga tsismis.
+Magtulungan na lang tayo para matapos agad 'tong group project natin nang maayos.
+Bati na tayo pre, kalimutan na natin yung hindi magandang nangyari kahapon.
+Hindi kita pinagbabantaan, pinapaalalahanan lang kita bilang kaibigan mo.
+Pumunta tayo sa adviser natin para maging maayos at patas ang usapan.
+'Wag kang makikinig sa mga sulsol ng ibang tao dyan sa paligid mo.
+Respetuhin mo yung desisyon ko kung ayaw kong sumama sa lakad niyo mamaya.
+Lahat tayo dito may kani-kanyang pinagdadaanan kaya matuto tayong umunawa.
+Iwasan na natin ang magparinigan sa social media o sa group chat natin.
+Mas mabuting sabihin mo sakin nang direkta kaysa pinag-uusapan niyo 'ko patalikod.
+Magkaibigan tayo simula elementary, 'wag nating hayaang masira 'to dahil sa maliit na bagay.
+Handa akong makinig sa side mo basta maging tapat at totoo ka lang sakin.
+Tapusin na natin ang alitan dito, walang maidudulot na maganda 'to satin.
+'Wag mong sarilinin yung problema mo pre, nandito lang kami para makinig sayo.
+Kausapin mo siya nang mahinahon para hindi na lumaki pa 'tong gulo.
+Humingi ka na ng pasensya kay maam para hindi ka mabigyan ng warning slip.
+Magpatawad ka na pre, tao lang din naman yung nagkamali sayo eh.
+Kahit kailan hindi naging solusyon ang karahasan sa kahit anong problema.
+Huminga ka muna nang malalim bago ka magsalita para hindi ka makapanakit ng damdamin.
+Pag-usapan natin 'to sa tahimik na lugar, 'wag dito sa gitna ng hallway.
+Naiintindihan ko kung saan nanggagaling ang galit mo, pero mali pa rin ang manakit.
+Gusto ko lang maging mapayapa ang klase natin, ayaw ko ng may nagkakagulo.
+Ibigay mo sa kanya ang pagkakataon na magpaliwanag bago ka manghusga.
+Magkaiba man ang opinyon natin, pwede pa rin tayong magrespetuhan bilang magkaibigan.
+Ako na ang humihingi ng paumanhin para sa nagawa nung kagrupo namin kanina.
+Pangako ko sayo, hindi na mauulit yung hindi pagkakaunawaan natin kanina.
+Sabihin mo sakin kung may nagawa akong mali para maitama ko agad.
+Mas mahalaga ang pagkakaibigan natin kaysa sa kung sino ang tama sa argumentong 'to.
+'Wag nating sayangin ang pinagsamahan natin dahil lang sa simpleng tampuhan.
+Bukas paggising mo, mas magiging maaliwalas din ang isip mo tungkol dito.
+Tulong-tulong tayo para maayos ang gusot sa section natin bago magtapos ang linggo.
+Walang mananalo kapag pareho tayong sumisigaw, huminahon muna tayong dalawa.
+Nandito ako bilang kaibigan mo, handang sumuporta sayo sa lahat ng oras.
+Saan tayo kakain ng lunch mamaya, sa canteen ba o sa karinderya sa labas?
+Anong masarap na meryenda sa canteen ngayon? May bagong lutong turon ba?
+Libre kita ng merienda mamaya basta tulungan mo 'ko mag-review sa exam ah.
+Wala akong dalang baon ngayon, pwede bang humingi kahit konting ulam lang?
+Naiwan ko yung ID ko sa bahay, papasukin kaya ako ni kuya guard sa gate?
+May bayarin daw para sa project sa Science next week, magkano kaya ang ambagan?
+Bukas na pala ang pasahan nung essay kay maam sa English, tapos ka na ba?
+Tara mag-practice tayo ng sayaw sa covered court mamayang dismissal.
+Punta muna tayong library para magbasa at magpalamig saglit sa aircon.
+Gusto ko na talagang umuwi, pagod na pagod na yung katawan ko buong araw.
+Ingat kayo sa pagtawid sa highway paglabas niyo ng campus gate mamaya ah.
+'Wag kayong mag-iiwan ng gamit sa ilalim ng desk baka mawala o manakaw.
+Magkita tayo sa sakayan ng jeep mamayang alas kwatro ng hapon ah.
+Ingat kayo pag-uwi, mag-text ka agad pag nakarating ka na sa inyo ah.
+May gagawin ka ba mamayang uwian? Tara tambay muna saglit sa park.
+'Wag kang matakot magsalita sa unahan, magtiwala ka sa kakayahan mo.
+Bilisan mo kumain dyan baka mahuli tayo sa susunod nating subject.
+Sobrang haba ng pila sa canteen kanina, halos maubos yung oras ng recess.
+Tara bili muna tayo ng malamig na tubig sa may fountain bago umakyat sa room.
+Napakainit sa room ngayon, sana ayusin na nila yung sirang electric fan.
+May praktis daw ang banda sa gym mamayang gabi para sa foundation day.
+Magdala kayo ng sariling pamaypay bukas, siguradong mainit sa auditorium.
+Nandito na yung sundo ko sa tapat ng gate, mauna na akong umuwi sa inyo ah.
+Sabay-sabay na tayong maglakad papuntang terminal para may kakuwentuhan tayo.
+Bukas na lang natin pag-usapan 'yan, kailangan ko nang umuwi agad ngayon.
+Paki-pass naman nung mga test paper papunta sa unahan nang maayos.
+Paki-ayos naman nung mga upuan bago tayo lumabas ng classroom.
+Patayin niyo yung electric fan at ilaw bago natin i-lock yung pinto.
+Sinong cleaners ngayong araw? Magwalis na kayo bago mag-alisan ang lahat.
+Nandyan na si maam sa hallway, tahimik na kayo at umupo nang maayos.
+Pakisulat na lang sa blackboard yung mga pangalan nung mga maiingay kanina.
+Bawal daw mag-iwan ng cellphone sa desk kapag lalabas ng classroom.
+Alam mo ba kung anong room gaganapin yung contest mamayang hapon?
+'Wag kang mag-alala, tutulungan kita mag-review mamayang gabi.
+Kausapin mo na siya nang personal para magkaayos na kayong dalawa.
+Paki-remind si president na may meeting ang officers mamaya sa student lounge.
+Galingan niyo sa presentation mamaya ah, kaya natin 'to section one!
+Tara sabay na tayong maglakad papuntang gate para may kasama ka sa daan.
+Ang sarap nung tinda nilang halo-halo sa tapat ng school kaninang meryenda.
+'Wag mong kakalimutang dalhin yung waiver para sa field trip bukas.
+Paki-abot naman nung bag ko dyan sa ibabaw ng desk, salamat.
+Sobrang bilis ng oras ngayon, uwian na naman kaagad pagkatapos ng klase.
+Bukas na lang natin tapusin 'to, pagod na rin ang lahat mag-isip.
+Gawin natin nang maayos 'to para mataas ang makuha nating marka kay sir.
+Mag-register na kayo para sa intrams bukas bago maubusan ng slot sa team.
+Sumabay ka na samin sumakay ng tricycle papuntang sakayan ng bus.
+Pakisabi kay nanay mo na late akong makakauwi dahil may group work tayo.

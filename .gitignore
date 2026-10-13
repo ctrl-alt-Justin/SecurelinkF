@@ -1,0 +1,80 @@
+# =========================================================================
+# SECURELINK ROOT .GITIGNORE
+# Configured for: ESP32 Firmware, Python AI Server & Flutter Dashboard
+# =========================================================================
+
+# -------------------------------------------------------------------------
+# 1. Large AI Model Weights & Training Checkpoints (>100MB GitHub Limit)
+# Note: Use train.py to generate locally, or host weights on Hugging Face Hub
+# -------------------------------------------------------------------------
+*.safetensors
+*.pt
+*.bin
+*.onnx
+**/securelink_tagalogbert/
+**/securelink_final_model/
+**/checkpoint-*/
+
+# -------------------------------------------------------------------------
+# 2. Audio Recordings & Incident Dumps (Privacy & Large Binaries)
+# -------------------------------------------------------------------------
+recordings/
+**/recordings/
+*.pcm
+*.wav
+*.mp3
+
+# -------------------------------------------------------------------------
+# 3. Flutter & Dart Build Artifacts & Caches
+# -------------------------------------------------------------------------
+.dart_tool/
+**/.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+build/
+**/build/
+**/windows/flutter/ephemeral/
+**/linux/flutter/ephemeral/
+**/android/app/debug/
+**/android/app/profile/
+**/android/app/release/
+**/ios/Flutter/.last_build_id
+**/doc/api/
+*.symbols
+*.map.json
+
+# -------------------------------------------------------------------------
+# 4. Python Environment & Bytecode
+# -------------------------------------------------------------------------
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+ENV/
+*.log
+
+# -------------------------------------------------------------------------
+# 5. IDE, Editor & OS Files
+# -------------------------------------------------------------------------
+.idea/
+**/.idea/
+.vscode/
+**/.vscode/
+*.iml
+*.ipr
+*.iws
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# -------------------------------------------------------------------------
+# 6. Local Scratch & Backup Files
+# -------------------------------------------------------------------------
+servercopy.py
+*.bak
+*.tmp

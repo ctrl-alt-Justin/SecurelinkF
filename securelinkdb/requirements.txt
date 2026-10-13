@@ -1,0 +1,10 @@
+# SecureLink AI Inference Server Dependencies
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+websockets>=11.0.3
+torch>=2.0.0
+transformers>=4.30.0
+faster-whisper>=1.0.0
+deepfilternet>=0.5.6
+numpy>=1.24.0
+soundfile>=0.12.1

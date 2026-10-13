@@ -1,0 +1,1003 @@
+#include <Arduino.h>
+#include <WiFi.h>
+#include <WiFiUdp.h>
+#include <WebSocketsClient.h>
+#include <ESP_I2S.h>
+#include <ESP32-SpeexDSP.h>
+#include <FS.h>
+#include <LittleFS.h>
+#include <WebServer.h>
+#include <DNSServer.h>
+#include <Preferences.h>
+#include "esp_camera.h"
+
+// =========================================================================
+// SECURELINK SMART PIN FIRMWARE (XIAO ESP32S3 Sense)
+// Optimized for: 80MHz Underclocking | 200mAh LiPo (6-8h Target) | 16kHz VAD
+// =========================================================================
+
+I2SClass I2S;
+static constexpr int SAMPLE_RATE = 16000;
+static constexpr int FRAME_MS = 20;
+static constexpr int FRAME_SIZE = (SAMPLE_RATE * FRAME_MS) / 1000; // 320 samples
+
+int16_t audioBuffer[FRAME_SIZE];
+int16_t vadBuffer[FRAME_SIZE];
+SpeexPreprocessState* speex_st = nullptr;
+
+// --- DYNAMIC CONFIGURATION & PREFERENCES (NVS FLASH) ---
+Preferences prefs;
+String wifi_ssid = "SLTYMTBLLS";
+String wifi_pass = "9945SUmaxx!";
+String wifi_ssid2 = "";
+String wifi_pass2 = "";
+String server_host = "10.28.20.28";
+int server_port = 8080;
+const char* WS_PATH_PRIMARY = "/";
+
+WebServer webServer(80);
+DNSServer dnsServer;
+
+WiFiUDP udp;
+WebSocketsClient ws;
+
+// --- NETWORK STATE ---
+String cachedServerIP = "10.28.20.28";
+bool hasActiveStream = false;
+bool hasPendingWsConnect = false;
+unsigned long wsConnectStartedAt = 0;
+bool wifiConnectInProgress = false;
+unsigned long wifiConnectStartedAt = 0;
+int wifiFailStreak = 0;
+
+// --- RING BUFFER (Allocated in 8MB PSRAM) ---
+static constexpr int PRE_TRIGGER_SECONDS = 4;
+static constexpr size_t RING_BUFFER_SIZE = SAMPLE_RATE * sizeof(int16_t) * PRE_TRIGGER_SECONDS; // 128,000 bytes
+uint8_t* preBuffer = nullptr;
+size_t preBufferHead = 0;
+bool preBufferWrapped = false;
+bool needsBurstDump = false;
+
+// --- PACKET BATCHING (Cuts Wi-Fi RF wakeups from 50/sec to 10/sec) ---
+static constexpr size_t BATCH_FRAMES = 5; // 100ms per transmission
+static constexpr size_t BATCH_SIZE = FRAME_SIZE * sizeof(int16_t) * BATCH_FRAMES; // 3200 bytes
+uint8_t batchBuffer[BATCH_SIZE];
+size_t batchBufferLen = 0;
+
+// --- TIMEOUTS & TUNING ---
+unsigned long lastSpeechTime = 0;
+unsigned long SILENCE_TIMEOUT = 2500; // Can be dynamically updated via websocket
+const unsigned long WS_CONNECT_TIMEOUT_MS = 5000;
+const unsigned long WIFI_CONNECT_TIMEOUT_MS = 8000;
+
+// VAD SENSITIVITY TUNING:
+// MIN_PEAK_MARGIN: lowered to 50 so softer Tagalog speech triggers VAD
+// PEAK_HYSTERESIS: lowered to 40
+const int MIN_PEAK_MARGIN = 50;    
+const int PEAK_HYSTERESIS = 40;     
+int32_t peakNoiseFloor = 400;       
+const uint8_t SPEECH_STREAK_REQUIRED = 3; // Arm faster — 3 frames = 60ms of detected speech
+const int STREAM_GAIN_SHIFT = 2; // 4x gain — mic is close, boost signal above noise floor
+
+unsigned long bootStartMs = 0;
+bool lastVadState = false;
+uint8_t speechStreak = 0;
+
+// --- LITTLEFS FALLBACK SYSTEM ---
+bool fsReady = false;
+bool isOfflineRecording = false;
+File offlineIncidentFile;
+String currentIncidentPath = "";
+
+bool isUploadingArchive = false;
+File uploadFile;
+String uploadFilePath = "";
+
+// --- CAMERA PIN DEFINITIONS (XIAO ESP32S3 Sense) ---
+#define PWDN_GPIO_NUM     -1
+#define RESET_GPIO_NUM    -1
+#define XCLK_GPIO_NUM     10
+#define SIOD_GPIO_NUM     40
+#define SIOC_GPIO_NUM     39
+#define Y9_GPIO_NUM       48
+#define Y8_GPIO_NUM       11
+#define Y7_GPIO_NUM       12
+#define Y6_GPIO_NUM       14
+#define Y5_GPIO_NUM       16
+#define Y4_GPIO_NUM       18
+#define Y3_GPIO_NUM       17
+#define Y2_GPIO_NUM       15
+#define VSYNC_GPIO_NUM    38
+#define HREF_GPIO_NUM     47
+#define PCLK_GPIO_NUM     13
+bool cameraReady = false;
+
+// --- ACOUSTIC ENHANCEMENT FILTERS ---
+
+// 1. High-Pass Filter (~90Hz cutoff at 16kHz)
+// Strips clothing friction, pin movement, and low-frequency rumble
+inline int16_t applyHighPass(int16_t input) {
+    static int16_t prev_in = 0;
+    static int32_t prev_out = 0;
+    // Difference equation: y[n] = 0.965 * (y[n-1] + x[n] - x[n-1])
+    int32_t out = (988 * (prev_out + input - prev_in)) >> 10;
+    prev_in = input;
+    prev_out = out;
+    return (int16_t)out;
+}
+
+// 2. Soft Limiter (Prevents square-wave distortion on loud speech for Whisper)
+inline int16_t applySoftLimiter(int32_t sample) {
+    const int32_t limit = 26000;
+    if (sample > limit) {
+        int32_t val = limit + ((sample - limit) >> 2);
+        return (int16_t)(val > 32767 ? 32767 : val);
+    } else if (sample < -limit) {
+        int32_t val = -limit + ((sample + limit) >> 2);
+        return (int16_t)(val < -32768 ? -32768 : val);
+    }
+    return (int16_t)sample;
+}
+
+// --- CAMERA SUBSYSTEM ---
+void setupCamera() {
+    camera_config_t config;
+    config.ledc_channel = LEDC_CHANNEL_0;
+    config.ledc_timer = LEDC_TIMER_0;
+    config.pin_d0 = Y2_GPIO_NUM;
+    config.pin_d1 = Y3_GPIO_NUM;
+    config.pin_d2 = Y4_GPIO_NUM;
+    config.pin_d3 = Y5_GPIO_NUM;
+    config.pin_d4 = Y6_GPIO_NUM;
+    config.pin_d5 = Y7_GPIO_NUM;
+    config.pin_d6 = Y8_GPIO_NUM;
+    config.pin_d7 = Y9_GPIO_NUM;
+    config.pin_xclk = XCLK_GPIO_NUM;
+    config.pin_pclk = PCLK_GPIO_NUM;
+    config.pin_vsync = VSYNC_GPIO_NUM;
+    config.pin_href = HREF_GPIO_NUM;
+    config.pin_sccb_sda = SIOD_GPIO_NUM;
+    config.pin_sccb_scl = SIOC_GPIO_NUM;
+    config.pin_pwdn = PWDN_GPIO_NUM;
+    config.pin_reset = RESET_GPIO_NUM;
+    config.xclk_freq_hz = 10000000; // 10MHz lower clock for 80MHz CPU stability
+    config.pixel_format = PIXFORMAT_JPEG;
+    config.frame_size = FRAMESIZE_QVGA; // 320x240 for rapid low-power evidence capture
+    config.jpeg_quality = 14; 
+    config.fb_count = 1;
+    config.fb_location = CAMERA_FB_IN_PSRAM;
+    config.grab_mode = CAMERA_GRAB_LATEST;
+
+    esp_err_t err = esp_camera_init(&config);
+    if (err == ESP_OK) {
+        cameraReady = true;
+        sensor_t * s = esp_camera_sensor_get();
+        if (s != nullptr) {
+            s->set_vflip(s, 1);
+            // Put camera sensor into standby sleep mode to conserve 40-50mA battery!
+            s->set_hmirror(s, 0);
+        }
+        Serial.println("[CAM] Camera initialized and put in low-power standby.");
+    } else {
+        Serial.printf("[CAM] Camera init failed: 0x%x\n", err);
+    }
+}
+
+// Capture and send snapshot evidence if connected
+void captureIncidentSnapshot() {
+    if (!cameraReady || !hasActiveStream) return;
+    camera_fb_t * fb = esp_camera_fb_get();
+    if (!fb) {
+        Serial.println("[CAM] Capture failed");
+        return;
+    }
+    // Send snapshot header: "SNAP:<len>" followed by JPEG binary payload
+    String header = "SNAP:" + String(fb->len);
+    ws.sendTXT(header);
+    ws.sendBIN(fb->buf, fb->len);
+    esp_camera_fb_return(fb);
+    Serial.println("[CAM] Incident snapshot sent to server");
+}
+
+static void onWebSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
+    switch (type) {
+        case WStype_CONNECTED:
+            hasActiveStream = true;
+            hasPendingWsConnect = false;
+            lastSpeechTime = millis(); // CRITICAL: Reset timeout on connect so it guarantees at least 2.5s of streaming!
+            Serial.println("[WS] Connected to Checkpoint");
+            // Camera stays in sleep! Snapshots are ONLY captured if server flags speech as DANGER
+            break;
+        case WStype_TEXT:
+            if (length > 0) {
+                String msg = String((char*)payload);
+                if (msg == "TRIGGER:DANGER" || msg == "CMD:CAPTURE_SNAPSHOT") {
+                    Serial.println("[CAM] Speech evaluated as DANGER! Capturing camera snapshot...");
+                    captureIncidentSnapshot();
+                } else if (msg.startsWith("CONFIG:BUFFER:")) {
+                    int sec = msg.substring(14).toInt();
+                    if (sec > 0) {
+                        SILENCE_TIMEOUT = sec * 1000;
+                        Serial.printf("[CFG] Silence Timeout updated to: %lu ms\n", SILENCE_TIMEOUT);
+                    }
+                } else if (msg.startsWith("CONFIG:WIFI:")) {
+                    // Format: CONFIG:WIFI:<ssid>:<pass>:<server_ip>:<port>
+                    int p1 = msg.indexOf(':', 12);
+                    int p2 = msg.indexOf(':', p1 + 1);
+                    int p3 = msg.indexOf(':', p2 + 1);
+                    if (p1 > 0 && p2 > 0) {
+                        String n_ssid = msg.substring(12, p1);
+                        String n_pass = msg.substring(p1 + 1, p2);
+                        String n_server = p3 > 0 ? msg.substring(p2 + 1, p3) : msg.substring(p2 + 1);
+                        int n_port = p3 > 0 ? msg.substring(p3 + 1).toInt() : 8080;
+                        if (n_port <= 0) n_port = 8080;
+
+                        Serial.printf("\n[CFG] >>> RECEIVED NEW WI-FI CHECKPOINT OVER WEBSOCKET! <<<\n");
+                        Serial.printf("[CFG] New SSID: '%s' | Server: '%s:%d'\n", n_ssid.c_str(), n_server.c_str(), n_port);
+
+                        // Save current network as backup/secondary checkpoint before switching
+                        if (wifi_ssid.length() > 0 && wifi_ssid != n_ssid) {
+                            prefs.putString("ssid2", wifi_ssid);
+                            prefs.putString("pass2", wifi_pass);
+                            wifi_ssid2 = wifi_ssid;
+                            wifi_pass2 = wifi_pass;
+                        }
+
+                        prefs.putString("ssid", n_ssid);
+                        prefs.putString("pass", n_pass);
+                        prefs.putString("server", n_server);
+                        prefs.putInt("port", n_port);
+
+                        wifi_ssid = n_ssid;
+                        wifi_pass = n_pass;
+                        server_host = n_server;
+                        server_port = n_port;
+                        cachedServerIP = n_server;
+
+                        ws.sendTXT("OK:CONFIG_WIFI_SAVED");
+                        delay(400);
+                        ws.disconnect();
+                        delay(200);
+                        Serial.println("[SYS] Rebooting to connect to updated checkpoint...");
+                        ESP.restart();
+                    }
+                } else if (msg == "CMD:FORGET_WIFI" || msg == "CMD:RESET_WIFI") {
+                    Serial.println("\n[SYS] >>> RECEIVED 'CMD:FORGET_WIFI' FROM DASHBOARD! <<<");
+                    Serial.println("[SYS] Erasing Wi-Fi credentials from NVS flash...");
+                    prefs.remove("ssid");
+                    prefs.remove("pass");
+                    prefs.remove("ssid2");
+                    prefs.remove("pass2");
+                    wifi_ssid = "";
+                    wifi_pass = "";
+                    wifi_ssid2 = "";
+                    wifi_pass2 = "";
+                    ws.disconnect();
+                    delay(500);
+                    Serial.println("[SYS] Rebooting into Setup Portal...");
+                    ESP.restart();
+                }
+            }
+            break;
+        case WStype_DISCONNECTED:
+            hasActiveStream = false;
+            hasPendingWsConnect = false;
+            isUploadingArchive = false;
+            batchBufferLen = 0;
+            if (uploadFile) uploadFile.close();
+            Serial.println("[WS] Disconnected");
+            break;
+        default:
+            break;
+    }
+}
+
+void setupMicrophone() {
+    I2S.setPinsPdmRx(42, 41);
+    if (!I2S.begin(I2S_MODE_PDM_RX, SAMPLE_RATE, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO)) {
+        Serial.println("[ERR] I2S Init Failed!");
+        while(1) delay(100);
+    }
+    speex_st = speex_preprocess_state_init(FRAME_SIZE, SAMPLE_RATE);
+    int vadEnabled = 1;
+    int probStart = 50;  // Lowered from 70 -> 50: more sensitive, catches soft/Tagalog speech
+    int probContinue = 30; // Keep streaming once speech started (even through brief pauses)
+    speex_preprocess_ctl(speex_st, SPEEX_PREPROCESS_SET_VAD, &vadEnabled);
+    speex_preprocess_ctl(speex_st, SPEEX_PREPROCESS_SET_PROB_START, &probStart);
+    speex_preprocess_ctl(speex_st, SPEEX_PREPROCESS_SET_PROB_CONTINUE, &probContinue);
+}
+
+void loadPreferences() {
+    prefs.begin("securelink", false);
+    wifi_ssid = prefs.getString("ssid", "SLTYMTBLLS");
+    wifi_pass = prefs.getString("pass", "9945SUmaxx!");
+    wifi_ssid2 = prefs.getString("ssid2", "");
+    wifi_pass2 = prefs.getString("pass2", "");
+    server_host = prefs.getString("server", "10.28.20.28");
+    server_port = prefs.getInt("port", 8080);
+    cachedServerIP = server_host;
+    Serial.printf("[CFG] Primary Wi-Fi SSID: '%s'\n", wifi_ssid.c_str());
+    if (wifi_ssid2.length() > 0) {
+        Serial.printf("[CFG] Backup/Roaming Wi-Fi SSID: '%s'\n", wifi_ssid2.c_str());
+    }
+    Serial.printf("[CFG] Stored Server Host: '%s:%d'\n", server_host.c_str(), server_port);
+}
+
+void startConfigPortal() {
+    Serial.println("\n==========================================");
+    Serial.println("[AP] STARTING SECURELINK SETUP PORTAL");
+    Serial.println("==========================================");
+
+    if (hasActiveStream) {
+        ws.disconnect();
+        hasActiveStream = false;
+    }
+    WiFi.disconnect(true);
+    delay(100);
+
+    // Scan nearby 2.4GHz networks first
+    WiFi.mode(WIFI_AP_STA);
+    Serial.println("[AP] Scanning nearby Wi-Fi networks (2.4GHz)...");
+    int networkCount = WiFi.scanNetworks();
+    Serial.printf("[AP] Found %d networks\n", networkCount);
+
+    IPAddress apIP(192, 168, 4, 1);
+    IPAddress netMsk(255, 255, 255, 0);
+    WiFi.softAPConfig(apIP, apIP, netMsk);
+    WiFi.softAP("SecureLink-Setup");
+
+    dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
+    dnsServer.start(53, "*", apIP);
+
+    webServer.on("/", HTTP_GET, [networkCount]() {
+        String html = "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'><title>SecureLink Pin Setup</title>";
+        html += "<style>";
+        html += "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0f172a;color:#f8fafc;padding:16px;margin:0;}";
+        html += ".card{max-width:440px;margin:16px auto;background:#1e293b;border-radius:16px;padding:24px;box-shadow:0 10px 30px rgba(0,0,0,0.5);border:1px solid #334155;}";
+        html += "h1{font-size:20px;margin:0 0 6px;color:#38bdf8;text-align:center;font-weight:700;}";
+        html += "p{font-size:13px;color:#94a3b8;margin-bottom:18px;text-align:center;}";
+        html += ".cur{background:#0f172a;border:1px solid #334155;border-radius:10px;padding:12px;margin-bottom:18px;font-size:12px;}";
+        html += ".cur div{margin-bottom:4px;}";
+        html += ".cur span{color:#38bdf8;font-weight:600;}";
+        html += "label{display:block;font-size:13px;font-weight:600;margin:12px 0 6px;color:#cbd5e1;}";
+        html += "input,select{width:100%;box-sizing:border-box;padding:11px 12px;border-radius:8px;border:1px solid #475569;background:#0f172a;color:#fff;font-size:14px;outline:none;}";
+        html += "input:focus,select:focus{border-color:#38bdf8;}";
+        html += ".btn{width:100%;margin-top:22px;padding:13px;background:#0284c7;color:#fff;font-weight:700;font-size:15px;border:none;border-radius:10px;cursor:pointer;}";
+        html += ".btn:hover{background:#0369a1;}";
+        html += ".badge{background:#334155;padding:2px 6px;border-radius:4px;font-size:11px;color:#38bdf8;margin-left:4px;}";
+        html += "</style></head><body>";
+        html += "<div class='card'>";
+        html += "<h1>SecureLink Smart Pin</h1>";
+        html += "<p>Wi-Fi & Checkpoint Server Setup</p>";
+        
+        html += "<div class='cur'>";
+        html += "<div>Current Wi-Fi: <span>" + (wifi_ssid.length() > 0 ? wifi_ssid : "(None)") + "</span></div>";
+        html += "<div>Current Server: <span>" + server_host + ":" + String(server_port) + "</span></div>";
+        html += "</div>";
+
+        html += "<form method='POST' action='/save'>";
+        html += "<label>Wi-Fi Network (SSID)</label>";
+        html += "<select id='ssidSelect' name='ssid' onchange='checkCustomSSID(this.value)'>";
+        html += "<option value=''>-- Select Detected 2.4GHz Network --</option>";
+        for (int i = 0; i < networkCount; i++) {
+            String s = WiFi.SSID(i);
+            int r = WiFi.RSSI(i);
+            if (s.length() > 0) {
+                html += "<option value='" + s + "'" + (s == wifi_ssid ? " selected" : "") + ">" + s + " (" + String(r) + " dBm)</option>";
+            }
+        }
+        html += "<option value='__custom__'>-- Enter Hidden or Other SSID --</option>";
+        html += "</select>";
+        html += "<input type='text' id='customSsid' placeholder='Type Wi-Fi SSID manually' style='display:none;margin-top:8px;'>";
+        
+        html += "<label>Wi-Fi Password</label>";
+        html += "<input type='password' name='pass' placeholder='Leave empty if open network' value='" + wifi_pass + "'>";
+        
+        html += "<label>Server Host / IP <span class='badge'>WebSocket</span></label>";
+        html += "<input type='text' name='server' placeholder='e.g. 10.28.20.28 or my-tunnel.domain.com' value='" + server_host + "' required>";
+        
+        html += "<label>Server Port</label>";
+        html += "<input type='number' name='port' value='" + String(server_port) + "' required>";
+        
+        html += "<button type='submit' class='btn'>Save & Reboot</button>";
+        html += "</form>";
+        
+        if (wifi_ssid.length() > 0) {
+            html += "<form method='POST' action='/reset' onsubmit='return confirm(\"Forget currently saved Wi-Fi network?\");' style='margin-top:12px;'>";
+            html += "<button type='submit' style='width:100%;padding:10px;background:#ef444420;color:#fca5a5;border:1px solid #ef444455;border-radius:10px;font-size:12px;font-weight:600;cursor:pointer;'>Forget Saved Wi-Fi</button>";
+            html += "</form>";
+        }
+        
+        html += "</div>";
+        
+        html += "<script>";
+        html += "function checkCustomSSID(v){";
+        html += "  var c=document.getElementById('customSsid');";
+        html += "  if(v==='__custom__'){c.style.display='block';c.name='ssid';document.getElementById('ssidSelect').name='';c.focus();}";
+        html += "  else{c.style.display='none';c.name='';document.getElementById('ssidSelect').name='ssid';}";
+        html += "}";
+        html += "</script></body></html>";
+
+        webServer.send(200, "text/html", html);
+    });
+
+    webServer.on("/save", HTTP_POST, []() {
+        String new_ssid = webServer.arg("ssid");
+        String new_pass = webServer.arg("pass");
+        String new_server = webServer.arg("server");
+        int new_port = webServer.arg("port").toInt();
+        if (new_port <= 0) new_port = 8080;
+
+        new_ssid.trim();
+        new_pass.trim();
+        new_server.trim();
+
+        if (new_ssid.length() > 0) {
+            prefs.putString("ssid", new_ssid);
+            prefs.putString("pass", new_pass);
+            prefs.putString("server", new_server);
+            prefs.putInt("port", new_port);
+
+            wifi_ssid = new_ssid;
+            wifi_pass = new_pass;
+            server_host = new_server;
+            server_port = new_port;
+            cachedServerIP = server_host;
+
+            Serial.printf("[AP] New Configuration Saved!\n  SSID: %s\n  Host: %s:%d\n", 
+                wifi_ssid.c_str(), server_host.c_str(), server_port);
+
+            String resp = "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>";
+            resp += "<style>body{background:#0f172a;color:#f8fafc;font-family:sans-serif;text-align:center;padding:50px 20px;}";
+            resp += ".box{max-width:380px;margin:auto;background:#1e293b;padding:30px;border-radius:16px;border:1px solid #334155;}";
+            resp += "h2{color:#4ade80;}p{color:#94a3b8;font-size:14px;}</style></head><body>";
+            resp += "<div class='box'><h2>Credentials Saved!</h2>";
+            resp += "<p>Pin is restarting and connecting to <b>" + wifi_ssid + "</b>.</p>";
+            resp += "<p>You may now switch back to your normal Wi-Fi.</p></div></body></html>";
+
+            webServer.send(200, "text/html", resp);
+            delay(1500);
+            ESP.restart();
+        } else {
+            webServer.send(400, "text/plain", "SSID cannot be empty!");
+        }
+    });
+
+    webServer.on("/reset", HTTP_POST, []() {
+        prefs.remove("ssid");
+        prefs.remove("pass");
+        wifi_ssid = "";
+        wifi_pass = "";
+        Serial.println("[AP] Stored Wi-Fi cleared via portal reset button!");
+        String resp = "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>";
+        resp += "<style>body{background:#0f172a;color:#f8fafc;font-family:sans-serif;text-align:center;padding:50px 20px;}";
+        resp += ".box{max-width:380px;margin:auto;background:#1e293b;padding:30px;border-radius:16px;border:1px solid #334155;}";
+        resp += "h2{color:#ef4444;}p{color:#94a3b8;font-size:14px;}</style></head><body>";
+        resp += "<div class='box'><h2>Network Forgotten!</h2>";
+        resp += "<p>Saved credentials have been wiped. Reloading setup portal...</p></div>";
+        resp += "<script>setTimeout(()=>{window.location.href='/';},1500);</script></body></html>";
+        webServer.send(200, "text/html", resp);
+    });
+
+    // Captive portal detection redirects (iOS, Android, Windows)
+    auto redirectHandler = []() {
+        webServer.sendHeader("Location", "http://192.168.4.1/", true);
+        webServer.send(302, "text/plain", "");
+    };
+    webServer.on("/hotspot-detect.html", HTTP_GET, redirectHandler);
+    webServer.on("/generate_204", HTTP_GET, redirectHandler);
+    webServer.on("/gen_204", HTTP_GET, redirectHandler);
+    webServer.on("/connecttest.txt", HTTP_GET, redirectHandler);
+    webServer.on("/ncsi.txt", HTTP_GET, redirectHandler);
+    webServer.onNotFound(redirectHandler);
+
+    webServer.begin();
+    Serial.println("[AP] Setup Portal is online at http://192.168.4.1");
+    Serial.println("[AP] Connect your phone or PC to Wi-Fi: 'SecureLink-Setup'");
+    Serial.println("[AP] Open http://192.168.4.1 in your browser if portal doesn't open automatically.");
+    Serial.println("[AP] (Hold Boot button for 2s or type 'exit' in Serial to cancel)");
+
+    unsigned long portalStart = millis();
+    while (true) {
+        dnsServer.processNextRequest();
+        webServer.handleClient();
+        
+        handleSerialCommands();
+
+        
+        static unsigned long exitBtnStart = 0;
+        if (digitalRead(0) == LOW) {
+            if (exitBtnStart == 0) exitBtnStart = millis();
+            else if (millis() - exitBtnStart > 2000) {
+                Serial.println("[AP] Boot button held. Exiting portal and restarting...");
+                ESP.restart();
+            }
+        } else {
+            exitBtnStart = 0;
+        }
+
+        // Safety timeout after 10 minutes
+        if (millis() - portalStart > 600000) {
+            Serial.println("[AP] Portal timeout (10 min). Rebooting...");
+            ESP.restart();
+        }
+        delay(10);
+    }
+}
+
+void discoverCheckpoint() {
+    if (hasActiveStream || hasPendingWsConnect || wifiConnectInProgress) return;
+
+    if (WiFi.status() != WL_CONNECTED) {
+        wifiConnectInProgress = true;
+        wifiConnectStartedAt = millis();
+        WiFi.mode(WIFI_STA);
+        WiFi.begin(wifi_ssid.c_str(), wifi_pass.c_str());
+        Serial.printf("[WIFI] Connecting to %s...\n", wifi_ssid.c_str());
+        return;
+    }
+
+    if (cachedServerIP != "") {
+        ws.begin(cachedServerIP.c_str(), server_port, WS_PATH_PRIMARY);
+        ws.onEvent(onWebSocketEvent);
+        hasPendingWsConnect = true;
+        wsConnectStartedAt = millis();
+        return;
+    }
+
+    udp.begin(8888);
+    udp.beginPacket(IPAddress(255, 255, 255, 255), 8888);
+    udp.print("SECURELINK_PIN_V1");
+    udp.endPacket();
+
+    // Give server up to 800ms to respond over Wi-Fi (50ms was too fast)
+    unsigned long waitStart = millis();
+    while (millis() - waitStart < 800) {
+        if (udp.parsePacket()) {
+            cachedServerIP = udp.remoteIP().toString();
+            Serial.printf("[UDP] Found Checkpoint Server at: %s\n", cachedServerIP.c_str());
+            ws.begin(cachedServerIP.c_str(), server_port, WS_PATH_PRIMARY);
+            ws.onEvent(onWebSocketEvent);
+            hasPendingWsConnect = true;
+            wsConnectStartedAt = millis();
+            break;
+        }
+        delay(20);
+    }
+}
+
+// Ensure space exists before local recording: deletes oldest timestamped incident
+void enforceFreeSpace() {
+    if (!fsReady) return;
+    
+    while ((LittleFS.totalBytes() - LittleFS.usedBytes()) < 400000) {
+        File root = LittleFS.open("/");
+        File file = root.openNextFile();
+        if (!file) break;
+        
+        String oldestFile = "";
+        unsigned long oldestTime = 0xFFFFFFFF;
+
+        while (file) {
+            String name = String(file.name());
+            if (name.startsWith("inc_") && name.endsWith(".pcm")) {
+                int start = name.indexOf('_') + 1;
+                int end = name.indexOf('.');
+                unsigned long t = name.substring(start, end).toInt();
+                if (t < oldestTime) {
+                    oldestTime = t;
+                    oldestFile = "/" + name;
+                }
+            }
+            file = root.openNextFile();
+        }
+        root.close();
+
+        if (oldestFile != "") {
+            LittleFS.remove(oldestFile);
+            Serial.println("[FS] Low space. Removed oldest file: " + oldestFile);
+        } else {
+            break;
+        }
+    }
+}
+
+void processArchiveUpload() {
+    if (!hasActiveStream || !fsReady || isOfflineRecording) return;
+
+    if (!isUploadingArchive) {
+        File root = LittleFS.open("/");
+        File file = root.openNextFile();
+        while (file) {
+            String name = String(file.name());
+            if (name.endsWith(".pcm")) {
+                uploadFilePath = "/" + name;
+                uploadFile = LittleFS.open(uploadFilePath, FILE_READ);
+                isUploadingArchive = true;
+                ws.sendTXT("ARCHIVE_START:" + uploadFilePath);
+                Serial.printf("[INC] Syncing stored incident: %s\n", uploadFilePath.c_str());
+                file.close();
+                root.close();
+                return;
+            }
+            file = root.openNextFile();
+        }
+        root.close();
+        return; 
+    }
+
+    if (uploadFile.available()) {
+        uint8_t buf[2048];
+        size_t bytesRead = uploadFile.read(buf, sizeof(buf));
+        ws.sendBIN(buf, bytesRead);
+    } else {
+        uploadFile.close();
+        LittleFS.remove(uploadFilePath);
+        ws.sendTXT("ARCHIVE_END:" + uploadFilePath);
+        Serial.printf("[INC] Sync complete. Deleted: %s\n", uploadFilePath.c_str());
+        isUploadingArchive = false;
+    }
+}
+
+void handleSerialCommands() {
+    if (Serial.available()) {
+        String cmd = Serial.readStringUntil('\n');
+        cmd.trim();
+        if (cmd.startsWith("SET_WIFI:") || cmd.startsWith("CONFIG_WIFI:")) {
+            // Format: SET_WIFI:<ssid>:<pass>:<server_ip>:<port>
+            int p1 = cmd.indexOf(':');
+            int p2 = cmd.indexOf(':', p1 + 1);
+            int p3 = cmd.indexOf(':', p2 + 1);
+            int p4 = cmd.indexOf(':', p3 + 1);
+            if (p1 > 0 && p2 > 0) {
+                String n_ssid = cmd.substring(p1 + 1, p2);
+                String n_pass = cmd.substring(p2 + 1, p3 > 0 ? p3 : cmd.length());
+                String n_server = p3 > 0 ? cmd.substring(p3 + 1, p4 > 0 ? p4 : cmd.length()) : server_host;
+                int n_port = p4 > 0 ? cmd.substring(p4 + 1).toInt() : server_port;
+                if (n_port <= 0) n_port = 8080;
+
+                // If primary Wi-Fi is changing, save previous as secondary roaming backup
+                if (wifi_ssid.length() > 0 && wifi_ssid != n_ssid) {
+                    prefs.putString("ssid2", wifi_ssid);
+                    prefs.putString("pass2", wifi_pass);
+                    wifi_ssid2 = wifi_ssid;
+                    wifi_pass2 = wifi_pass;
+                }
+
+                prefs.putString("ssid", n_ssid);
+                prefs.putString("pass", n_pass);
+                prefs.putString("server", n_server);
+                prefs.putInt("port", n_port);
+
+                wifi_ssid = n_ssid;
+                wifi_pass = n_pass;
+                server_host = n_server;
+                server_port = n_port;
+                cachedServerIP = n_server;
+
+                Serial.printf("[SYS] OK:CONFIG_SAVED - Primary:'%s' Backup:'%s' Host:'%s:%d'\n", wifi_ssid.c_str(), wifi_ssid2.c_str(), server_host.c_str(), server_port);
+                delay(300);
+                ESP.restart();
+            } else {
+                Serial.println("[ERR] Invalid SET_WIFI format. Use: SET_WIFI:<ssid>:<pass>:<server_ip>:<port>");
+            }
+        } else if (cmd.equalsIgnoreCase("format")) {
+            Serial.println("[FS] Formatting LittleFS. Please wait...");
+            if (LittleFS.format()) {
+                Serial.println("[FS] Format Complete! Storage is empty.");
+            } else {
+                Serial.println("[ERR] Format Failed.");
+            }
+        } else if (cmd.equalsIgnoreCase("setup") || cmd.equalsIgnoreCase("portal") || cmd.equalsIgnoreCase("wifi") || cmd.equalsIgnoreCase("config")) {
+            Serial.println("[SYS] Setup command received. Starting Web Portal...");
+            startConfigPortal();
+        } else if (cmd.equalsIgnoreCase("status")) {
+            Serial.printf("[STATUS] SSID:%s IP:%s WS:%d VAD:%d\n", wifi_ssid.c_str(), WiFi.localIP().toString().c_str(), (int)hasActiveStream, (int)lastVadState);
+        }
+    }
+}
+
+// Flush any buffered frames via WebSocket
+void flushAudioBatch() {
+    if (batchBufferLen > 0 && hasActiveStream) {
+        ws.sendBIN(batchBuffer, batchBufferLen);
+        batchBufferLen = 0;
+    }
+}
+
+void setup() {
+    // 1. UNDERCLOCK TO 160MHz FOR BALANCE OF BATTERY LIFE AND AUDIO PROCESSING
+    setCpuFrequencyMhz(160);
+
+    Serial.begin(115200);
+    delay(500);
+    Serial.printf("[SYS] CPU Clock: %d MHz\n", getCpuFrequencyMhz());
+
+    pinMode(0, INPUT_PULLUP); // XIAO ESP32S3 Boot button
+    loadPreferences();
+
+    // If Boot button is pressed at power-on or no SSID is configured, enter setup portal immediately
+    if (digitalRead(0) == LOW || wifi_ssid == "") {
+        Serial.println("[SYS] Starting setup portal (Boot button pressed or unconfigured)...");
+        startConfigPortal();
+    }
+
+    bootStartMs = millis();
+
+    // 2. INITIALIZE PSRAM RING BUFFER
+    if (psramInit()) {
+        preBuffer = (uint8_t*)ps_malloc(RING_BUFFER_SIZE);
+        Serial.printf("[SYS] 8MB PSRAM found! Ring Buffer allocated in PSRAM: %u bytes\n", (unsigned int)RING_BUFFER_SIZE);
+    } else {
+        preBuffer = (uint8_t*)malloc(RING_BUFFER_SIZE);
+        Serial.printf("[WARN] PSRAM not found. Allocated %u bytes in SRAM\n", (unsigned int)RING_BUFFER_SIZE);
+    }
+
+    if (!preBuffer) {
+        Serial.println("[ERR] Ring buffer allocation failed!");
+        while(1) delay(100);
+    }
+
+    setupMicrophone();
+    setupCamera();
+    
+    if (LittleFS.begin(true)) {
+        fsReady = true;
+        Serial.printf("[FS] Flash mounted. Total: %u bytes, Used: %u bytes\n", 
+            LittleFS.totalBytes(), LittleFS.usedBytes());
+    } else {
+        Serial.println("[ERR] LittleFS Mount Failed");
+    }
+
+    // 3. BOOT WI-FI CONNECTION CHECK & ROAMING FALLBACK
+    bool connected = false;
+    if (wifi_ssid.length() > 0) {
+        Serial.printf("\n[WIFI] Checking primary checkpoint '%s'...\n", wifi_ssid.c_str());
+        WiFi.mode(WIFI_STA);
+        WiFi.begin(wifi_ssid.c_str(), wifi_pass.c_str());
+        unsigned long t0 = millis();
+        while (WiFi.status() != WL_CONNECTED && millis() - t0 < 4500) {
+            delay(100);
+            Serial.print(".");
+            handleSerialCommands();
+        }
+        Serial.println();
+        if (WiFi.status() == WL_CONNECTED) {
+            connected = true;
+            Serial.printf("[WIFI] Connected to Primary! Smart Pin IP: %s\n", WiFi.localIP().toString().c_str());
+        }
+    }
+
+    if (!connected && wifi_ssid2.length() > 0) {
+        Serial.printf("\n[WIFI] Trying roaming backup checkpoint '%s'...\n", wifi_ssid2.c_str());
+        WiFi.disconnect(true);
+        delay(100);
+        WiFi.begin(wifi_ssid2.c_str(), wifi_pass2.c_str());
+        unsigned long t0 = millis();
+        while (WiFi.status() != WL_CONNECTED && millis() - t0 < 4500) {
+            delay(100);
+            Serial.print(".");
+            handleSerialCommands();
+        }
+        Serial.println();
+        if (WiFi.status() == WL_CONNECTED) {
+            connected = true;
+            Serial.printf("[WIFI] Connected to Backup Checkpoint! Smart Pin IP: %s\n", WiFi.localIP().toString().c_str());
+        }
+    }
+
+    if (connected) {
+        discoverCheckpoint();
+    } else {
+        Serial.println("[WIFI] No authorized checkpoints reached. Launching Setup Portal ('SecureLink-Setup')...");
+        startConfigPortal();
+    }
+}
+
+void loop() {
+    handleSerialCommands();
+
+    // Check for Boot button held for 2 seconds anytime to enter setup portal
+    static unsigned long btnHoldStart = 0;
+    if (digitalRead(0) == LOW) {
+        if (btnHoldStart == 0) btnHoldStart = millis();
+        else if (millis() - btnHoldStart > 2000) {
+            btnHoldStart = 0;
+            Serial.println("\n[SYS] Boot button held for 2s! Launching Setup Portal...");
+            startConfigPortal();
+        }
+    } else {
+        btnHoldStart = 0;
+    }
+
+    if (WiFi.status() == WL_CONNECTED) {
+        ws.loop();
+        if (hasPendingWsConnect && ws.isConnected()) {
+            hasActiveStream = true;
+            hasPendingWsConnect = false;
+        }
+        if (hasPendingWsConnect && (millis() - wsConnectStartedAt > WS_CONNECT_TIMEOUT_MS)) {
+            ws.disconnect();
+            hasPendingWsConnect = false;
+            cachedServerIP = server_host; 
+        }
+    }
+
+    if (wifiConnectInProgress) {
+        if (WiFi.status() == WL_CONNECTED) {
+            wifiConnectInProgress = false; // Reset instantly upon successful connection!
+            wifiFailStreak = 0;
+        } else if (millis() - wifiConnectStartedAt > WIFI_CONNECT_TIMEOUT_MS) {
+            wifiConnectInProgress = false;
+            WiFi.disconnect(true);
+            WiFi.mode(WIFI_OFF);
+            wifiFailStreak++;
+            Serial.printf("[WIFI] Timeout. Failed attempts: %d\n", wifiFailStreak);
+            
+            // If failed 2 times in a row, the user is likely in a new location!
+            if (wifiFailStreak >= 2) {
+                Serial.println("[WIFI] Saved Wi-Fi unreachable (2 consecutive timeouts).");
+                Serial.println("[WIFI] Auto-launching Setup Portal so you can connect to new network!");
+                wifiFailStreak = 0;
+                startConfigPortal();
+            }
+        }
+    }
+
+    size_t bytesRead = I2S.readBytes((char*)audioBuffer, sizeof(audioBuffer));
+    if (bytesRead != sizeof(audioBuffer)) return; // Only process full frames!
+
+    // Apply High-Pass Filter & VAD analysis
+    int32_t currentPeak = 0;
+    for (int i = 0; i < FRAME_SIZE; i++) {
+        int16_t filtered = applyHighPass(audioBuffer[i]);
+        audioBuffer[i] = filtered; // Clean audio for transmission
+        vadBuffer[i] = filtered;
+        if (abs(filtered) > currentPeak) currentPeak = abs(filtered);
+    }
+
+    speex_preprocess_run(speex_st, vadBuffer);
+    int isSpeech = 0;
+    speex_preprocess_ctl(speex_st, SPEEX_PREPROCESS_GET_VAD, &isSpeech);
+
+    // NOISE FLOOR: Only calibrate during the first 3s (boot silence).
+    // After that, the floor is FROZEN. This prevents the floor from chasing
+    // the user's voice and raising the threshold above their speech level.
+    if (millis() - bootStartMs < 3000) {
+        peakNoiseFloor = (peakNoiseFloor * 7 + currentPeak) / 8;
+    }
+    // Floor is intentionally NOT updated after boot — it stays static.
+
+    const int thresholdBase = peakNoiseFloor + MIN_PEAK_MARGIN;
+    const bool inSpeechWindow = speechStreak > 0;
+    bool speechDetected = (isSpeech != 0) && (currentPeak >= (inSpeechWindow ? thresholdBase - PEAK_HYSTERESIS : thresholdBase));
+
+    if (speechDetected) {
+        if (speechStreak < 255) speechStreak++;
+    } else {
+        if (speechStreak > 0) speechStreak--;
+    }
+
+    bool speechArmed = (speechStreak >= SPEECH_STREAK_REQUIRED);
+
+    if (speechArmed != lastVadState) {
+        Serial.println(speechArmed ? "[VAD] VOICE DETECTED" : "[VAD] SILENCE");
+        lastVadState = speechArmed;
+    }
+
+    if (speechArmed) {
+        lastSpeechTime = millis();
+    }
+
+    bool inRecordingWindow = (millis() - lastSpeechTime <= SILENCE_TIMEOUT);
+
+    // Apply Gain & Soft Limiting
+    uint8_t outBuf[bytesRead];
+    for (int i = 0; i < (bytesRead / 2); i++) {
+        int32_t amp = (int32_t)audioBuffer[i] << STREAM_GAIN_SHIFT;
+        int16_t limited = applySoftLimiter(amp);
+        outBuf[i * 2] = limited & 0xFF;
+        outBuf[i * 2 + 1] = (limited >> 8) & 0xFF;
+    }
+
+    // ZERO-AUDIO-DROP LOGIC:
+    // If we are not actively streaming or writing to LittleFS,
+    // KEEP appending to the ring buffer! This ensures that words spoken
+    // during the 1.5-3s Wi-Fi handshake are never dropped.
+    bool streamingOrWriting = hasActiveStream || (isOfflineRecording && offlineIncidentFile);
+    if (!streamingOrWriting) {
+        for (size_t i = 0; i < bytesRead; i++) {
+            preBuffer[preBufferHead++] = outBuf[i];
+            if (preBufferHead >= RING_BUFFER_SIZE) { 
+                preBufferHead = 0; 
+                preBufferWrapped = true; 
+            }
+        }
+    }
+
+    if (inRecordingWindow) {
+        if (!hasActiveStream && !isOfflineRecording) {
+            discoverCheckpoint();
+            
+            if (!wifiConnectInProgress && !hasActiveStream && fsReady) {
+                enforceFreeSpace();
+
+                isOfflineRecording = true;
+                needsBurstDump = true;
+                currentIncidentPath = "/inc_" + String(millis()) + ".pcm";
+                offlineIncidentFile = LittleFS.open(currentIncidentPath, FILE_WRITE);
+                Serial.printf("[FS] Network unavailable. Recording locally to %s\n", currentIncidentPath.c_str());
+            } else if (hasActiveStream) {
+                needsBurstDump = true;
+            }
+        } 
+        
+        if (hasActiveStream && !isUploadingArchive) {
+            if (needsBurstDump) {
+                Serial.println("[SYS] Uploading Pre-roll Buffer to Server...");
+                size_t oldestPos = preBufferWrapped ? preBufferHead : 0;
+                size_t toSend = preBufferWrapped ? RING_BUFFER_SIZE : preBufferHead;
+                size_t chunkSize = 4096; 
+                for (size_t sent = 0; sent < toSend; sent += chunkSize) {
+                    size_t currentChunk = min(chunkSize, toSend - sent);
+                    uint8_t tempBuf[currentChunk];
+                    for (size_t i = 0; i < currentChunk; i++) {
+                        tempBuf[i] = preBuffer[(oldestPos + sent + i) % RING_BUFFER_SIZE];
+                    }
+                    ws.sendBIN(tempBuf, currentChunk);
+                }
+                needsBurstDump = false;
+                preBufferHead = 0; 
+                preBufferWrapped = false;
+            }
+            
+            // Batch 5 audio frames (100ms) before sending via Wi-Fi to reduce RF transmit power
+            memcpy(batchBuffer + batchBufferLen, outBuf, bytesRead);
+            batchBufferLen += bytesRead;
+            if (batchBufferLen >= BATCH_SIZE) {
+                ws.sendBIN(batchBuffer, batchBufferLen);
+                batchBufferLen = 0;
+            }
+        } else if (isOfflineRecording && offlineIncidentFile) {
+            if (needsBurstDump) {
+                Serial.println("[FS] Dumping Pre-roll Buffer to Local File...");
+                size_t oldestPos = preBufferWrapped ? preBufferHead : 0;
+                size_t toSend = preBufferWrapped ? RING_BUFFER_SIZE : preBufferHead;
+                for (size_t sent = 0; sent < toSend; sent++) {
+                    uint8_t b = preBuffer[(oldestPos + sent) % RING_BUFFER_SIZE];
+                    offlineIncidentFile.write(b);
+                }
+                needsBurstDump = false;
+                preBufferHead = 0; 
+                preBufferWrapped = false;
+            }
+            offlineIncidentFile.write(outBuf, bytesRead);
+        }
+    } else {
+        // Voice ended and silence timeout reached
+        if (hasActiveStream && !isUploadingArchive) {
+            flushAudioBatch();
+            Serial.println("\n[SYS] Silence timeout. Entering Modem Sleep.");
+            delay(200); // CRITICAL: Allow TCP stack to actually transmit the final packet before radio shuts off!
+            ws.disconnect();
+            delay(50);
+            hasActiveStream = false;
+            WiFi.disconnect(true);
+            WiFi.mode(WIFI_OFF);
+            cachedServerIP = server_host; 
+            
+            // CRITICAL: Clear preBuffer so we don't accidentally send old audio on the next wake up!
+            preBufferHead = 0;
+            preBufferWrapped = false;
+        }
+        if (isOfflineRecording) {
+            isOfflineRecording = false;
+            if (offlineIncidentFile) {
+                offlineIncidentFile.close();
+                Serial.println("[FS] Offline recording saved and closed.");
+            }
+        }
+    }
+
+    processArchiveUpload();
+}
