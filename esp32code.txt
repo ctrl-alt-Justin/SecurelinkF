@@ -854,7 +854,8 @@ void audioRecordTask(void* pvParameters) {
         // 1) Speex VAD confirms vocal fold harmonics (isSpeech != 0)
         // 2) Amplitude rises significantly above ambient baseline (+50)
         // 3) Absolute peak >= 220 (ignores mic idle floor 60-160 and fan hum)
-        bool speechDetected = (isSpeech != 0) && (currentPeak > ambientFloor + 50) && (currentPeak >= 220);
+        // 4) Amplitude fallback bypass (currentPeak >= 450): prevents Speex zero-noise silence freezes
+        bool speechDetected = ((isSpeech != 0) && (currentPeak > ambientFloor + 50) && (currentPeak >= 220)) || (currentPeak >= 450);
 
         // VAD Hangover Engine: 400ms (20 frames) hangover bridges natural breath pauses & consonants
         if (speechDetected) {
@@ -1075,12 +1076,23 @@ void loop() {
         }
     } else {
         wifiWasDisconnected = true;
+        // Purge dead/zombie WebSocket state immediately if Wi-Fi drops
+        if (ws.isConnected() || hasPendingWsConnect || hasActiveStream || isStreaming) {
+            ws.disconnect();
+            hasActiveStream = false;
+            isStreaming = false;
+            hasPendingWsConnect = false;
+            Serial.println("[WS] Wi-Fi lost! Forced disconnect and reset all streaming flags.");
+        }
+
         // Resilient background Wi-Fi auto-reconnection:
         // If Wi-Fi is temporarily lost, quietly retry every 5s. NEVER auto-lock into Setup Portal!
         static unsigned long lastWifiRetry = 0;
         if (millis() - lastWifiRetry > 5000) {
             lastWifiRetry = millis();
             Serial.printf("[WIFI] Reconnecting to '%s'...\n", wifi_ssid.c_str());
+            WiFi.disconnect(true);
+            delay(50);
             WiFi.mode(WIFI_STA);
             WiFi.begin(wifi_ssid.c_str(), wifi_pass.c_str());
         }
