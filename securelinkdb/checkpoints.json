@@ -8,28 +8,6 @@
     "server_port": 8080,
     "is_default": true,
     "created_at": "2026-10-14 01:20",
-    "last_deployed": "2026-10-14 01:21"
-  },
-  {
-    "id": "chk_library",
-    "name": "Library & Study Hub",
-    "ssid": "Campus-Library-Secure",
-    "pass": "LibraryPass2026",
-    "server_ip": "10.28.20.4",
-    "server_port": 8080,
-    "is_default": false,
-    "created_at": "2026-10-14 01:20",
-    "last_deployed": null
-  },
-  {
-    "id": "chk_gate",
-    "name": "Security Gate & Perimeter",
-    "ssid": "Security-Gate-AP01",
-    "pass": "SecureGate99!",
-    "server_ip": "10.28.20.4",
-    "server_port": 8080,
-    "is_default": false,
-    "created_at": "2026-10-14 01:20",
-    "last_deployed": null
+    "last_deployed": "2026-10-14 02:29"
   }
 ]

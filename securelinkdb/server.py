@@ -3,6 +3,7 @@ import io
 import json
 import logging
 import os
+import re
 import socket
 import struct
 import time
@@ -10,6 +11,7 @@ import wave
 from datetime import datetime
 
 import numpy as np
+import scipy.signal as signal
 import torch
 import torch.nn.functional as F
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -67,17 +69,7 @@ def load_tagalog_vocabulary(filepath: str = "tagalog_words.txt"):
     Returns:
         (initial_prompt, hotwords_str)
     """
-    default_prompt = (
-        "Usapan sa wikang Tagalog at Filipino ng mga estudyante sa paaralan. "
-        "Mga karaniwang salita: anong ginagawa mo, malong ginagawa mo, pangit ka, "
-        "walang kwenta, walang kuenta, kumusta ka, tara na kain tayo, bakit ganyan, "
-        "saan ka pupunta, kailan pa, ano ba yan, pre pakiusap, tanga ka talaga, "
-        "bobo, bugbugin kita, suntukan, baon, pera, palamunin, gago, "
-        "hiwain, patayin kita, upakan kita, pahiram ng ballpen, resbak, yari ka na, "
-        "kupal, bwisit ka, ambag mo, ilabas mo ang gamit mo, sasapakin kita, "
-        "wag ka maingay, putangina, inutil, duwag, takot ka, lumayas ka, "
-        "pabibo, mayabang, pakialamero, nagmamataas, sinungaling."
-    )
+    default_prompt = "Hello mic check. Pangit ka! Nagana pa ba 'to? Anong meron diyan? Anong ginagawa mo? Kumusta ka? Usapan sa wikang Tagalog, Filipino, at Taglish ng mga mag-aaral sa paaralan."
     if not os.path.exists(filepath):
         print(f"[SYS] {filepath} not found. Using default Tagalog prompt.")
         return default_prompt, ""
@@ -90,14 +82,7 @@ def load_tagalog_vocabulary(filepath: str = "tagalog_words.txt"):
                 if line and not line.startswith("#") and not line.startswith("["):
                     words.append(line)
         print(f"[SYS] Successfully loaded {len(words)} Tagalog words/phrases from {filepath}")
-        
-        prompt = (
-            "Usapan sa wikang Tagalog at Filipino. Mga karaniwang salita: "
-            "anong meron diyan, anong meron doon, anong ginagawa mo, mic check, "
-            "kumusta ka, saan ka pupunta, bakit ganyan, ano ba yan, sandali, "
-            "pakiusap, teka, pakinggan mo, tulong, baon, pera, ambag, walang kwenta."
-        )
-        return prompt, ""
+        return default_prompt, ""
     except Exception as e:
         print(f"[WARN] Failed to load prompt ({e}).")
         return default_prompt, ""
@@ -105,27 +90,28 @@ def load_tagalog_vocabulary(filepath: str = "tagalog_words.txt"):
 INITIAL_TAGALOG_PROMPT, _ = load_tagalog_vocabulary()
 
 # =========================================================================
-# 2. SERVER-SIDE ACOUSTIC DENOISING SETUP (DEEPFILTERNET + NOISEREDUCE)
+# 2. SERVER-SIDE ACOUSTIC DENOISING SETUP (MICROSOFT NSNet2 + NOISEREDUCE)
 # =========================================================================
-print("\n[SYS] Initializing Server-side Acoustic Denoising...")
-has_deepfilternet = False
-df_model = None
-df_state = None
+print("\n[SYS] Initializing Server-side Acoustic Denoising (Microsoft NSNet2)...")
+has_nsnet2 = False
+nsnet2_denoiser = None
 
 try:
-    from df.enhance import enhance, init_df  # type: ignore
-    df_model, df_state, _ = init_df()
-    # The AI guide suggested DeepFilterNet3, but it was trained on English voice profiles.
-    # It aggressively destroys Tagalog consonants (causing "mincent", "ndip", "Well on Cuenta").
-    has_deepfilternet = False
-    print("[SYS] DeepFilterNet3 disabled (distorts Tagalog). Falling back to NoiseReduce.")
-except Exception:
-    pass
+    from nsnet2 import NSNet2Denoiser
+    nsnet2_denoiser = NSNet2Denoiser()
+    has_nsnet2 = True
+    print("[SYS] Microsoft NSNet2 Neural Noise Suppression loaded! Fan/AC isolation ACTIVE.")
+except Exception as e:
+    print(f"[WARN] Failed to initialize NSNet2 ({e}).")
+    has_nsnet2 = False
+
+# Adjustable noise reduction strength (0.0 = transparent/off, 1.0 = maximum suppression)
+# 0.60 is the balanced sweet spot: fan noise is eliminated while words ('anong ginagawa mo') remain complete
+DENOISE_STRENGTH = 0.60
 
 try:
     import noisereduce as nr  # type: ignore
     has_noisereduce = True
-    print("[SYS] NoiseReduce Spectral Gating loaded! Classroom AC/Fan suppression ACTIVE.")
 except Exception:
     has_noisereduce = False
 
@@ -154,10 +140,19 @@ except Exception as e:
 class ContextEngine:
     def __init__(self):
         self.history = []
-        self.target_pronouns = {"ikaw", "ka", "mo", "sayo", "sa'yo", "kita", "niyo", "ninyo"}
-        self.hard_threats = ["patayin", "suntukin", "bugbugin", "tumba", "sasapakin", "tadyakan", "upakan", "hiwain", "basagin", "resbakan"]
-        self.hard_extort = ["pera", "bayad", "ambag", "ilabas", "bigyan", "baon", "tax", "allowance"]
-        self.hard_harass = ["pangit", "bobo", "kuwenta", "kwenta", "tanga", "ewan", "inutil", "kadiri", "baho", "palamunin", "pabigat"]
+        self.target_pronouns = {"ikaw", "ka", "mo", "sayo", "sa'yo", "kita", "niyo", "ninyo", "you", "your", "u"}
+        self.hard_threats = [
+            "patayin", "suntukin", "bugbugin", "tumba", "sasapakin", "tadyakan", "upakan", "hiwain", "basagin", "resbakan",
+            "kill", "punch", "beat you", "hurt you", "threat", "stab", "die", "attack", "murder"
+        ]
+        self.hard_extort = [
+            "pera", "bayad", "ambag", "ilabas", "bigyan", "baon", "tax", "allowance",
+            "give me money", "pay up", "hand it over", "give your money", "extort"
+        ]
+        self.hard_harass = [
+            "pangit", "bobo", "kuwenta", "kwenta", "tanga", "ewan", "inutil", "kadiri", "baho", "palamunin", "pabigat",
+            "idiot", "stupid", "ugly", "loser", "shut up", "worthless", "freak", "fool"
+        ]
 
     def evaluate(self, text: str):
         if not text or len(text.strip()) < 3:
@@ -244,6 +239,7 @@ context_engine = ContextEngine()
 ui_clients = set()
 registered_devices = {}
 active_pins = {} # Map of websocket -> device_id
+harmful_words_only = False # Filter Mode: When True, ignores normal speech and only detects harmful words/threats
 
 async def broadcast_to_ui(payload: dict):
     if not ui_clients:
@@ -290,7 +286,49 @@ async def get_network_info():
         "server_port": 8080,
         "serial_ports": ports,
         "active_pins": len(active_pins),
+        "harmful_words_only": harmful_words_only,
     }
+
+@app.post("/api/toggle-harmful-only")
+async def toggle_harmful_only(payload: dict = None):
+    global harmful_words_only
+    payload = payload or {}
+    if "enabled" in payload:
+        harmful_words_only = bool(payload["enabled"])
+    else:
+        harmful_words_only = not harmful_words_only
+    print(f"[FILTER] Harmful Words Only Mode toggled to: {harmful_words_only}")
+    await broadcast_to_ui({
+        "event_type": "harmful_only_update",
+        "enabled": harmful_words_only
+    })
+    return {"status": "success", "harmful_words_only": harmful_words_only}
+
+@app.get("/api/filter-mode")
+async def get_filter_mode():
+    return {"status": "success", "harmful_words_only": harmful_words_only}
+
+@app.get("/api/denoise-settings")
+async def get_denoise_settings():
+    return {
+        "status": "success",
+        "strength": DENOISE_STRENGTH,
+        "mingain_db": -18.0,
+        "engine": "Microsoft NSNet2" if has_nsnet2 else "NoiseReduce",
+        "description": "0.0 (off) to 1.0 (max). 0.60 protects vowels, nasal consonants ('ng','n','m') and pauses."
+    }
+
+@app.post("/api/denoise-settings")
+async def set_denoise_settings(payload: dict):
+    global DENOISE_STRENGTH
+    if "strength" in payload:
+        try:
+            val = float(payload["strength"])
+            DENOISE_STRENGTH = float(np.clip(val, 0.0, 1.0))
+            print(f"[DENOISE] Noise reduction strength updated to: {DENOISE_STRENGTH:.2f}")
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+    return {"status": "success", "strength": DENOISE_STRENGTH}
 
 # =========================================================================
 # CHECKPOINTS PERSISTENCE & FLEET WI-FI MANAGEMENT
@@ -590,6 +628,7 @@ async def provision_pin_serial(payload: dict):
 
 @app.websocket("/ui")
 async def ui_websocket_endpoint(websocket: WebSocket):
+    global harmful_words_only
     await websocket.accept()
     ui_clients.add(websocket)
     print(f"\n[UI] Dashboard station connected! Active UI clients: {len(ui_clients)}")
@@ -601,11 +640,16 @@ async def ui_websocket_endpoint(websocket: WebSocket):
         "message": "SecureLink AI Server Online",
         "whisper": has_whisper,
         "classifier": bert_model is not None,
+        "harmful_words_only": harmful_words_only,
         "timestamp": datetime.now().strftime("%H:%M:%S")
     }))
 
-    # Send current device states on dashboard connect
-    for dev in registered_devices.values():
+    # Send current device states on dashboard connect (mark devices without active socket as OFFLINE)
+    for dev_id, dev in registered_devices.items():
+        is_active = any(d_id == dev_id for d_id in active_pins.values())
+        if not is_active:
+            dev["online"] = False
+            dev["state"] = "OFFLINE"
         await websocket.send_text(json.dumps({"event_type": "device_update", "device": dev}))
         
     # Send saved checkpoints on connect
@@ -653,6 +697,13 @@ async def ui_websocket_endpoint(websocket: WebSocket):
                         "dispatched_count": dispatched,
                         "message": f"Command {cmd} sent to {dispatched} active smart pin(s). Pin will enter Setup Portal."
                     }))
+                elif ev_type == "set_harmful_only":
+                    harmful_words_only = bool(msg.get("enabled", False))
+                    print(f"\n[FILTER] Harmful Words Only Mode set to: {harmful_words_only}")
+                    await broadcast_to_ui({
+                        "event_type": "harmful_only_update",
+                        "enabled": harmful_words_only
+                    })
             except Exception as e:
                 print(f"[UI] Error processing message: {e}")
     except WebSocketDisconnect:
@@ -663,30 +714,107 @@ async def ui_websocket_endpoint(websocket: WebSocket):
             ui_clients.remove(websocket)
 
 # =========================================================================
-# 6. UDP AUTO-DISCOVERY (PORT 8888)
+# 6. UDP AUTO-DISCOVERY (PORT 8888) & CENTRAL SYSTEM GATEWAY
 # =========================================================================
 def get_primary_ip():
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    # Attempt 1: Standard public DNS route probe (doesn't send packets, just probes OS routing table)
+    for test_target in [('8.8.8.8', 80), ('1.1.1.1', 80), ('10.255.255.255', 1)]:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(test_target)
+            ip = s.getsockname()[0]
+            s.close()
+            if ip and not ip.startswith('127.'):
+                return ip
+        except Exception:
+            pass
+    # Attempt 2: Local hostname resolution
     try:
-        s.connect(('10.255.255.255', 1))
-        ip = s.getsockname()[0]
+        ip = socket.gethostbyname(socket.gethostname())
+        if ip and not ip.startswith('127.'):
+            return ip
     except Exception:
-        ip = '127.0.0.1'
-    finally:
-        s.close()
-    return ip
+        pass
+    return '127.0.0.1'
 
 class DiscoveryProtocol(asyncio.DatagramProtocol):
     def connection_made(self, transport):
         self.transport = transport
-        print("[UDP] Auto-discovery service listening on port 8888...")
+        print("[UDP] Central System discovery service listening on port 8888...")
 
     def datagram_received(self, data, addr):
         message = data.decode('utf-8', errors='ignore')
-        if "SECURELINK_PIN_V1" in message:
+        if "SECURELINK" in message:
             true_ip = get_primary_ip()
-            print(f"\n[UDP] Discovery broadcast from Pin at {addr}. Replying with server IP: {true_ip}...")
+            print(f"\n[UDP] Discovery broadcast from {addr} ('{message.strip()}'). Replying with server IP: {true_ip}...")
+            # 1. Plaintext format for ESP32 Smart Pins (Priority 1: Central System)
             self.transport.sendto(f"ACK:{true_ip}".encode('utf-8'), addr)
+            # 2. JSON structured discovery payload for Mobile Companions
+            cs_payload = json.dumps({
+                "type": "CS_DISCOVERY_ACK",
+                "cs_id": "CS-CAMPUS-01",
+                "server_ip": true_ip,
+                "server_port": 8080,
+                "name": "SecureLink Campus Central System",
+                "priority": "PRIMARY_CS_1"
+            })
+            self.transport.sendto(cs_payload.encode('utf-8'), addr)
+
+@app.get("/api/cs-info")
+async def get_cs_info():
+    """Provides Central System gateway identification and routing information for mobile companions."""
+    true_ip = get_primary_ip()
+    return {
+        "status": "online",
+        "cs_id": "CS-CAMPUS-01",
+        "name": "SecureLink Campus Central System",
+        "server_ip": true_ip,
+        "server_port": 8080,
+        "priority_level": "PRIMARY (Priority 1: Central System, Priority 2: Mobile App)",
+        "active_pins_count": len(active_pins),
+        "registered_pins": list(registered_devices.keys()),
+        "ui_clients_count": len(ui_clients),
+        "harmful_words_only": harmful_words_only,
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
+
+@app.post("/api/mobile-sync")
+async def sync_mobile_companion(payload: dict):
+    """Registers and synchronizes a mobile companion device with the Central System."""
+    mobile_id = str(payload.get("mobile_id", "MOBILE-APP-01")).strip()
+    user_name = str(payload.get("user_name", "Teacher / Student")).strip()
+    role = str(payload.get("role", "Teacher")).strip()
+    paired_pins = payload.get("paired_pins", [])
+    if not isinstance(paired_pins, list):
+        paired_pins = [str(paired_pins)]
+
+    print(f"\n[MOBILE-SYNC] Mobile Companion '{mobile_id}' ({user_name} [{role}]) paired with pins: {paired_pins}")
+    return {
+        "status": "success",
+        "cs_id": "CS-CAMPUS-01",
+        "cs_name": "SecureLink Campus Central System",
+        "server_ip": get_primary_ip(),
+        "server_port": 8080,
+        "paired_pins": paired_pins,
+        "message": f"Successfully synchronized with Central System. Pins will route priority updates to CS-1."
+    }
+
+async def pin_liveness_watchdog():
+    """Runs every 3 seconds. Forces any device without an active socket to OFFLINE."""
+    while True:
+        await asyncio.sleep(3.0)
+        try:
+            for dev_id, dev in list(registered_devices.items()):
+                is_active = any(d_id == dev_id for d_id in active_pins.values())
+                if not is_active and dev.get("online", False):
+                    now_str = datetime.now().strftime("%H:%M:%S")
+                    dev["online"] = False
+                    dev["state"] = "OFFLINE"
+                    dev["lastSeen"] = f"Disconnected at {now_str}"
+                    await broadcast_to_ui({"event_type": "device_update", "device": dev})
+                    print(f"[WATCHDOG] Pin {dev_id} has no active socket -> broadcasted OFFLINE")
+        except Exception as e:
+            print(f"[WATCHDOG] Error: {e}")
 
 @app.on_event("startup")
 async def startup_event():
@@ -699,43 +827,84 @@ async def startup_event():
         print("[UDP] Auto-discovery service listening on port 8888...")
     except Exception as udp_err:
         print(f"[WARN] UDP port 8888 busy or unavailable ({udp_err}). Continuing without UDP discovery...")
+    
+    # Launch background watchdog that monitors socket health and forces ghost pins OFFLINE
+    asyncio.create_task(pin_liveness_watchdog())
+
     print("[SYS] WebSocket Server active on port 8080 (UI: /ui | Pins: /)")
     print("[SYS] Ready for connections!\n")
 
 # =========================================================================
 # 7. AUDIO PROCESSING PIPELINE (DENOISING + WHISPER STT)
 # =========================================================================
-def process_audio_buffer(pcm_bytes: bytes) -> str:
-    """Applies DeepFilterNet denoising and Faster-Whisper Tagalog ASR."""
+def process_audio_buffer(pcm_bytes: bytes) -> tuple[str, bytes]:
+    """Applies 4th-order fan filter, NoiseReduce spectral gating, and Faster-Whisper Tagalog ASR."""
     if len(pcm_bytes) < 3200: # Less than 100ms
-        return ""
+        return "", pcm_bytes
     
     # 1. Convert raw 16kHz 16-bit Mono PCM bytes to float32 NumPy array [-1.0, 1.0]
     audio_int16 = np.frombuffer(pcm_bytes, dtype=np.int16)
     audio_float = audio_int16.astype(np.float32) / 32768.0
 
-    # Soft automatic gain boost if user speaks softly or mic is distant
-    peak = float(np.max(np.abs(audio_float)))
-    if 0.01 < peak < 0.40:
-        boost = min(4.0, 0.75 / peak)
-        audio_float = audio_float * boost
+    # 2. Strip infrasonic fan blade chop & motor rumble (< 85Hz) while preserving vocal formants (90Hz-3400Hz)
+    try:
+        sos_hp = signal.butter(2, 85 / (16000 / 2), btype='high', output='sos')
+        audio_float = signal.sosfilt(sos_hp, audio_float).astype(np.float32)
+    except Exception as e:
+        pass
 
-    # 2. Server-side Denoising (DeepFilterNet3 or NoiseReduce Spectral Gating)
-    if has_deepfilternet and df_model is not None:
+    rms = float(np.sqrt(np.mean(audio_float**2)))
+    peak = float(np.max(np.abs(audio_float)))
+
+    # Reject ambient noise / quiet room hiss before Whisper (EVT-72450 was RMS=0.0127)
+    if peak < 0.04 or (rms < 0.018 and peak < 0.09):
+        print(f"[ASR] Dropped ambient background noise without speech (RMS={rms:.4f}, Peak={peak:.4f})")
+        return "", pcm_bytes
+
+    # 3. Server-side Denoising (Microsoft NSNet2 Neural Speech Isolation with Adjustable Strength)
+    if has_nsnet2 and nsnet2_denoiser is not None:
         try:
-            audio_tensor = torch.from_numpy(audio_float).unsqueeze(0)
-            enhanced = enhance(df_model, df_state, audio_tensor)
-            audio_float = enhanced.squeeze(0).cpu().numpy()
+            audio_float = nsnet2_denoiser.enhance(audio_float, fs=16000, strength=DENOISE_STRENGTH)
         except Exception as e:
-            print(f"[WARN] DeepFilterNet error: {e}")
+            print(f"[WARN] NSNet2 inference error: {e}")
+            if has_noisereduce:
+                try:
+                    audio_float = nr.reduce_noise(
+                        y=audio_float,
+                        sr=16000,
+                        prop_decrease=0.65,
+                        stationary=True,
+                        n_std_thresh_stationary=1.5
+                    )
+                except Exception:
+                    pass
     elif has_noisereduce:
         try:
-            # Light stationary noise reduction (0.20) to avoid eating Tagalog vowels/formants
-            audio_float = nr.reduce_noise(y=audio_float, sr=16000, prop_decrease=0.20, stationary=True)
+            # Fallback stationary noise reduction with gentle 65% strength to protect nasal phonemes
+            audio_float = nr.reduce_noise(
+                y=audio_float,
+                sr=16000,
+                prop_decrease=0.65,
+                stationary=True,
+                n_std_thresh_stationary=1.5
+            )
         except Exception as e:
             print(f"[WARN] NoiseReduce error: {e}")
 
-    # 3. Faster-Whisper Speech Recognition with Silero VAD Trimming & Beam 5 Search
+    # Ensure float32 for Whisper/Silero VAD ONNX models
+    audio_float = np.asarray(audio_float, dtype=np.float32)
+
+    # 4. Soft automatic gain boost & peak normalization for audible, prominent speech
+    clean_peak = float(np.max(np.abs(audio_float)))
+    if 0.02 < clean_peak < 0.70:
+        boost = min(3.5, 0.75 / max(clean_peak, 0.02))
+        audio_float = np.clip(audio_float * boost, -0.99, 0.99)
+
+    # 5. Convert clean audio float back to 16-bit PCM bytes for playback in recordings
+    clean_int16 = np.clip(audio_float * 32767.0, -32768, 32767).astype(np.int16)
+    clean_pcm_bytes = clean_int16.tobytes()
+
+    # 6. Faster-Whisper Speech Recognition with Silero VAD Trimming & Beam 5 Search
     if has_whisper and whisper_model is not None:
         try:
             transcribe_kwargs = {
@@ -748,10 +917,10 @@ def process_audio_buffer(pcm_bytes: bytes) -> str:
                 "log_prob_threshold": -1.0,
                 "compression_ratio_threshold": 2.4,
                 "word_timestamps": False,
-                "vad_parameters": dict(min_speech_duration_ms=150, speech_pad_ms=250),
+                "vad_parameters": dict(threshold=0.15, min_speech_duration_ms=60, speech_pad_ms=500),
             }
 
-            # Silero VAD trims leading/trailing silence, ensuring clean voice frames
+            # Silero VAD reliably isolates human speech from silence/noise
             segments, info = whisper_model.transcribe(
                 audio_float,
                 vad_filter=True,
@@ -762,22 +931,108 @@ def process_audio_buffer(pcm_bytes: bytes) -> str:
             # Ignore typical Whisper silence hallucinations on faint background noise
             clean_t = transcript.lower().strip().rstrip(".")
             if clean_t in ["thank you", "you", "thanks", "salamat", "maraming salamat"]:
-                return ""
+                return "", clean_pcm_bytes
 
-            return transcript
+            # Detect repetition loops (e.g. 'Pagkakakakakakakakaka...' or 'ka ka ka ka ka')
+            if re.search(r'(.)\1{4,}', transcript) or re.search(r'(.{2,5})\1{3,}', transcript.lower()):
+                print(f"[ASR] Dropped Whisper repetition loop: \"{transcript[:50]}...\"")
+                return "", clean_pcm_bytes
+
+            return transcript, clean_pcm_bytes
         except Exception as e:
             print(f"[ERR] Whisper transcription error: {e}")
-            return ""
+            return "", clean_pcm_bytes
     
-    return ""
+    return "", clean_pcm_bytes
 
 def save_wav(pcm_bytes: bytes, filepath: str):
-    """Saves raw 16kHz 16-bit PCM bytes to standard WAV format."""
+    """Saves 16kHz 16-bit PCM bytes to standard WAV format."""
     with wave.open(filepath, "wb") as wav_file:
         wav_file.setnchannels(1)
         wav_file.setsampwidth(2) # 16-bit
         wav_file.setframerate(16000)
         wav_file.writeframes(pcm_bytes)
+
+async def handle_completed_audio(device_id: str, pcm_bytes: bytes, websocket: WebSocket):
+    """Processes accumulated speech audio buffer, runs Faster-Whisper + BERT, and updates UI."""
+    if len(pcm_bytes) < 6400: # Less than 200ms
+        if device_id in registered_devices:
+            now_str = datetime.now().strftime("%H:%M:%S")
+            is_still_connected = any(d_id == device_id for d_id in active_pins.values())
+            registered_devices[device_id]["online"] = is_still_connected
+            registered_devices[device_id]["state"] = "VAD ARMED" if is_still_connected else "OFFLINE"
+            registered_devices[device_id]["lastSeen"] = f"Active at {now_str}" if is_still_connected else f"Disconnected at {now_str}"
+            await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
+        return
+
+    dur_sec = len(pcm_bytes) / 32000.0
+    audio_int16 = np.frombuffer(pcm_bytes, dtype=np.int16)
+    audio_peak = float(np.max(np.abs(audio_int16))) / 32768.0
+
+    if device_id in registered_devices:
+        registered_devices[device_id]["state"] = "ANALYZING SPEECH"
+        registered_devices[device_id]["online"] = True
+        registered_devices[device_id]["lastSeen"] = "Whisper inferencing..."
+        await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
+
+    t_infer_start = time.time()
+    transcript, clean_pcm = await asyncio.to_thread(process_audio_buffer, pcm_bytes)
+    infer_dur = time.time() - t_infer_start
+
+    if transcript:
+        print(f"[FINAL TRANSCRIPT] ({device_id} in {infer_dur:.2f}s, dur={dur_sec:.2f}s, peak={audio_peak:.2f}) -> \"{transcript}\"")
+        score, category = context_engine.evaluate(transcript)
+        is_danger = score >= 8.0
+
+        # --- HARMFUL WORDS ONLY FILTER ---
+        # When active, ignore benign/conversational speech and do not save WAV or log incident
+        is_harmful = (category != "Conversational") or (score >= 2.0)
+        if harmful_words_only and not is_harmful:
+            print(f"[FILTER] Ignored conversational speech under 'Harmful Words Only' mode: \"{transcript}\" (cat={category}, score={score})")
+            if device_id in registered_devices:
+                now_str = datetime.now().strftime("%H:%M:%S")
+                is_still_connected = any(d_id == device_id for d_id in active_pins.values())
+                registered_devices[device_id]["online"] = is_still_connected
+                registered_devices[device_id]["state"] = "VAD ARMED" if is_still_connected else "OFFLINE"
+                registered_devices[device_id]["lastSeen"] = f"Filtered benign speech at {now_str}" if is_still_connected else f"Disconnected at {now_str}"
+                await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
+            return
+
+        if is_danger:
+            try:
+                await websocket.send_text("TRIGGER:DANGER")
+            except Exception:
+                pass
+
+        incident_id = f"EVT-{int(time.time() * 1000) % 1000000}"
+        wav_filename = f"{incident_id}.wav"
+        wav_path = os.path.join("recordings/audio", wav_filename)
+        # Save the clean, denoised audio to WAV so playback is crystal-clear and fan-free
+        await asyncio.to_thread(save_wav, clean_pcm, wav_path)
+
+        await broadcast_to_ui({
+            "event_type": "incident",
+            "id": incident_id,
+            "device_id": device_id,
+            "score": float(score),
+            "category": category,
+            "transcript": transcript,
+            "audio": True,
+            "audio_url": f"http://127.0.0.1:8080/recordings/audio/{wav_filename}",
+            "audio_file": wav_filename,
+            "video": is_danger,
+            "duration": f"00:{max(1, int(dur_sec)):02d}"
+        })
+    else:
+        print(f"[ASR] ({device_id} in {infer_dur:.2f}s) Audio received ({dur_sec:.2f}s, peak={audio_peak:.2f}) -> No speech recognized (faint noise/silence)")
+
+    if device_id in registered_devices:
+        now_str = datetime.now().strftime("%H:%M:%S")
+        is_still_connected = any(d_id == device_id for d_id in active_pins.values())
+        registered_devices[device_id]["online"] = is_still_connected
+        registered_devices[device_id]["state"] = "VAD ARMED" if is_still_connected else "OFFLINE"
+        registered_devices[device_id]["lastSeen"] = f"Active at {now_str}" if is_still_connected else f"Disconnected at {now_str}"
+        await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
 
 # =========================================================================
 # 8. PHYSICAL PIN WEBSOCKET ENDPOINT (AUDIO STREAM & DANGER TRIGGER)
@@ -809,7 +1064,7 @@ async def pin_websocket_endpoint(websocket: WebSocket):
         "state": "VAD ARMED",
         "network": pending_cfg["ssid"] if pending_cfg else prev_net,
         "lastSeen": "Just now",
-        "cpuMhz": 80,
+        "cpuMhz": 160,
         "rssi": -60,
         "estRuntime": "6h 45m"
     }
@@ -824,17 +1079,52 @@ async def pin_websocket_endpoint(websocket: WebSocket):
     try:
         while True:
             try:
-                message = await asyncio.wait_for(websocket.receive(), timeout=12.0)
+                # 8-second timeout: If the pin dies, loses power, or drops Wi-Fi,
+                # no packets or pings will arrive. We time out after 8s and mark it OFFLINE!
+                message = await asyncio.wait_for(websocket.receive(), timeout=8.0)
             except asyncio.TimeoutError:
-                print(f"\n[WS] {device_id} silence timeout. Closing session.")
+                print(f"\n[WS] {device_id} heartbeat timed out (no data for 8s, pin disconnected or unpowered).")
+                break
+            except (WebSocketDisconnect, RuntimeError, OSError):
+                print(f"\n[WS] {device_id} disconnected.")
                 break
             except Exception as wsock_err:
-                print(f"\n[WS] {device_id} stream ended.")
+                print(f"\n[WS] {device_id} stream ended: {wsock_err}")
                 break
 
             if "text" in message:
                 text_msg = message["text"]
-                if text_msg.startswith("SNAP:"):
+                if text_msg.startswith("PING:"):
+                    # Standby keep-alive ping from ESP32
+                    try:
+                        rssi_val = int(text_msg.split(":")[1])
+                        registered_devices[device_id]["rssi"] = rssi_val
+                    except Exception:
+                        pass
+                    now_str = datetime.now().strftime("%H:%M:%S")
+                    registered_devices[device_id]["online"] = True
+                    registered_devices[device_id]["state"] = "VAD ARMED"
+                    registered_devices[device_id]["lastSeen"] = f"Active at {now_str}"
+                    await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
+                    try:
+                        await websocket.send_text("PONG")
+                    except Exception:
+                        pass
+                    continue
+                elif text_msg in ("STREAM_END", "STREAM_STOP"):
+                    print(f"\n[STREAM] {device_id} completed speech stream ({len(audio_accumulator)} bytes).")
+                    if len(audio_accumulator) >= 6400:
+                        final_pcm = bytes(audio_accumulator)
+                        audio_accumulator.clear()
+                        await handle_completed_audio(device_id, final_pcm, websocket)
+                    else:
+                        audio_accumulator.clear()
+                        if device_id in registered_devices:
+                            now_str = datetime.now().strftime("%H:%M:%S")
+                            registered_devices[device_id]["state"] = "VAD ARMED"
+                            registered_devices[device_id]["lastSeen"] = f"Active at {now_str}"
+                            await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
+                elif text_msg.startswith("SNAP:"):
                     print(f"\n[CAM] Incoming camera frame snapshot from {device_id}...")
                     next_expected_snapshot = True
                 elif "ARCHIVE_START" in text_msg:
@@ -873,109 +1163,32 @@ async def pin_websocket_endpoint(websocket: WebSocket):
                     registered_devices[device_id]["lastSeen"] = "Streaming voice..."
                     await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
 
-                # No rigid mid-speech chunking! Wait for the device to send silence timeout (disconnect).
-                # Fallback safeguard: Process if buffer hits 30 seconds (960,000 bytes) to prevent memory issues.
+                # Fallback safeguard: Process if buffer hits 30 seconds (960,000 bytes)
                 if len(audio_accumulator) >= 960000:
                     pcm_chunk = bytes(audio_accumulator)
                     audio_accumulator.clear()
-
-                    transcript = await asyncio.to_thread(process_audio_buffer, pcm_chunk)
-                    if transcript:
-                        print(f"\n[TRANSCRIPT] ({device_id}) -> \"{transcript}\"")
-                        score, category = await asyncio.to_thread(context_engine.evaluate, transcript)
-                        is_danger = score >= 8.0
-
-                        if is_danger:
-                            print(f"🚨 [DANGER ALERT] Severity: {score}/10 | Category: {category}")
-                            print("⚡ [CAM] Dispatching TRIGGER:DANGER to pin for OV2640 snapshot!")
-                            try:
-                                await websocket.send_text("TRIGGER:DANGER")
-                            except Exception as e:
-                                print(f"[ERR] Failed to send trigger to pin: {e}")
-                        elif score >= 4.0:
-                            print(f"⚠️ [THREAT] Severity: {score}/10 | Category: {category}")
-                        elif score >= 2.0:
-                            print(f"🟡 [WARNING] Severity: {score}/10 | Category: {category}")
-                        else:
-                            print(f"🟢 [SAFE] Severity: {score}/10 | Category: {category}")
-
-                        # Save evidence audio as WAV
-                        incident_id = f"EVT-{int(time.time() * 1000) % 1000000}"
-                        wav_filename = f"{incident_id}.wav"
-                        wav_path = os.path.join("recordings/audio", wav_filename)
-                        await asyncio.to_thread(save_wav, pcm_chunk, wav_path)
-
-                        # Broadcast incident to Flutter Dashboard UI
-                        await broadcast_to_ui({
-                            "event_type": "incident",
-                            "id": incident_id,
-                            "device_id": device_id,
-                            "score": float(score),
-                            "category": category,
-                            "transcript": transcript,
-                            "audio": True,
-                            "audio_url": f"http://127.0.0.1:8080/recordings/audio/{wav_filename}",
-                            "audio_file": wav_filename,
-                            "video": is_danger,
-                            "duration": "00:03"
-                        })
+                    await handle_completed_audio(device_id, pcm_chunk, websocket)
 
     except (WebSocketDisconnect, RuntimeError, OSError):
         print(f"\n[WS] {device_id} Disconnected.")
     finally:
-        # Process voice stream ONCE upon stream completion
-        if len(audio_accumulator) >= 16000:
+        # Process any remaining audio in accumulator before closing
+        if len(audio_accumulator) >= 6400:
             final_pcm = bytes(audio_accumulator)
-            audio_accumulator.clear() # Clear immediately to prevent any re-processing
-
-            if device_id in registered_devices:
-                registered_devices[device_id]["state"] = "ANALYZING SPEECH"
-                registered_devices[device_id]["online"] = True
-                registered_devices[device_id]["lastSeen"] = "Whisper inferencing..."
-                await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
-
-            t_infer_start = time.time()
-            final_transcript = await asyncio.to_thread(process_audio_buffer, final_pcm)
-            infer_dur = time.time() - t_infer_start
-
-            if final_transcript:
-                print(f"[FINAL TRANSCRIPT] ({device_id} in {infer_dur:.2f}s) -> \"{final_transcript}\"")
-                score, category = context_engine.evaluate(final_transcript)
-                is_danger = score >= 8.0
-                if is_danger:
-                    try:
-                        await websocket.send_text("TRIGGER:DANGER")
-                    except Exception:
-                        pass
-
-                incident_id = f"EVT-{int(time.time() * 1000) % 1000000}"
-                wav_filename = f"{incident_id}.wav"
-                wav_path = os.path.join("recordings/audio", wav_filename)
-                await asyncio.to_thread(save_wav, final_pcm, wav_path)
-
-                await broadcast_to_ui({
-                    "event_type": "incident",
-                    "id": incident_id,
-                    "device_id": device_id,
-                    "score": float(score),
-                    "category": category,
-                    "transcript": final_transcript,
-                    "audio": True,
-                    "audio_url": f"http://127.0.0.1:8080/recordings/audio/{wav_filename}",
-                    "audio_file": wav_filename,
-                    "video": is_danger,
-                    "duration": f"00:{max(1, len(final_pcm) // 32000):02d}"
-                })
+            audio_accumulator.clear()
+            await handle_completed_audio(device_id, final_pcm, websocket)
 
         if websocket in active_pins:
             del active_pins[websocket]
 
+        # MARK PIN AS OFFLINE IMMEDIATELY UPON DISCONNECT OR TIMEOUT
         if device_id in registered_devices:
             now_str = datetime.now().strftime("%H:%M:%S")
-            registered_devices[device_id]["online"] = True
-            registered_devices[device_id]["state"] = "VAD ARMED (STANDBY)"
-            registered_devices[device_id]["lastSeen"] = f"Active at {now_str}"
+            registered_devices[device_id]["online"] = False
+            registered_devices[device_id]["state"] = "OFFLINE"
+            registered_devices[device_id]["lastSeen"] = f"Disconnected at {now_str}"
             await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
+            print(f"[WS] {device_id} marked OFFLINE on dashboard.")
 
 if __name__ == "__main__":
     print("=======================================================")

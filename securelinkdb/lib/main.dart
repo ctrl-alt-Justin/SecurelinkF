@@ -5,10 +5,12 @@ import 'dart:math';
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:audioplayers/audioplayers.dart';
+import 'mobile/securelink_mobile_app.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -185,6 +187,10 @@ class SecureLinkApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+      return const SecureLinkMobileApp();
+    }
+
     return MaterialApp(
       title: 'SecureLink',
       debugShowCheckedModeBanner: false,
@@ -579,7 +585,7 @@ class DeviceStatus {
     required this.state,
     required this.network,
     required this.lastSeen,
-    this.cpuMhz = 80,
+    this.cpuMhz = 160,
     this.rssi = -62,
     this.estRuntime = '6h 30m',
   });
@@ -598,7 +604,7 @@ class DeviceStatus {
       state: json['state'] ?? 'STANDBY',
       network: json['network'] ?? 'Campus Wi-Fi',
       lastSeen: json['lastSeen'] ?? 'Just now',
-      cpuMhz: json['cpuMhz'] ?? 80,
+      cpuMhz: json['cpuMhz'] ?? 160,
       rssi: json['rssi'] ?? -62,
       estRuntime: json['estRuntime'] ?? runtime,
     );
@@ -742,8 +748,20 @@ class _DashboardShellState extends State<DashboardShell> with WindowListener {
 
   WebSocketChannel? _uiChannel;
   bool isServerConnected = false;
+  bool harmfulWordsOnly = false;
   Timer? _reconnectTimer;
   Timer? _pingTimer;
+
+  void toggleHarmfulWordsOnly() {
+    final next = !harmfulWordsOnly;
+    setState(() => harmfulWordsOnly = next);
+    if (_uiChannel != null && isServerConnected) {
+      _uiChannel!.sink.add(jsonEncode({
+        'event_type': 'set_harmful_only',
+        'enabled': next,
+      }));
+    }
+  }
 
   bool _showSplashScreen = true;
   double _splashOpacity = 1.0;
@@ -876,6 +894,15 @@ class _DashboardShellState extends State<DashboardShell> with WindowListener {
                     duration: const Duration(seconds: 4),
                   ),
                 );
+              }
+            } else if (eventType == 'harmful_only_update') {
+              final enabled = data['enabled'] == true;
+              if (mounted) {
+                setState(() => harmfulWordsOnly = enabled);
+              }
+            } else if (eventType == 'server_status') {
+              if (data.containsKey('harmful_words_only') && mounted) {
+                setState(() => harmfulWordsOnly = data['harmful_words_only'] == true);
               }
             }
           } catch (e) {
@@ -1258,6 +1285,8 @@ class _DashboardShellState extends State<DashboardShell> with WindowListener {
                               },
                               onOpenPinSetup: _openPinSetupDialog,
                               hasOnlinePin: liveDevices.any((d) => d.online),
+                              harmfulWordsOnly: harmfulWordsOnly,
+                              onToggleHarmfulWordsOnly: toggleHarmfulWordsOnly,
                             ),
                             const SizedBox(height: 14),
                             Expanded(
@@ -1703,6 +1732,8 @@ class _Header extends StatelessWidget {
   final ValueChanged<DashboardStatus> onStatusChanged;
   final VoidCallback onOpenPinSetup;
   final bool hasOnlinePin;
+  final bool harmfulWordsOnly;
+  final VoidCallback onToggleHarmfulWordsOnly;
 
   const _Header({
     required this.tab,
@@ -1714,6 +1745,8 @@ class _Header extends StatelessWidget {
     required this.onStatusChanged,
     required this.onOpenPinSetup,
     required this.hasOnlinePin,
+    required this.harmfulWordsOnly,
+    required this.onToggleHarmfulWordsOnly,
   });
 
   String get title => switch (tab) {
@@ -1727,7 +1760,7 @@ class _Header extends StatelessWidget {
   String get subtitle => switch (tab) {
         AppTab.overview => 'Live system status, acoustic telemetry & incident queue',
         AppTab.incidents => 'Review speech transcripts, audio playback & camera snapshots',
-        AppTab.devices => 'Monitor XIAO ESP32S3 wearable pins (80MHz Eco Mode & 200mAh LiPo)',
+        AppTab.devices => 'Monitor XIAO ESP32S3 wearable pins (160MHz Standard & 200mAh LiPo)',
         AppTab.analytics => 'Tagalog RoBERTa threat distribution & research metrics',
         AppTab.configuration => 'Configure pre-trigger buffer duration, silence timeouts & camera policies',
       };
@@ -1763,6 +1796,11 @@ class _Header extends StatelessWidget {
         const SizedBox(width: 8),
         _HeaderStatusPicker(status: status, onChanged: onStatusChanged),
         const SizedBox(width: 8),
+        _HarmfulWordsToggleButton(
+          active: harmfulWordsOnly,
+          onToggle: onToggleHarmfulWordsOnly,
+        ),
+        const SizedBox(width: 8),
         _PairPinHeaderButton(
           hasPins: hasOnlinePin,
           onTap: onOpenPinSetup,
@@ -1779,6 +1817,62 @@ class _Header extends StatelessWidget {
         ),
         const SizedBox(width: 6),
         IconButton(
+          tooltip: 'Preview Mobile Companion (Phone Edition)',
+          onPressed: () {
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (ctx) => Scaffold(
+                  backgroundColor: const Color(0xFF090C14),
+                  body: Stack(
+                    children: [
+                      const Center(
+                        child: SizedBox(
+                          width: 440,
+                          child: SecureLinkMobileApp(),
+                        ),
+                      ),
+                      Positioned(
+                        top: 16,
+                        right: 16,
+                        child: Material(
+                          color: Colors.transparent,
+                          child: InkWell(
+                            borderRadius: BorderRadius.circular(30),
+                            onTap: () => Navigator.of(ctx).pop(),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                              decoration: BoxDecoration(
+                                color: Colors.black.withOpacity(0.7),
+                                borderRadius: BorderRadius.circular(30),
+                                border: Border.all(color: Colors.white24),
+                              ),
+                              child: const Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.close_rounded, color: Colors.white, size: 16),
+                                  SizedBox(width: 6),
+                                  Text('Exit Phone View', style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w700)),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+          icon: const Icon(Icons.phone_android_rounded, size: 19, color: Color(0xFF55E2C0)),
+        ),
+        const SizedBox(width: 4),
+        IconButton(
+          tooltip: 'Central System Mobile Sync Gateway (Priority 1)',
+          onPressed: () => _showCentralSystemSyncDialog(context),
+          icon: const Icon(Icons.hub_rounded, size: 19, color: Color(0xFF109C6D)),
+        ),
+        IconButton(
           tooltip: 'Reconnect / Refresh',
           onPressed: refreshing ? null : onRefresh,
           icon: AnimatedSwitcher(
@@ -1787,6 +1881,133 @@ class _Header extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+
+  void _showCentralSystemSyncDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF0A0F14),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(22),
+          side: const BorderSide(color: Color(0x33109C6D)),
+        ),
+        title: Row(
+          children: [
+            Container(
+              width: 38,
+              height: 38,
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  colors: [Color(0xFF109C6D), Color(0xFF55E2C0)],
+                ),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: const Icon(Icons.hub_rounded, color: Colors.white, size: 20),
+            ),
+            const SizedBox(width: 12),
+            const Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Central System Gateway',
+                    style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w800),
+                  ),
+                  Text(
+                    'Primary Life-Safety & AI Hub (Priority 1)',
+                    style: TextStyle(color: Color(0xFF55E2C0), fontSize: 10.5, fontWeight: FontWeight.w600),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        content: SizedBox(
+          width: 440,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.035),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: Colors.white.withOpacity(0.08)),
+                ),
+                child: const Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Connection Hierarchy Architecture',
+                      style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w700),
+                    ),
+                    SizedBox(height: 6),
+                    Text(
+                      '• Priority 1 (Primary): Central System (This Laptop)\n  Pins stream raw 16kHz audio here for Faster-Whisper STT & TagalogBERT classification.\n\n• Priority 2 (Secondary): Mobile Companion (Teacher/Student)\n  Central System verifies incidents and pushes real-time safety alerts and battery telemetry to the paired phone.',
+                      style: TextStyle(color: Colors.white70, fontSize: 10.5, height: 1.4),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 14),
+
+              // Server host & port card
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF123524).withOpacity(0.4),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: const Color(0xFF109C6D).withOpacity(0.4)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.dns_rounded, color: Color(0xFF55E2C0), size: 22),
+                    const SizedBox(width: 12),
+                    const Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Central System IP', style: TextStyle(color: Colors.white60, fontSize: 10)),
+                          Text('10.28.20.11:8080', style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w800)),
+                          Text('UDP Auto-Discovery Beacon: Port 8888 Active', style: TextStyle(color: Color(0xFF55E2C0), fontSize: 9.5)),
+                        ],
+                      ),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF109C6D),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: const Text('CS-1', style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w900)),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 14),
+
+              const Text(
+                'How to Sync with Mobile Companion:',
+                style: TextStyle(color: Colors.white, fontSize: 11.5, fontWeight: FontWeight.w700),
+              ),
+              const SizedBox(height: 4),
+              const Text(
+                '1. Open SecureLink Mobile on teacher or student phone.\n2. Tap "Auto-Discover Central System" or enter 10.28.20.11.\n3. The phone will link to CS-1 and immediately receive verified threat alerts.',
+                style: TextStyle(color: Colors.white60, fontSize: 10.5, height: 1.4),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Close', style: TextStyle(color: Colors.white70)),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -1816,6 +2037,100 @@ class _HeaderStatusPicker extends StatelessWidget {
             const SizedBox(width: 5),
             Text(status.label, style: TextStyle(color: c, fontSize: 8.5, fontWeight: FontWeight.w700, letterSpacing: .7)),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _HarmfulWordsToggleButton extends StatelessWidget {
+  final bool active;
+  final VoidCallback onToggle;
+
+  const _HarmfulWordsToggleButton({
+    required this.active,
+    required this.onToggle,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: active
+          ? 'Harmful Words Filter: ACTIVE\nOnly threats, verbal harassment & harmful keywords trigger incidents.\nBenign conversational speech is ignored.'
+          : 'Harmful Words Filter: INACTIVE\nMonitoring all spoken conversation.\nClick to detect harmful words & threats only.',
+      waitDuration: const Duration(milliseconds: 300),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onToggle,
+          borderRadius: BorderRadius.circular(11),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 220),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6.5),
+            decoration: BoxDecoration(
+              gradient: active
+                  ? const LinearGradient(
+                      colors: [Color(0xFF0C3829), Color(0xFF06221A)],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    )
+                  : LinearGradient(
+                      colors: [Colors.white.withOpacity(0.04), Colors.white.withOpacity(0.02)],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    ),
+              borderRadius: BorderRadius.circular(11),
+              border: Border.all(
+                color: active ? const Color(0xFF109C6D).withOpacity(0.85) : Colors.white.withOpacity(0.09),
+                width: active ? 1.2 : 1.0,
+              ),
+              boxShadow: active
+                  ? [
+                      BoxShadow(
+                        color: const Color(0xFF109C6D).withOpacity(0.40),
+                        blurRadius: 10,
+                        spreadRadius: 1,
+                      )
+                    ]
+                  : null,
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  active ? Icons.shield_rounded : Icons.shield_outlined,
+                  size: 13.5,
+                  color: active ? const Color(0xFF55E2C0) : Colors.white60,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  'HARMFUL ONLY',
+                  style: TextStyle(
+                    fontSize: 8.5,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.6,
+                    color: active ? const Color(0xFF55E2C0) : Colors.white70,
+                  ),
+                ),
+                const SizedBox(width: 5),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 4.5, vertical: 1.5),
+                  decoration: BoxDecoration(
+                    color: active ? const Color(0xFF109C6D) : Colors.white.withOpacity(0.10),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(
+                    active ? 'ON' : 'OFF',
+                    style: TextStyle(
+                      fontSize: 7.5,
+                      fontWeight: FontWeight.w900,
+                      color: active ? Colors.white : Colors.white54,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );
@@ -1918,7 +2233,7 @@ class _MetricStrip extends StatelessWidget {
   Widget build(BuildContext context) {
     return Row(
       children: [
-        Expanded(child: _MetricCard(label: 'ACTIVE PINS', value: '$active', caption: '80MHz Xiao S3 Connected', icon: Icons.sensors_rounded, color: const Color(0xFF61D9AA))),
+        Expanded(child: _MetricCard(label: 'ACTIVE PINS', value: '$active', caption: '160MHz Xiao S3 Connected', icon: Icons.sensors_rounded, color: const Color(0xFF61D9AA))),
         const SizedBox(width: 10),
         Expanded(child: _MetricCard(label: 'THREAT ALERTS', value: '$nonNormal', caption: 'verbal & extortion events', icon: Icons.warning_amber_rounded, color: const Color(0xFFFFC45D))),
         const SizedBox(width: 10),
@@ -2534,7 +2849,7 @@ class _CompactDeviceList extends StatelessWidget {
             ),
             Divider(color: Colors.white.withOpacity(.06), height: 1),
             const SizedBox(height: 8),
-            Row(children: [Expanded(child: _FleetMetric(label: 'ONLINE STATUS', value: '$activeCount OF $totalCount ACTIVE', color: const Color(0xFF57DDA0))), const Expanded(child: _FleetMetric(label: 'CLOCK RATE', value: '80MHz ECO', color: Color(0xFF9B84FF)))]),
+            Row(children: [Expanded(child: _FleetMetric(label: 'ONLINE STATUS', value: '$activeCount OF $totalCount ACTIVE', color: const Color(0xFF57DDA0))), const Expanded(child: _FleetMetric(label: 'CLOCK RATE', value: '160MHz BALANCED', color: Color(0xFF9B84FF)))]),
             const SizedBox(height: 6),
             ClipRRect(borderRadius: BorderRadius.circular(8), child: LinearProgressIndicator(minHeight: 4, value: ratio, backgroundColor: Colors.white.withOpacity(.05), valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF57DDA0)))),
           ],
@@ -2771,7 +3086,7 @@ class _DeviceCard extends StatelessWidget {
                   children: [
                     const Icon(Icons.bolt_rounded, size: 10, color: Color(0xFF7F6CFF)),
                     const SizedBox(width: 3),
-                    Text('${device.cpuMhz} MHz Eco', style: const TextStyle(fontSize: 7.5, fontWeight: FontWeight.w700, color: Color(0xFF7F6CFF))),
+                    Text('${device.cpuMhz} MHz Standard', style: const TextStyle(fontSize: 7.5, fontWeight: FontWeight.w700, color: Color(0xFF7F6CFF))),
                   ],
                 ),
               ),
