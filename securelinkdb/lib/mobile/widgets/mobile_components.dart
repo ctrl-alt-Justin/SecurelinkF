@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import '../services/mobile_server_service.dart';
@@ -21,7 +22,163 @@ class MobileDesignSystem {
   static const Color accentCyan = Color(0xFF55E2C0);
   static const Color accentIndigo = Color(0xFF7F6CFF);         // Desktop Secondary Indigo
   static const Color statusWarning = Color(0xFFFFB800);
+  static const Color statusThreat = Color(0xFFFF6A1A);
   static const Color statusDanger = Color(0xFFFF4D67);
+}
+
+class MobileSecureLinkLogo extends StatelessWidget {
+  final double size;
+  final BoxFit fit;
+
+  const MobileSecureLinkLogo({
+    super.key,
+    this.size = 28,
+    this.fit = BoxFit.contain,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Image.asset(
+      'Securelinklogo.png',
+      width: size,
+      height: size,
+      fit: fit,
+      errorBuilder: (context, error, stackTrace) {
+        final f1 = File('assets/Securelinklogo.png');
+        if (f1.existsSync()) {
+          return Image.file(f1, width: size, height: size, fit: fit);
+        }
+        final f2 = File('Securelinklogo.png');
+        if (f2.existsSync()) {
+          return Image.file(f2, width: size, height: size, fit: fit);
+        }
+        return Icon(Icons.shield_rounded, size: size, color: Colors.white);
+      },
+    );
+  }
+}
+
+class MobileThreatTranscript extends StatelessWidget {
+  final String text;
+  final double fontSize;
+  final FontWeight fontWeight;
+  final Color baseColor;
+
+  const MobileThreatTranscript({
+    super.key,
+    required this.text,
+    this.fontSize = 13.0,
+    this.fontWeight = FontWeight.w500,
+    this.baseColor = Colors.white,
+  });
+
+  static const hardThreats = {
+    'papatayin', 'patayin', 'ipapatay', 'pinatay', 'katayin', 'kakatayin',
+    'bugbugin', 'bubugbugin', 'binugbog', 'bugbugan',
+    'sasapakin', 'sapakin', 'sinapak', 'sapakan',
+    'suntukin', 'susuntukin', 'sinuntok', 'suntukan',
+    'tadyakan', 'tatadyakan', 'tinadyakan',
+    'upakan', 'uupakan', 'inupakan',
+    'saksakin', 'sasaksakin', 'sinaksak',
+    'barilin', 'babarilin', 'binaril',
+    'gulpihin', 'gugulpihin', 'ginulpi',
+    'abangan', 'aabangan', 'tumba', 'tumbahin', 'hiwain', 'masaktan', 'resbak', 'resbakan', 'yari',
+    'kill', 'punch', 'attack', 'stab', 'murder', 'hurt', 'shoot'
+  };
+
+  static const hardExtort = {
+    'pera', 'bayad', 'ambag', 'ilabas', 'akin na', 'bigyan', 'palamunin', 'baon', 'holdap', 'snatch'
+  };
+
+  static const hardHarass = {
+    // Bullying & ableist/psychological slurs
+    'mongoloid', 'mongol', 'abnoy', 'autistic', 'retard', 'retarded',
+    'sintosinto', 'sayad', 'baliw', 'lukaluka', 'buang', 'timang', 'kulangkulang',
+    'siraulo', 'unggoy', 'aswang',
+    // Body-shaming & appearance bullying
+    'tabatoy', 'baboy', 'balyena', 'tingting', 'kalansay', 'ngongo', 'ngiwi',
+    'panget', 'pangit', 'chaka', 'dugyot', 'mabaho', 'baho',
+    // Social degradation & poverty insults
+    'squatter', 'skwater', 'isquatter', 'pulubi', 'hampaslupa', 'pataygutom',
+    'alipin', 'palamunin', 'pabigat', 'salot', 'patapon', 'basura', 'walangkwenta', 'ampaw',
+    // Slut-shaming & gender/homophobic insults
+    'bakla', 'bading', 'bayot', 'tibo', 'pokpok', 'malandi', 'kiri', 'higad', 'hitad', 'puday', 'bastos',
+    // Profanities & verbal abuse
+    'gago', 'gaga', 'tarantado', 'tarantada', 'ulol', 'tangina', 'tanginamo', 'putangina', 'putanginamoka', 'puta',
+    'pakshet', 'pakyu', 'kupal', 'leche', 'letse', 'bwisit', 'bwiset',
+    'hayop', 'hayup', 'walanghiya', 'taragis', 'hudas', 'inutil', 'bobo', 'tanga',
+    'ungas', 'punyeta', 'lintik', 'demonyo', 'kingina', 'pota', 'yawa', 'kuwenta', 'kwenta',
+    // English slurs & abuse
+    'fuck', 'shit', 'bitch', 'asshole', 'bastard', 'cunt', 'idiot', 'stupid', 'loser', 'trash'
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final words = text.split(' ');
+    final spans = <InlineSpan>[];
+
+    for (int i = 0; i < words.length; i++) {
+      final word = words[i];
+      final clean = word.toLowerCase().replaceAll(RegExp(r'[^a-zA-Z0-9]'), '');
+
+      Color? tagColor;
+      if (hardThreats.contains(clean)) {
+        tagColor = const Color(0xFFFF3B5C);
+      } else if (hardExtort.contains(clean)) {
+        tagColor = const Color(0xFFFFB800);
+      } else if (hardHarass.contains(clean)) {
+        tagColor = const Color(0xFFFF8533);
+      }
+
+      if (tagColor != null) {
+        spans.add(
+          WidgetSpan(
+            alignment: PlaceholderAlignment.middle,
+            child: Container(
+              margin: const EdgeInsets.symmetric(horizontal: 1.5, vertical: 1),
+              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+              decoration: BoxDecoration(
+                color: tagColor.withValues(alpha: 0.16),
+                borderRadius: BorderRadius.circular(5),
+                border: Border.all(color: tagColor.withValues(alpha: 0.45), width: 0.8),
+                boxShadow: [
+                  BoxShadow(
+                    color: tagColor.withValues(alpha: 0.25),
+                    blurRadius: 6,
+                    spreadRadius: 0.5,
+                  ),
+                ],
+              ),
+              child: Text(
+                word,
+                style: TextStyle(
+                  color: tagColor,
+                  fontSize: fontSize,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ),
+          ),
+        );
+        spans.add(const TextSpan(text: ' '));
+      } else {
+        spans.add(
+          TextSpan(
+            text: '$word ',
+            style: TextStyle(
+              color: baseColor,
+              fontSize: fontSize,
+              fontWeight: fontWeight,
+            ),
+          ),
+        );
+      }
+    }
+
+    return RichText(
+      text: TextSpan(children: spans),
+    );
+  }
 }
 
 class MobileGlassCard extends StatelessWidget {

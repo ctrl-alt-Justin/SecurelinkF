@@ -1,6 +1,7 @@
 import 'dart:math';
 import 'dart:ui';
 import 'package:flutter/material.dart';
+import 'mobile_components.dart';
 
 class _MobileSplashParticle {
   final double x;
@@ -304,6 +305,7 @@ class _MobileSplashScreenState extends State<MobileSplashScreen>
                                 child: Container(
                                   width: 58,
                                   height: 58,
+                                  padding: const EdgeInsets.all(7),
                                   decoration: BoxDecoration(
                                     borderRadius: BorderRadius.circular(18),
                                     gradient: const LinearGradient(
@@ -320,11 +322,7 @@ class _MobileSplashScreenState extends State<MobileSplashScreen>
                                       ),
                                     ],
                                   ),
-                                  child: const Icon(
-                                    Icons.shield_rounded,
-                                    size: 32,
-                                    color: Colors.white,
-                                  ),
+                                  child: const MobileSecureLinkLogo(size: 38),
                                 ),
                               ),
                             ),
@@ -345,7 +343,7 @@ class _MobileSplashScreenState extends State<MobileSplashScreen>
 
                     const SizedBox(height: 24),
 
-                    // Application Name "SecureLink"
+                    // Application Name "SecureLink Companion"
                     const Text(
                       'SECURELINK',
                       style: TextStyle(
@@ -357,12 +355,22 @@ class _MobileSplashScreenState extends State<MobileSplashScreen>
                     ),
                     const SizedBox(height: 4),
                     const Text(
-                      'CAMPUS SENTINEL',
+                      'COMPANION',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 2.2,
+                        color: brandGreen,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Smart Wearable Safety Sentinel',
                       style: TextStyle(
                         fontSize: 9.5,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 1.6,
-                        color: brandGreen,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: 0.8,
+                        color: Colors.white.withValues(alpha: 0.5),
                       ),
                     ),
                   ],

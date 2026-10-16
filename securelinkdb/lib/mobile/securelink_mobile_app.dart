@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'models/device_model.dart';
 import 'services/mobile_server_service.dart';
 import 'screens/pins_overview_screen.dart';
+import 'screens/incidents_screen.dart';
 import 'screens/battery_tracker_screen.dart';
 import 'screens/wifi_config_screen.dart';
 import 'widgets/mobile_components.dart';
@@ -77,13 +78,13 @@ class _SecureLinkMobileAppState extends State<SecureLinkMobileApp> {
     );
 
     return MaterialApp(
-      title: 'SecureLink Mobile',
+      title: 'SecureLink Companion',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         brightness: Brightness.dark,
-        scaffoldBackgroundColor: MobileDesignSystem.bgDark, // 0xFF070A12 (same as desktop)
+        scaffoldBackgroundColor: MobileDesignSystem.bgDark, // 0xFF070A12
         colorScheme: const ColorScheme.dark(
-          primary: MobileDesignSystem.primaryGreen, // 0xFF109C6D (desktop brand green)
+          primary: MobileDesignSystem.primaryGreen, // 0xFF109C6D
           secondary: MobileDesignSystem.primaryGreenMint, // 0xFF55E2C0
           surface: MobileDesignSystem.surface1,
         ),
@@ -108,37 +109,11 @@ class _SecureLinkMobileAppState extends State<SecureLinkMobileApp> {
             child: SafeArea(
               bottom: false,
               child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                 child: Row(
                   children: [
-                    // Brand Shield Icon with Desktop Green Gradient
-                    Container(
-                      width: 34,
-                      height: 34,
-                      decoration: BoxDecoration(
-                        gradient: const LinearGradient(
-                          colors: [
-                            MobileDesignSystem.primaryGreen,
-                            MobileDesignSystem.primaryGreenMint,
-                          ],
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                        ),
-                        borderRadius: BorderRadius.circular(10),
-                        boxShadow: [
-                          BoxShadow(
-                            color: MobileDesignSystem.primaryGreen.withValues(alpha: 0.35),
-                            blurRadius: 10,
-                            offset: const Offset(0, 2),
-                          ),
-                        ],
-                      ),
-                      child: const Icon(
-                        Icons.shield_rounded,
-                        color: Colors.white,
-                        size: 19,
-                      ),
-                    ),
+                    // Official SecureLink Logo
+                    const MobileSecureLinkLogo(size: 34),
                     const SizedBox(width: 10),
                     const Expanded(
                       child: Column(
@@ -146,9 +121,9 @@ class _SecureLinkMobileAppState extends State<SecureLinkMobileApp> {
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
                           Text(
-                            'SecureLink',
+                            'SecureLink Companion',
                             style: TextStyle(
-                              fontSize: 16,
+                              fontSize: 15,
                               fontWeight: FontWeight.w900,
                               color: Colors.white,
                               letterSpacing: -0.3,
@@ -157,7 +132,7 @@ class _SecureLinkMobileAppState extends State<SecureLinkMobileApp> {
                             maxLines: 1,
                           ),
                           Text(
-                            'Smart Safety Wearables',
+                            'Smart Wearable Safety Sentinel',
                             style: TextStyle(
                               fontSize: 9.5,
                               color: MobileDesignSystem.primaryGreenMint,
@@ -173,8 +148,8 @@ class _SecureLinkMobileAppState extends State<SecureLinkMobileApp> {
                     // Harmful Words Filter Toggle Button
                     Tooltip(
                       message: _serverService.harmfulWordsOnly
-                          ? 'Harmful Words Filter: ON (Ignoring normal speech)'
-                          : 'Harmful Words Filter: OFF (Logging all speech)',
+                          ? 'Harmful Words Filter: ON (Alerts on flagged words only)'
+                          : 'Harmful Words Filter: OFF (Receiving all transcripts)',
                       child: GestureDetector(
                         onTap: () {
                           _serverService.toggleHarmfulWordsOnly();
@@ -208,7 +183,7 @@ class _SecureLinkMobileAppState extends State<SecureLinkMobileApp> {
                               ),
                               const SizedBox(width: 4),
                               Text(
-                                _serverService.harmfulWordsOnly ? 'HARMFUL' : 'ALL',
+                                _serverService.harmfulWordsOnly ? 'FLAGGED' : 'ALL',
                                 style: TextStyle(
                                   fontSize: 8.5,
                                   fontWeight: FontWeight.w900,
@@ -248,7 +223,7 @@ class _SecureLinkMobileAppState extends State<SecureLinkMobileApp> {
                     ),
                     const SizedBox(width: 5),
 
-                    // Live Server Status Indicator (Desktop Emerald Pill)
+                    // Live Central System Status Indicator
                     GestureDetector(
                       onTap: () {
                         showModalBottomSheet(
@@ -256,29 +231,22 @@ class _SecureLinkMobileAppState extends State<SecureLinkMobileApp> {
                           isScrollControlled: true,
                           backgroundColor: const Color(0xFF0E151A),
                           shape: const RoundedRectangleBorder(
-                            borderRadius:
-                                BorderRadius.vertical(top: Radius.circular(26)),
+                            borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
                           ),
-                          builder: (ctx) =>
-                              ServerHostModal(service: _serverService),
+                          builder: (ctx) => ServerHostModal(service: _serverService),
                         );
                       },
                       child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 8, vertical: 5),
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
                         decoration: BoxDecoration(
                           color: _serverService.isConnected
-                              ? MobileDesignSystem.primaryGreen
-                                  .withValues(alpha: 0.16)
-                              : MobileDesignSystem.statusWarning
-                                  .withValues(alpha: 0.14),
+                              ? MobileDesignSystem.primaryGreen.withValues(alpha: 0.16)
+                              : MobileDesignSystem.statusWarning.withValues(alpha: 0.14),
                           borderRadius: BorderRadius.circular(16),
                           border: Border.all(
                             color: _serverService.isConnected
-                                ? MobileDesignSystem.primaryGreen
-                                    .withValues(alpha: 0.45)
-                                : MobileDesignSystem.statusWarning
-                                    .withValues(alpha: 0.40),
+                                ? MobileDesignSystem.primaryGreen.withValues(alpha: 0.45)
+                                : MobileDesignSystem.statusWarning.withValues(alpha: 0.40),
                           ),
                         ),
                         child: Row(
@@ -296,9 +264,7 @@ class _SecureLinkMobileAppState extends State<SecureLinkMobileApp> {
                             ),
                             const SizedBox(width: 4),
                             Text(
-                              _serverService.isConnected
-                                  ? 'CS LIVE'
-                                  : 'OFFLINE',
+                              _serverService.isConnected ? 'CS LIVE' : 'SYNC CS',
                               style: TextStyle(
                                 fontSize: 8.5,
                                 fontWeight: FontWeight.w800,
@@ -324,20 +290,31 @@ class _SecureLinkMobileAppState extends State<SecureLinkMobileApp> {
               center: Alignment(0, -0.6),
               radius: 1.15,
               colors: [
-                Color(0xFF0E1C15), // Deep emerald glow matching desktop
+                Color(0xFF0E1C15), // Deep emerald glow
                 Color(0xFF070A12), // Deep obsidian background
               ],
             ),
           ),
-          child: IndexedStack(
-            index: _currentIndex,
+          child: Column(
             children: [
-              PinsOverviewScreen(
-                service: _serverService,
-                onDeployCheckpoint: _handleDeployCheckpoint,
+              // Urgent Alert Banner (shown when a critical/flagged incident arrives)
+              if (_serverService.latestAlert != null)
+                _buildUrgentAlertBanner(_serverService.latestAlert!),
+
+              Expanded(
+                child: IndexedStack(
+                  index: _currentIndex,
+                  children: [
+                    PinsOverviewScreen(
+                      service: _serverService,
+                      onDeployCheckpoint: _handleDeployCheckpoint,
+                    ),
+                    IncidentsScreen(service: _serverService),
+                    BatteryTrackerScreen(service: _serverService),
+                    WifiConfigScreen(service: _serverService),
+                  ],
+                ),
               ),
-              BatteryTrackerScreen(service: _serverService),
-              WifiConfigScreen(service: _serverService),
             ],
           ),
         ),
@@ -354,28 +331,37 @@ class _SecureLinkMobileAppState extends State<SecureLinkMobileApp> {
           child: SafeArea(
             top: false,
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceAround,
                 children: [
                   _navButton(
                     index: 0,
                     icon: Icons.sensors_rounded,
-                    label: 'Pins Overview',
-                    badgeCount: _serverService.devices.isNotEmpty
-                        ? _serverService.devices.length
+                    label: 'Pins',
+                    badgeCount: _serverService.pairedDevices.isNotEmpty
+                        ? _serverService.pairedDevices.length
                         : null,
                   ),
                   _navButton(
                     index: 1,
-                    icon: Icons.battery_charging_full_rounded,
-                    label: 'Battery Life',
-                    hasAlert: _serverService.lowBatteryCount > 0,
+                    icon: Icons.warning_amber_rounded,
+                    label: 'Incidents',
+                    badgeCount: _serverService.importantIncidents.isNotEmpty
+                        ? _serverService.importantIncidents.length
+                        : null,
+                    hasAlert: _serverService.importantIncidents.any((i) => i.isThreat || i.isDanger),
                   ),
                   _navButton(
                     index: 2,
+                    icon: Icons.battery_charging_full_rounded,
+                    label: 'Battery',
+                    hasAlert: _serverService.lowBatteryCount > 0,
+                  ),
+                  _navButton(
+                    index: 3,
                     icon: Icons.wifi_tethering_rounded,
-                    label: 'Wi-Fi Config',
+                    label: 'Wi-Fi',
                   ),
                 ],
               ),
@@ -410,7 +396,7 @@ class _SecureLinkMobileAppState extends State<SecureLinkMobileApp> {
       behavior: HitTestBehavior.opaque,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
-        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         decoration: BoxDecoration(
           color: active
               ? MobileDesignSystem.primaryGreen.withValues(alpha: 0.16)
@@ -487,6 +473,97 @@ class _SecureLinkMobileAppState extends State<SecureLinkMobileApp> {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildUrgentAlertBanner(IncidentReport alert) {
+    final alertColor = alert.isDanger
+        ? MobileDesignSystem.statusDanger
+        : MobileDesignSystem.statusThreat;
+    final alias = _serverService.getPinAlias(alert.deviceId);
+
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: alertColor.withValues(alpha: 0.15),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: alertColor.withValues(alpha: 0.45), width: 1.2),
+        boxShadow: [
+          BoxShadow(
+            color: alertColor.withValues(alpha: 0.20),
+            blurRadius: 14,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: alertColor.withValues(alpha: 0.25),
+              shape: BoxShape.circle,
+            ),
+            child: Icon(Icons.warning_amber_rounded, color: alertColor, size: 22),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: InkWell(
+              onTap: () {
+                setState(() => _currentIndex = 1); // Switch to Incidents tab
+                _serverService.clearLatestAlert();
+              },
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    children: [
+                      Text(
+                        'SAFETY ALERT • ${alert.flagType.toUpperCase()}',
+                        style: TextStyle(
+                          color: alertColor,
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w900,
+                          letterSpacing: 0.5,
+                        ),
+                      ),
+                      const Spacer(),
+                      Text(
+                        alias != null ? '$alias (${alert.deviceId})' : alert.deviceId,
+                        style: const TextStyle(
+                          color: Colors.white70,
+                          fontSize: 10,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    alert.transcript.isNotEmpty ? '"${alert.transcript}"' : 'Suspicious audio activity detected',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(width: 6),
+          IconButton(
+            onPressed: () => _serverService.clearLatestAlert(),
+            icon: const Icon(Icons.close_rounded, size: 18, color: Colors.white60),
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+          ),
+        ],
       ),
     );
   }

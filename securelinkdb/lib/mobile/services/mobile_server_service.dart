@@ -15,6 +15,7 @@ class IncidentReport {
   final double threatScore;
   final String threatLabel;
   final String? audioFile;
+  final String? audioUrl;
   final String? snapshotFile;
 
   IncidentReport({
@@ -25,18 +26,31 @@ class IncidentReport {
     required this.threatScore,
     required this.threatLabel,
     this.audioFile,
+    this.audioUrl,
     this.snapshotFile,
   });
 
-  factory IncidentReport.fromJson(Map<String, dynamic> json) {
+  bool get isFlagged => threatScore >= 2.0 || threatLabel.toLowerCase() != 'conversational';
+  bool get isThreat => threatScore >= 4.0;
+  bool get isDanger => threatScore >= 8.0;
+  String get flagType => threatLabel;
+
+  factory IncidentReport.fromJson(Map<String, dynamic> json, {String? host, int? port}) {
+    final af = json['audio_file'] as String?;
+    final h = host ?? '10.28.20.11';
+    final p = port ?? 8080;
+    final explicitUrl = json['audio_url'] as String?;
+    final computedUrl = af != null && af.isNotEmpty ? 'http://$h:$p/recordings/audio/$af' : explicitUrl;
+
     return IncidentReport(
       id: json['id'] as String? ?? 'INC-${DateTime.now().millisecondsSinceEpoch}',
       deviceId: json['device_id'] as String? ?? 'PIN-001',
       timestamp: json['timestamp'] as String? ?? DateTime.now().toString(),
       transcript: json['transcript'] as String? ?? 'Speech detected',
-      threatScore: (json['threat_score'] is num) ? (json['threat_score'] as num).toDouble() : 1.0,
-      threatLabel: json['threat_label'] as String? ?? 'CONVERSATIONAL',
-      audioFile: json['audio_file'] as String?,
+      threatScore: (json['threat_score'] is num) ? (json['threat_score'] as num).toDouble() : (json['score'] is num ? (json['score'] as num).toDouble() : 1.0),
+      threatLabel: json['threat_label'] as String? ?? (json['category'] as String? ?? 'Conversational'),
+      audioFile: af,
+      audioUrl: computedUrl,
       snapshotFile: json['snapshot_file'] as String?,
     );
   }
@@ -113,8 +127,23 @@ class MobileServerService extends ChangeNotifier {
   /// All checkpoints from Central System
   List<WifiCheckpoint> get checkpoints => List.unmodifiable(_checkpoints);
 
+  /// All recent incidents received from Central System
+  List<IncidentReport> get allIncidents => List.unmodifiable(_recentIncidents);
+
   /// Incidents for this mobile user's paired pins
   List<IncidentReport> get pairedIncidents => List.unmodifiable(_recentIncidents);
+
+  /// Important incidents only: threats, verbal harassment, or flagged words
+  List<IncidentReport> get importantIncidents =>
+      _recentIncidents.where((i) => i.isFlagged).toList();
+
+  IncidentReport? _latestAlert;
+  IncidentReport? get latestAlert => _latestAlert;
+
+  void clearLatestAlert() {
+    _latestAlert = null;
+    notifyListeners();
+  }
 
   int get onlineCount => pairedDevices.where((d) => d.online).length;
   int get lowBatteryCount => pairedDevices.where((d) => d.isLowBattery).length;
@@ -428,19 +457,13 @@ class MobileServerService extends ChangeNotifier {
         notifyListeners();
       } else if (eventType == 'incident' || (eventType == 'incident_detected' && json['incident'] != null)) {
         final rawIncident = eventType == 'incident' ? json : json['incident'];
-        final inc = IncidentReport(
-          id: rawIncident['id'] ?? 'INC-${DateTime.now().millisecondsSinceEpoch}',
-          deviceId: rawIncident['device_id'] ?? 'PIN-001',
-          timestamp: DateTime.now().toString(),
-          transcript: rawIncident['transcript'] ?? 'Speech detected',
-          threatScore: (rawIncident['score'] is num) ? (rawIncident['score'] as num).toDouble() : 1.0,
-          threatLabel: rawIncident['category'] ?? 'Conversational',
-          audioFile: rawIncident['audio_file'],
-          snapshotFile: rawIncident['snapshot_file'],
-        );
+        final inc = IncidentReport.fromJson(rawIncident, host: _host, port: _port);
         if (_pairedPinIds.isEmpty || _pairedPinIds.contains(inc.deviceId.toUpperCase())) {
           _recentIncidents.insert(0, inc);
-          if (_recentIncidents.length > 30) _recentIncidents.removeLast();
+          if (_recentIncidents.length > 50) _recentIncidents.removeLast();
+          if (inc.isFlagged) {
+            _latestAlert = inc;
+          }
           notifyListeners();
         }
       }

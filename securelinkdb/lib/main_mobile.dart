@@ -17,7 +17,7 @@ void main() async {
         center: true,
         backgroundColor: Color(0xFF090C14),
         skipTaskbar: false,
-        title: 'SecureLink Mobile (Phone Edition)',
+        title: 'SecureLink Companion',
       );
 
       await windowManager.waitUntilReadyToShow(options, () async {
