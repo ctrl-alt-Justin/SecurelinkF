@@ -90,7 +90,7 @@ class _BatteryTrackerScreenState extends State<BatteryTrackerScreen> {
                         borderRadius: BorderRadius.circular(20),
                       ),
                       child: Text(
-                        '200mAh LiPo Cell',
+                        '250mAh LiPo Cell',
                         style: TextStyle(color: Colors.white.withValues(alpha: 0.6), fontSize: 10, fontWeight: FontWeight.w600),
                       ),
                     ),

@@ -138,11 +138,13 @@ class IncidentEvent {
   final ThreatLevel level;
   final double score;
   final bool audio, video;
+  final List<String> snapshots;
 
   const IncidentEvent({
     required this.id, required this.deviceId, required this.time,
     required this.level, required this.score, required this.category,
     required this.transcript, required this.audio, required this.video,
+    this.snapshots = const [],
     this.duration = '00:08',
   });
 
@@ -152,6 +154,11 @@ class IncidentEvent {
     if (s >= 8.0) lvl = ThreatLevel.danger;
     else if (s >= 4.0) lvl = ThreatLevel.threat;
     else if (s >= 2.0) lvl = ThreatLevel.warning;
+
+    final rawSnaps = json['snapshots'] as List?;
+    final List<String> parsedSnaps = rawSnaps != null
+        ? rawSnaps.map((e) => e.toString()).toList()
+        : (json['snapshot_url'] != null ? [json['snapshot_url'].toString()] : []);
     
     final t = DateTime.now();
     return IncidentEvent(
@@ -162,7 +169,8 @@ class IncidentEvent {
       category: json['category'] ?? 'Conversational',
       transcript: json['transcript'] ?? '',
       audio: json['audio'] ?? true,
-      video: lvl == ThreatLevel.danger,
+      video: lvl == ThreatLevel.danger || parsedSnaps.isNotEmpty,
+      snapshots: parsedSnaps,
       duration: json['duration'] ?? '00:08',
     );
   }
@@ -842,6 +850,36 @@ class _IncidentsPageState extends State<_IncidentsPage> {
                       ],
                     ),
                   ),
+                  if (selected!.snapshots.isNotEmpty || selected!.video) ...[
+                    const SizedBox(height: 32),
+                    Text('DANGER CAMERA SNAPSHOTS (${selected!.snapshots.length}/3)', style: TextStyle(color: _DS.textDim, fontSize: 12, letterSpacing: 1.2, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      height: 100,
+                      child: Row(
+                        children: List.generate(3, (idx) {
+                          final hasSnap = idx < selected!.snapshots.length;
+                          final snapUrl = hasSnap ? selected!.snapshots[idx] : null;
+                          return Expanded(
+                            child: Container(
+                              margin: EdgeInsets.only(left: idx == 0 ? 0 : 12),
+                              decoration: BoxDecoration(
+                                color: _DS.surfaceElevated,
+                                borderRadius: BorderRadius.circular(_DS.r16),
+                                border: Border.all(color: hasSnap ? _DS.neonLime : Colors.white10),
+                              ),
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(_DS.r16),
+                                child: hasSnap && snapUrl != null
+                                    ? Image.network(snapUrl, fit: BoxFit.cover, errorBuilder: (_, __, ___) => const Icon(Icons.broken_image, color: Colors.white38))
+                                    : Center(child: Text('Frame ${idx + 1}\n(+${idx}s)', textAlign: TextAlign.center, style: TextStyle(color: _DS.textDim, fontSize: 11))),
+                              ),
+                            ),
+                          );
+                        }),
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),

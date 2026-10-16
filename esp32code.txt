@@ -32,7 +32,7 @@ String pinId = "PIN-005";
 
 // =========================================================================
 // SECURELINK SMART PIN FIRMWARE (XIAO ESP32S3 Sense)
-// Optimized for: 160MHz Balanced Clock | 200mAh LiPo (6-8h Target) | 16kHz VAD
+// Optimized for: 160MHz Balanced Clock | 250mAh LiPo (7-10h Target) | 16kHz VAD
 // =========================================================================
 
 I2SClass I2S;
@@ -50,7 +50,7 @@ String wifi_ssid = "SLTYMTBLLS";
 String wifi_pass = "9945SUmaxx!";
 String wifi_ssid2 = "";
 String wifi_pass2 = "";
-String server_host = "10.28.20.28";
+String server_host = "10.28.20.11";
 int server_port = 8080;
 const char* WS_PATH_PRIMARY = "/";
 
@@ -61,7 +61,7 @@ WiFiUDP udp;
 WebSocketsClient ws;
 
 // --- NETWORK STATE ---
-String cachedServerIP = "10.28.20.28";
+String cachedServerIP = "10.28.20.11";
 bool hasActiveStream = false;
 bool hasPendingWsConnect = false;
 unsigned long wsConnectStartedAt = 0;
@@ -158,7 +158,7 @@ inline int16_t applySoftLimiter(int32_t sample) {
 
 // --- BATTERY TELEMETRY (XIAO ESP32S3 Sense) ---
 // Reads physical battery voltage from ADC (GPIO 1 / A0) with 1:2 divider,
-// or calculates realistic Coulomb discharge based on 200mAh LiPo operational runtime.
+// or calculates realistic Coulomb discharge based on 250mAh LiPo operational runtime.
 #define BATTERY_PIN 1
 
 static unsigned long totalStreamTimeMs = 0;
@@ -187,9 +187,9 @@ int calculateBatteryPct() {
         return constrain(pct, 0, 100);
     }
 
-    // Dynamic Coulomb discharge model for 200mAh LiPo:
-    // Standby: ~35mA (160MHz CPU + Modem Sleep + OV2640 in powersave) -> ~5.7h total
-    // Active Voice Streaming: ~115mA -> ~1.7h total
+    // Dynamic Coulomb discharge model for 250mAh LiPo:
+    // Standby: ~35mA (160MHz CPU + Modem Sleep + OV2640 in powersave) -> ~7.1h total
+    // Active Voice Streaming: ~115mA -> ~2.2h total
     unsigned long now = millis();
     unsigned long activeStreamMs = totalStreamTimeMs;
     if (isStreaming && streamStartMs > 0) {
@@ -198,8 +198,8 @@ int calculateBatteryPct() {
     unsigned long standbyMs = (now > activeStreamMs) ? (now - activeStreamMs) : 0;
 
     float consumedMah = ((float)standbyMs / 3600000.0f) * 35.0f + ((float)activeStreamMs / 3600000.0f) * 115.0f;
-    float remainingMah = 200.0f - consumedMah;
-    int pct = (int)((remainingMah / 200.0f) * 100.0f);
+    float remainingMah = 250.0f - consumedMah;
+    int pct = (int)((remainingMah / 250.0f) * 100.0f);
     return constrain(pct, 0, 100);
 }
 
@@ -270,13 +270,21 @@ void setupCamera() {
     }
 }
 
-// Non-blocking snapshot engine:
-// If camera hardware freezes or drops DMA, Core 0 will NEVER hang!
+// --- CAMERA SNAPSHOT BURST ENGINE (DANGER EVIDENCE CAPTURE) ---
+// Captures a burst of up to 3 snapshots at 1-second intervals upon DANGER trigger
+static const int SNAPSHOT_BURST_MAX = 3;
+static const unsigned long SNAPSHOT_INTERVAL_MS = 1000;
+
+static volatile int snapshotBurstRemaining = 0;
+static volatile int currentSnapshotIndex = 0;
+static unsigned long lastSnapshotBurstTime = 0;
 static volatile bool snapshotInProgress = false;
 static unsigned long snapshotStartedAt = 0;
 static camera_fb_t* volatile readySnapshotFb = nullptr;
+static volatile int readySnapshotIndex = 0;
 
 void snapshotWorkerTask(void* param) {
+    int index = (int)(intptr_t)param;
     setCameraSensorStandby(false); // Wake OV3660/OV2640 sensor from standby
     delay(50);                     // Allow sensor AGC/AEC/clocks to stabilize
     // Discard any stale frame in FIFO before capturing fresh snapshot
@@ -285,26 +293,25 @@ void snapshotWorkerTask(void* param) {
         esp_camera_fb_return(staleFb);
     }
     camera_fb_t * fb = esp_camera_fb_get();
-    setCameraSensorStandby(true);  // Power down sensor back into standby mode (<1.5mA)
     if (fb) {
+        readySnapshotIndex = index;
         readySnapshotFb = fb;
     } else {
-        Serial.println("[CAM] esp_camera_fb_get() returned null (capture failed).");
+        Serial.printf("[CAM] esp_camera_fb_get() returned null for frame #%d.\n", index);
         snapshotInProgress = false;
     }
     vTaskDelete(NULL);
 }
 
-void captureIncidentSnapshot() {
-    if (!cameraReady || (!hasActiveStream && !hasActiveBleStream && !isOfflineRecording)) return;
+void captureSingleSnapshot(int frameIndex) {
+    if (!cameraReady) return;
     if (snapshotInProgress) {
         if (millis() - snapshotStartedAt > 3500) {
-            Serial.println("[CAM] Snapshot task timed out (>3.5s). Camera driver unresponsive, disabling camera to prevent crash.");
-            cameraReady = false; // Disable camera subsystem until next reboot to avoid deadlock
+            Serial.println("[CAM] Snapshot task timed out (>3.5s). Resetting camera worker state.");
+            snapshotInProgress = false;
         } else {
-            Serial.println("[CAM] Snapshot already in progress, skipping.");
+            return;
         }
-        return;
     }
 
     snapshotInProgress = true;
@@ -313,7 +320,7 @@ void captureIncidentSnapshot() {
         snapshotWorkerTask,
         "camSnapTask",
         4096,
-        NULL,
+        (void*)(intptr_t)frameIndex,
         1,
         NULL,
         0
@@ -322,6 +329,21 @@ void captureIncidentSnapshot() {
         snapshotInProgress = false;
         Serial.println("[CAM] Failed to create camSnapTask.");
     }
+}
+
+void triggerIncidentSnapshotBurst() {
+    if (!cameraReady) {
+        Serial.println("[CAM] Camera not ready, cannot trigger snapshot burst.");
+        return;
+    }
+    Serial.println("\n[CAM] >>> DANGER DETECTED! Starting 3-frame snapshot burst (1s interval) <<<");
+    snapshotBurstRemaining = SNAPSHOT_BURST_MAX;
+    currentSnapshotIndex = 1;
+    lastSnapshotBurstTime = 0; // Trigger frame 1 immediately
+}
+
+void captureIncidentSnapshot() {
+    triggerIncidentSnapshotBurst();
 }
 
 // --- BLE RELAY GATT CALLBACKS & HELPERS ---
@@ -428,9 +450,9 @@ static void onWebSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
         case WStype_TEXT:
             if (length > 0) {
                 String msg = String((char*)payload);
-                if (msg == "TRIGGER:DANGER" || msg == "CMD:CAPTURE_SNAPSHOT") {
-                    Serial.println("[CAM] Speech evaluated as DANGER! Capturing camera snapshot...");
-                    captureIncidentSnapshot();
+                if (msg.startsWith("TRIGGER:DANGER") || msg.startsWith("CMD:CAPTURE_SNAPSHOT")) {
+                    Serial.println("[CAM] Speech evaluated as DANGER! Starting snapshot burst...");
+                    triggerIncidentSnapshotBurst();
                 } else if (msg.startsWith("CONFIG:BUFFER:")) {
                     int sec = msg.substring(14).toInt();
                     if (sec > 0) {
@@ -536,7 +558,7 @@ void loadPreferences() {
     wifi_pass = prefs.getString("pass", "9945SUmaxx!");
     wifi_ssid2 = prefs.getString("ssid2", "");
     wifi_pass2 = prefs.getString("pass2", "");
-    server_host = prefs.getString("server", "10.28.20.28");
+    server_host = prefs.getString("server", "10.28.20.11");
     server_port = prefs.getInt("port", 8080);
     cachedServerIP = server_host;
     pinId = prefs.getString("pin_id", "PIN-005");
@@ -623,7 +645,7 @@ void startConfigPortal() {
         html += "<input type='password' name='pass' placeholder='Leave empty if open network' value='" + wifi_pass + "'>";
         
         html += "<label>Server Host / IP <span class='badge'>WebSocket</span></label>";
-        html += "<input type='text' name='server' placeholder='e.g. 10.28.20.28 or my-tunnel.domain.com' value='" + server_host + "' required>";
+        html += "<input type='text' name='server' placeholder='e.g. 10.28.20.11 or my-tunnel.domain.com' value='" + server_host + "' required>";
         
         html += "<label>Server Port</label>";
         html += "<input type='number' name='port' value='" + String(server_port) + "' required>";
@@ -1184,6 +1206,54 @@ void loop() {
         btnHoldStart = 0;
     }
 
+    // --- CAMERA SNAPSHOT BURST SEQUENCER (1-SECOND INTERVALS) ---
+    if (snapshotBurstRemaining > 0 && !snapshotInProgress && readySnapshotFb == nullptr) {
+        if (lastSnapshotBurstTime == 0 || millis() - lastSnapshotBurstTime >= SNAPSHOT_INTERVAL_MS) {
+            lastSnapshotBurstTime = millis();
+            Serial.printf("[CAM] Initiating burst snapshot frame #%d of %d...\n", currentSnapshotIndex, SNAPSHOT_BURST_MAX);
+            captureSingleSnapshot(currentSnapshotIndex);
+        }
+    }
+
+    // Process completed snapshot frame (Wi-Fi, BLE Relay, or LittleFS Blackbox)
+    if (readySnapshotFb != nullptr) {
+        camera_fb_t* fb = readySnapshotFb;
+        int snapIdx = readySnapshotIndex;
+        readySnapshotFb = nullptr;
+
+        if (ws.isConnected()) {
+            String header = "SNAP:" + String(snapIdx) + ":" + String(fb->len);
+            ws.sendTXT(header);
+            ws.sendBIN(fb->buf, fb->len);
+            Serial.printf("[CAM] Incident snapshot #%d/%d sent via Wi-Fi (%u bytes)\n", snapIdx, SNAPSHOT_BURST_MAX, fb->len);
+        } else if (bleClientConnected && pEventChar != nullptr) {
+            pEventChar->setValue("SNAP_START:" + pinId + ":" + String(snapIdx) + ":" + String(fb->len));
+            pEventChar->notify();
+            sendBleAudioChunk(fb->buf, fb->len);
+            pEventChar->setValue("SNAP_END:" + pinId + ":" + String(snapIdx));
+            pEventChar->notify();
+            Serial.printf("[CAM] Incident snapshot #%d/%d sent via BLE Relay\n", snapIdx, SNAPSHOT_BURST_MAX);
+        } else if (fsReady) {
+            String snapPath = "/snap_" + String(millis()) + "_" + String(snapIdx) + ".jpg";
+            File snapFile = LittleFS.open(snapPath, FILE_WRITE);
+            if (snapFile) {
+                snapFile.write(fb->buf, fb->len);
+                snapFile.close();
+                Serial.printf("[CAM] Saved snapshot #%d to LittleFS blackbox: %s\n", snapIdx, snapPath.c_str());
+            }
+        }
+        esp_camera_fb_return(fb);
+        snapshotInProgress = false;
+
+        currentSnapshotIndex++;
+        snapshotBurstRemaining--;
+        if (snapshotBurstRemaining <= 0) {
+            snapshotBurstRemaining = 0;
+            setCameraSensorStandby(true); // Return sensor to deep software standby (<1.5mA)
+            Serial.println("[CAM] Snapshot burst complete. Camera returned to standby sleep (<1.5mA).");
+        }
+    }
+
     static bool wifiWasDisconnected = false;
     if (WiFi.status() == WL_CONNECTED) {
         if (wifiWasDisconnected) {
@@ -1193,52 +1263,49 @@ void loop() {
         }
         ws.loop();
 
-        // Check for completed non-blocking snapshot frame
-        if (readySnapshotFb != nullptr) {
-            camera_fb_t* fb = readySnapshotFb;
-            readySnapshotFb = nullptr;
-            if (hasActiveStream && ws.isConnected()) {
-                String header = "SNAP:" + String(fb->len);
-                ws.sendTXT(header);
-                ws.sendBIN(fb->buf, fb->len);
-                Serial.println("[CAM] Incident snapshot sent to server via Wi-Fi");
-            } else if (bleClientConnected && pEventChar != nullptr) {
-                pEventChar->setValue("SNAP_START:" + pinId + ":" + String(fb->len));
-                pEventChar->notify();
-                sendBleAudioChunk(fb->buf, fb->len);
-                pEventChar->setValue("SNAP_END:" + pinId);
-                pEventChar->notify();
-                Serial.println("[CAM] Incident snapshot sent to Mobile Companion via BLE Relay");
-            } else if (fsReady) {
-                String snapPath = "/snap_" + String(millis()) + ".jpg";
-                File snapFile = LittleFS.open(snapPath, FILE_WRITE);
-                if (snapFile) {
-                    snapFile.write(fb->buf, fb->len);
-                    snapFile.close();
-                    Serial.printf("[CAM] Saved snapshot to LittleFS blackbox: %s\n", snapPath.c_str());
-                }
-            }
-            esp_camera_fb_return(fb);
-            snapshotInProgress = false;
-        }
-
         if (hasPendingWsConnect && ws.isConnected()) {
             hasPendingWsConnect = false;
         }
         if (hasPendingWsConnect && (millis() - wsConnectStartedAt > WS_CONNECT_TIMEOUT_MS)) {
             ws.disconnect();
             hasPendingWsConnect = false;
-            cachedServerIP = server_host; 
+            Serial.printf("[WS] Connection to '%s' timed out. Searching via UDP broadcast...\n", cachedServerIP.c_str());
+            cachedServerIP = ""; // Clear so UDP discovery will run to find the real server!
         }
+
         // Auto-reconnect to checkpoint server on standby so streaming is instantaneous
-        if (!ws.isConnected() && !hasPendingWsConnect && cachedServerIP != "" && !wifiConnectInProgress) {
-            static unsigned long lastWsRetry = 0;
-            if (millis() - lastWsRetry > 3000) {
-                lastWsRetry = millis();
-                ws.begin(cachedServerIP.c_str(), server_port, WS_PATH_PRIMARY);
-                ws.onEvent(onWebSocketEvent);
-                hasPendingWsConnect = true;
-                wsConnectStartedAt = millis();
+        if (!ws.isConnected() && !hasPendingWsConnect && !wifiConnectInProgress) {
+            if (cachedServerIP == "") {
+                static unsigned long lastUdpProbe = 0;
+                if (millis() - lastUdpProbe > 4000) {
+                    lastUdpProbe = millis();
+                    udp.begin(8888);
+                    udp.beginPacket(IPAddress(255, 255, 255, 255), 8888);
+                    udp.print("SECURELINK_PIN_V1");
+                    udp.endPacket();
+
+                    unsigned long waitStart = millis();
+                    while (millis() - waitStart < 500) {
+                        if (udp.parsePacket()) {
+                            cachedServerIP = udp.remoteIP().toString();
+                            Serial.printf("[UDP] Found Checkpoint Server at: %s\n", cachedServerIP.c_str());
+                            break;
+                        }
+                        delay(20);
+                    }
+                    if (cachedServerIP == "") {
+                        cachedServerIP = server_host; // fallback to 10.28.20.11
+                    }
+                }
+            } else {
+                static unsigned long lastWsRetry = 0;
+                if (millis() - lastWsRetry > 3000) {
+                    lastWsRetry = millis();
+                    ws.begin(cachedServerIP.c_str(), server_port, WS_PATH_PRIMARY);
+                    ws.onEvent(onWebSocketEvent);
+                    hasPendingWsConnect = true;
+                    wsConnectStartedAt = millis();
+                }
             }
         }
     } else {
@@ -1253,13 +1320,12 @@ void loop() {
         }
 
         // Resilient background Wi-Fi auto-reconnection:
-        // If Wi-Fi is temporarily lost, quietly retry every 5s. NEVER auto-lock into Setup Portal!
+        // If Wi-Fi is temporarily lost, quietly retry every 8s. NEVER auto-lock into Setup Portal!
         static unsigned long lastWifiRetry = 0;
-        if (millis() - lastWifiRetry > 5000) {
+        if (millis() - lastWifiRetry > 8000) {
             lastWifiRetry = millis();
-            Serial.printf("[WIFI] Reconnecting to '%s'...\n", wifi_ssid.c_str());
-            WiFi.disconnect(true);
-            delay(50);
+            Serial.printf("[WIFI] Auto-reconnecting to '%s'...\n", wifi_ssid.c_str());
+            WiFi.disconnect();
             WiFi.mode(WIFI_STA);
             WiFi.begin(wifi_ssid.c_str(), wifi_pass.c_str());
         }

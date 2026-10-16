@@ -45,14 +45,17 @@ class BleRelayService extends ChangeNotifier {
   int _lastRssi = -58;
   int _pinBattery = 100;
 
-  // Audio stream accumulator for current speech burst
+  // Audio stream & snapshot accumulator
   final List<int> _audioBuffer = [];
   bool _isReceivingStream = false;
   bool _isReceivingArchive = false;
+  bool _isReceivingSnapshot = false;
+  int _currentSnapIndex = 1;
   String _currentArchiveFilename = '';
 
   bool get isReceivingStream => _isReceivingStream;
   bool get isReceivingArchive => _isReceivingArchive;
+  bool get isReceivingSnapshot => _isReceivingSnapshot;
 
   // Server relay connection
   String _serverHost = '10.28.20.11';
@@ -299,6 +302,21 @@ class BleRelayService extends ChangeNotifier {
       await _forwardPcmToRestServer(fullPcm);
       _incidentsRelayed++;
       notifyListeners();
+    } else if (event.startsWith('SNAP_START:')) {
+      // Format: SNAP_START:<pinId>:<index>:<len>
+      final parts = event.split(':');
+      _currentSnapIndex = parts.length >= 3 ? int.tryParse(parts[2]) ?? 1 : 1;
+      _isReceivingSnapshot = true;
+      _audioBuffer.clear();
+      _bridgeStatus = 'Relaying Evidence Snapshot Frame #$_currentSnapIndex via Cellular...';
+      notifyListeners();
+    } else if (event.startsWith('SNAP_END:')) {
+      _isReceivingSnapshot = false;
+      final snapBytes = Uint8List.fromList(_audioBuffer);
+      _audioBuffer.clear();
+      await _forwardSnapshotToRestServer(snapBytes, _currentSnapIndex);
+      _bridgeStatus = 'Snapshot Frame #$_currentSnapIndex Relayed to Central System.';
+      notifyListeners();
     } else if (event.startsWith('PING:')) {
       // PING:<pinId>:<rssi>:<batPct>:<batMv>
       final parts = event.split(':');
@@ -306,6 +324,29 @@ class BleRelayService extends ChangeNotifier {
       if (parts.length >= 4) _pinBattery = int.tryParse(parts[3]) ?? 100;
       _lastPacketTime = DateTime.now();
       notifyListeners();
+    }
+  }
+
+  /// Forwards captured snapshot frame to Central FastAPI /api/relay-stream
+  Future<void> _forwardSnapshotToRestServer(Uint8List snapBytes, int snapIndex) async {
+    if (snapBytes.isEmpty) return;
+    try {
+      final uri = Uri.parse('http://$_serverHost:$_serverPort/api/relay-stream');
+      final payload = {
+        'device_id': _connectedPinId,
+        'snapshot_base64': base64Encode(snapBytes),
+        'snapshot_index': snapIndex,
+      };
+
+      final client = HttpClient()..connectionTimeout = const Duration(seconds: 4);
+      final req = await client.postUrl(uri);
+      req.headers.set('content-type', 'application/json');
+      req.add(utf8.encode(jsonEncode(payload)));
+      final res = await req.close();
+      client.close();
+      debugPrint('[RELAY-REST] Snapshot frame #$snapIndex forwarded to server (status ${res.statusCode})');
+    } catch (e) {
+      debugPrint('[RELAY-REST] Error forwarding snapshot frame #$snapIndex: $e');
     }
   }
 

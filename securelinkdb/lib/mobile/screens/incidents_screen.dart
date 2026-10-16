@@ -454,7 +454,192 @@ class _IncidentsScreenState extends State<IncidentsScreen> {
             fontSize: 13.5,
             fontWeight: FontWeight.w600,
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 8),
+
+          // Snapshot Evidence Burst (Max 3 frames at 1s interval)
+          if (inc.snapshots.isNotEmpty || inc.isDanger) ...[
+            Container(
+              margin: const EdgeInsets.only(top: 4, bottom: 4),
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.3),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: (inc.isDanger ? MobileDesignSystem.statusDanger : Colors.white24).withValues(alpha: 0.3),
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(
+                        Icons.photo_camera_rounded,
+                        size: 13,
+                        color: inc.isDanger ? MobileDesignSystem.statusDanger : MobileDesignSystem.primaryGreenMint,
+                      ),
+                      const SizedBox(width: 5),
+                      Text(
+                        'EVIDENCE SNAPSHOT BURST (1s INTERVAL)',
+                        style: TextStyle(
+                          fontSize: 9.5,
+                          fontWeight: FontWeight.w800,
+                          color: inc.isDanger ? MobileDesignSystem.statusDanger : Colors.white70,
+                          letterSpacing: 0.6,
+                        ),
+                      ),
+                      const Spacer(),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: (inc.isDanger ? MobileDesignSystem.statusDanger : MobileDesignSystem.primaryGreen).withValues(alpha: 0.2),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          '${inc.snapshots.length}/3 CAPTURED',
+                          style: TextStyle(
+                            fontSize: 8.5,
+                            fontWeight: FontWeight.w800,
+                            color: inc.isDanger ? MobileDesignSystem.statusDanger : MobileDesignSystem.primaryGreenMint,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  SizedBox(
+                    height: 80,
+                    child: Row(
+                      children: List.generate(3, (idx) {
+                        final hasSnap = idx < inc.snapshots.length;
+                        final snapUrl = hasSnap ? inc.snapshots[idx] : null;
+
+                        return Expanded(
+                          child: Container(
+                            margin: EdgeInsets.only(left: idx == 0 ? 0 : 6),
+                            decoration: BoxDecoration(
+                              color: Colors.black.withValues(alpha: 0.5),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(
+                                color: hasSnap
+                                    ? (inc.isDanger ? MobileDesignSystem.statusDanger : MobileDesignSystem.primaryGreenMint).withValues(alpha: 0.5)
+                                    : Colors.white10,
+                              ),
+                            ),
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(7),
+                              child: Stack(
+                                fit: StackFit.expand,
+                                children: [
+                                  if (hasSnap && snapUrl != null) ...[
+                                    GestureDetector(
+                                      onTap: () {
+                                        showDialog(
+                                          context: context,
+                                          builder: (ctx) => Dialog(
+                                            backgroundColor: const Color(0xFF131722),
+                                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                                            child: Padding(
+                                              padding: const EdgeInsets.all(14),
+                                              child: Column(
+                                                mainAxisSize: MainAxisSize.min,
+                                                children: [
+                                                  Row(
+                                                    children: [
+                                                      Text(
+                                                        'FRAME ${idx + 1} OF 3 (+${idx * 1.0}s)',
+                                                        style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w800),
+                                                      ),
+                                                      const Spacer(),
+                                                      IconButton(
+                                                        icon: const Icon(Icons.close_rounded, color: Colors.white70, size: 20),
+                                                        onPressed: () => Navigator.pop(ctx),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                  const SizedBox(height: 8),
+                                                  ClipRRect(
+                                                    borderRadius: BorderRadius.circular(10),
+                                                    child: Image.network(
+                                                      snapUrl,
+                                                      fit: BoxFit.contain,
+                                                      errorBuilder: (_, __, ___) => const Padding(
+                                                        padding: EdgeInsets.all(30),
+                                                        child: Text('Snapshot could not be loaded', style: TextStyle(color: Colors.white54)),
+                                                      ),
+                                                    ),
+                                                  ),
+                                                  const SizedBox(height: 8),
+                                                  Text(
+                                                    '${inc.deviceId} • ${inc.timestamp}',
+                                                    style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 10),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                          ),
+                                        );
+                                      },
+                                      child: Image.network(
+                                        snapUrl,
+                                        fit: BoxFit.cover,
+                                        errorBuilder: (_, __, ___) => const Center(
+                                          child: Icon(Icons.broken_image_rounded, size: 18, color: Colors.white30),
+                                        ),
+                                      ),
+                                    ),
+                                  ] else ...[
+                                    Center(
+                                      child: Column(
+                                        mainAxisAlignment: MainAxisAlignment.center,
+                                        children: [
+                                          SizedBox(
+                                            width: 12,
+                                            height: 12,
+                                            child: CircularProgressIndicator(
+                                              strokeWidth: 1.5,
+                                              color: (inc.isDanger ? MobileDesignSystem.statusDanger : MobileDesignSystem.primaryGreen).withValues(alpha: 0.6),
+                                            ),
+                                          ),
+                                          const SizedBox(height: 4),
+                                          Text(
+                                            'Frame ${idx + 1}\n(+${idx}s)',
+                                            textAlign: TextAlign.center,
+                                            style: TextStyle(color: Colors.white.withValues(alpha: 0.3), fontSize: 7),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
+                                  Positioned(
+                                    top: 3,
+                                    left: 4,
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 1),
+                                      decoration: BoxDecoration(color: Colors.black87, borderRadius: BorderRadius.circular(3)),
+                                      child: Text(
+                                        'F${idx + 1}',
+                                        style: TextStyle(
+                                          fontSize: 6.5,
+                                          fontWeight: FontWeight.w800,
+                                          color: hasSnap ? Colors.white : Colors.white38,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        );
+                      }),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
 
           // Audio & Forensic Footer
           Row(

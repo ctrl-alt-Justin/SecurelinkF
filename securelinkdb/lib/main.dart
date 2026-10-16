@@ -708,6 +708,7 @@ class Incident {
   final String transcript;
   final bool audio;
   final bool video;
+  final List<String> snapshots;
   final String audioDuration;
   final String? audioUrl;
   final String? audioFile;
@@ -722,10 +723,43 @@ class Incident {
     required this.transcript,
     required this.audio,
     required this.video,
+    this.snapshots = const [],
     this.audioDuration = '00:08',
     this.audioUrl,
     this.audioFile,
   });
+
+  Incident copyWith({
+    String? id,
+    String? deviceId,
+    String? time,
+    IncidentLevel? level,
+    double? score,
+    String? category,
+    String? transcript,
+    bool? audio,
+    bool? video,
+    List<String>? snapshots,
+    String? audioDuration,
+    String? audioUrl,
+    String? audioFile,
+  }) {
+    return Incident(
+      id: id ?? this.id,
+      deviceId: deviceId ?? this.deviceId,
+      time: time ?? this.time,
+      level: level ?? this.level,
+      score: score ?? this.score,
+      category: category ?? this.category,
+      transcript: transcript ?? this.transcript,
+      audio: audio ?? this.audio,
+      video: video ?? this.video,
+      snapshots: snapshots ?? this.snapshots,
+      audioDuration: audioDuration ?? this.audioDuration,
+      audioUrl: audioUrl ?? this.audioUrl,
+      audioFile: audioFile ?? this.audioFile,
+    );
+  }
 
   factory Incident.fromJson(Map<String, dynamic> json) {
     double parsedScore = (json['score'] as num).toDouble();
@@ -738,8 +772,13 @@ class Incident {
       parsedLevel = IncidentLevel.warning;
     }
 
-    // Camera snapshots are ONLY enabled for DANGER grade events!
-    final bool hasVideoSnapshot = parsedLevel == IncidentLevel.danger;
+    final rawSnaps = json['snapshots'] as List?;
+    final List<String> parsedSnaps = rawSnaps != null
+        ? rawSnaps.map((e) => e.toString()).toList()
+        : (json['snapshot_url'] != null ? [json['snapshot_url'].toString()] : []);
+
+    // Camera snapshots are enabled for DANGER grade events or when snapshots were captured!
+    final bool hasVideoSnapshot = parsedLevel == IncidentLevel.danger || parsedSnaps.isNotEmpty;
     final String evtId = json['id'] ?? 'EVT-${DateTime.now().millisecondsSinceEpoch.toString().substring(8)}';
 
     return Incident(
@@ -752,6 +791,7 @@ class Incident {
       transcript: json['transcript'] ?? '',
       audio: json['audio'] ?? true,
       video: hasVideoSnapshot,
+      snapshots: parsedSnaps,
       audioDuration: json['duration'] ?? '00:08',
       audioUrl: json['audio_url'] ?? 'http://127.0.0.1:8080/recordings/audio/$evtId.wav',
       audioFile: json['audio_file'] ?? '$evtId.wav',
@@ -963,6 +1003,29 @@ class _DashboardShellState extends State<DashboardShell> with WindowListener {
               final enabled = data['enabled'] == true;
               if (mounted) {
                 setState(() => harmfulWordsOnly = enabled);
+              }
+            } else if (eventType == 'snapshot_ready') {
+              final snapUrl = data['snapshot_url'] ?? (data['snapshot_file'] != null ? 'http://127.0.0.1:8080/recordings/snapshots/${data['snapshot_file']}' : null);
+              final incidentId = data['incident_id'];
+              final deviceId = data['device_id'];
+              final rawList = data['snapshots'] as List?;
+              final List<String> newSnaps = rawList != null
+                  ? rawList.map((e) => e.toString()).toList()
+                  : (snapUrl != null ? [snapUrl.toString()] : []);
+
+              if (newSnaps.isNotEmpty && mounted) {
+                setState(() {
+                  final idx = liveIncidents.indexWhere((inc) => (incidentId != null && inc.id == incidentId) || (inc.deviceId == deviceId && inc.level == IncidentLevel.danger));
+                  if (idx >= 0) {
+                    final inc = liveIncidents[idx];
+                    final mergedSnaps = List<String>.from(inc.snapshots);
+                    for (final s in newSnaps) {
+                      if (!mergedSnaps.contains(s)) mergedSnaps.add(s);
+                    }
+                    liveIncidents[idx] = inc.copyWith(snapshots: mergedSnaps, video: true);
+                    liveIncidents = List.from(liveIncidents);
+                  }
+                });
               }
             } else if (eventType == 'server_status') {
               if (data.containsKey('harmful_words_only') && mounted) {
@@ -1876,7 +1939,7 @@ class _Header extends StatelessWidget {
   String get subtitle => switch (tab) {
         AppTab.overview => 'Live system status, acoustic telemetry & incident queue',
         AppTab.incidents => 'Review speech transcripts, audio playback & camera snapshots',
-        AppTab.devices => 'Monitor XIAO ESP32S3 wearable pins (160MHz Standard & 200mAh LiPo)',
+        AppTab.devices => 'Monitor XIAO ESP32S3 wearable pins (160MHz Standard & 250mAh LiPo)',
         AppTab.analytics => 'Tagalog RoBERTa threat distribution & research metrics',
         AppTab.configuration => 'Configure pre-trigger buffer duration, silence timeouts & camera policies',
       };
@@ -3276,7 +3339,7 @@ class _DeviceCard extends StatelessWidget {
                     const SizedBox(width: 4),
                     Text('${device.battery}% (${device.estRuntime})', style: TextStyle(color: batteryColor, fontSize: 8.5, fontWeight: FontWeight.w700)),
                     const Spacer(),
-                    Text('200mAh LiPo', style: TextStyle(color: Colors.white.withOpacity(0.28), fontSize: 8)),
+                    Text('250mAh LiPo', style: TextStyle(color: Colors.white.withOpacity(0.28), fontSize: 8)),
                   ],
                 ),
                 const SizedBox(height: 5),
@@ -3913,50 +3976,170 @@ class _IncidentDetailCardState extends State<_IncidentDetailCard> {
             ],
 
             // CAMERA SNAPSHOT EVIDENCE (DANGER ONLY)
-            if (incident.video && incident.level == IncidentLevel.danger) ...[
-              Text('CAMERA FRAME CAPTURE (DANGER EVENT)', style: TextStyle(color: Colors.white.withOpacity(.32), fontSize: 8, fontWeight: FontWeight.w600, letterSpacing: 1.0)),
-              const SizedBox(height: 6),
-              Container(
-                height: 140,
-                width: double.infinity,
-                decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.35),
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: const Color(0xFFFF4D67).withOpacity(0.3)),
-                ),
-                child: Stack(
-                  children: [
-                    Center(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(Icons.videocam_rounded, size: 32, color: const Color(0xFFFF4D67).withOpacity(0.7)),
-                          const SizedBox(height: 5),
-                          const Text('OV2640 DANGER SNAPSHOT CAPTURED', style: TextStyle(color: Colors.white70, fontSize: 9.5, fontWeight: FontWeight.w600)),
-                          const SizedBox(height: 2),
-                          Text('320x240 QVGA • Triggered automatically by DANGER grade speech', style: TextStyle(color: Colors.white.withOpacity(0.3), fontSize: 7.5)),
-                        ],
-                      ),
+            if (incident.video && (incident.level == IncidentLevel.danger || incident.snapshots.isNotEmpty)) ...[
+              Row(
+                children: [
+                  const Icon(Icons.photo_camera_rounded, size: 12, color: Color(0xFFFF4D67)),
+                  const SizedBox(width: 5),
+                  Text('DANGER SNAPSHOT EVIDENCE BURST (MAX 3 • 1s INTERVAL)', style: TextStyle(color: Colors.white.withOpacity(.65), fontSize: 8.5, fontWeight: FontWeight.w700, letterSpacing: 0.8)),
+                  const Spacer(),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFF4D67).withOpacity(0.18),
+                      borderRadius: BorderRadius.circular(4),
+                      border: Border.all(color: const Color(0xFFFF4D67).withOpacity(0.4)),
                     ),
-                    Positioned(
-                      top: 7,
-                      left: 9,
+                    child: Text('${incident.snapshots.length}/3 CAPTURED', style: const TextStyle(fontSize: 7.5, color: Color(0xFFFF4D67), fontWeight: FontWeight.w800)),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              SizedBox(
+                height: 120,
+                child: Row(
+                  children: List.generate(3, (idx) {
+                    final hasSnap = idx < incident.snapshots.length;
+                    final snapUrl = hasSnap ? incident.snapshots[idx] : null;
+                    return Expanded(
                       child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2.5),
-                        decoration: BoxDecoration(color: const Color(0xFFFF4D67).withOpacity(0.2), borderRadius: BorderRadius.circular(5), border: Border.all(color: const Color(0xFFFF4D67).withOpacity(0.4))),
-                        child: Text('REC • ${incident.deviceId}', style: const TextStyle(fontSize: 7.5, color: Color(0xFFFF4D67), fontWeight: FontWeight.w700)),
+                        margin: EdgeInsets.only(left: idx == 0 ? 0 : 6),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withOpacity(0.4),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                            color: hasSnap ? const Color(0xFFFF4D67).withOpacity(0.45) : Colors.white.withOpacity(0.08),
+                            width: hasSnap ? 1.2 : 0.8,
+                          ),
+                        ),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(9),
+                          child: Stack(
+                            fit: StackFit.expand,
+                            children: [
+                              if (hasSnap && snapUrl != null) ...[
+                                GestureDetector(
+                                  onTap: () {
+                                    showDialog(
+                                      context: context,
+                                      builder: (ctx) => Dialog(
+                                        backgroundColor: const Color(0xFF131722),
+                                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                                        child: Padding(
+                                          padding: const EdgeInsets.all(16),
+                                          child: Column(
+                                            mainAxisSize: MainAxisSize.min,
+                                            crossAxisAlignment: CrossAxisAlignment.start,
+                                            children: [
+                                              Row(
+                                                children: [
+                                                  Container(
+                                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                                    decoration: BoxDecoration(color: const Color(0xFFFF4D67).withOpacity(0.2), borderRadius: BorderRadius.circular(6)),
+                                                    child: Text('FRAME ${idx + 1} OF 3 • DANGER EVIDENCE', style: const TextStyle(color: Color(0xFFFF4D67), fontSize: 11, fontWeight: FontWeight.w800)),
+                                                  ),
+                                                  const Spacer(),
+                                                  IconButton(
+                                                    icon: const Icon(Icons.close_rounded, color: Colors.white70, size: 20),
+                                                    onPressed: () => Navigator.pop(ctx),
+                                                  ),
+                                                ],
+                                              ),
+                                              const SizedBox(height: 10),
+                                              ClipRRect(
+                                                borderRadius: BorderRadius.circular(12),
+                                                child: Image.network(
+                                                  snapUrl,
+                                                  fit: BoxFit.contain,
+                                                  errorBuilder: (_, __, ___) => Container(
+                                                    height: 200,
+                                                    color: Colors.black38,
+                                                    child: const Center(child: Text('Could not load snapshot image', style: TextStyle(color: Colors.white60))),
+                                                  ),
+                                                ),
+                                              ),
+                                              const SizedBox(height: 10),
+                                              Row(
+                                                children: [
+                                                  Text('${incident.deviceId} • ${incident.time} PST', style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 11)),
+                                                  const Spacer(),
+                                                  Text('+${idx * 1.0}s offset', style: const TextStyle(color: Color(0xFFFF4D67), fontSize: 11, fontWeight: FontWeight.w600)),
+                                                ],
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                  child: Image.network(
+                                    snapUrl,
+                                    fit: BoxFit.cover,
+                                    errorBuilder: (_, __, ___) => Center(
+                                      child: Column(
+                                        mainAxisAlignment: MainAxisAlignment.center,
+                                        children: [
+                                          Icon(Icons.broken_image_rounded, size: 22, color: Colors.white.withOpacity(0.3)),
+                                          const SizedBox(height: 3),
+                                          Text('Failed', style: TextStyle(color: Colors.white.withOpacity(0.3), fontSize: 8)),
+                                        ],
+                                      ),
+                                    ),
+                                    loadingBuilder: (context, child, loadingProgress) {
+                                      if (loadingProgress == null) return child;
+                                      return const Center(child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFFFF4D67))));
+                                    },
+                                  ),
+                                ),
+                              ] else ...[
+                                Center(
+                                  child: Column(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      SizedBox(
+                                        width: 14,
+                                        height: 14,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 1.5,
+                                          color: const Color(0xFFFF4D67).withOpacity(0.5),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 6),
+                                      Text(
+                                        'Frame ${idx + 1}\n(+${idx * 1.0}s)\nAwaiting...',
+                                        textAlign: TextAlign.center,
+                                        style: TextStyle(color: Colors.white.withOpacity(0.28), fontSize: 7.5, height: 1.2),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                              // Frame Badge Overlay
+                              Positioned(
+                                top: 4,
+                                left: 4,
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1.5),
+                                  decoration: BoxDecoration(color: Colors.black.withOpacity(0.65), borderRadius: BorderRadius.circular(4)),
+                                  child: Text('F${idx + 1}', style: TextStyle(fontSize: 7, color: hasSnap ? const Color(0xFFFF4D67) : Colors.white38, fontWeight: FontWeight.w800)),
+                                ),
+                              ),
+                              if (hasSnap)
+                                Positioned(
+                                  bottom: 4,
+                                  right: 4,
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1.5),
+                                    decoration: BoxDecoration(color: Colors.black.withOpacity(0.65), borderRadius: BorderRadius.circular(4)),
+                                    child: Text('+${idx * 1.0}s', style: const TextStyle(fontSize: 6.5, color: Colors.white70, fontFamily: 'monospace')),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
                       ),
-                    ),
-                    Positioned(
-                      bottom: 7,
-                      right: 9,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2.5),
-                        decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(5)),
-                        child: Text('${incident.time} PST', style: const TextStyle(fontSize: 7.5, color: Colors.white70, fontFamily: 'monospace')),
-                      ),
-                    ),
-                  ],
+                    );
+                  }),
                 ),
               ),
               const SizedBox(height: 14),
@@ -3975,7 +4158,7 @@ class _IncidentDetailCardState extends State<_IncidentDetailCard> {
                     const SizedBox(width: 7),
                     Expanded(
                       child: Text(
-                        'Camera in low-power sleep (OV2640 triggers exclusively on DANGER events to preserve 200mAh battery).',
+                        'Camera in low-power sleep (OV2640 triggers exclusively on DANGER events to preserve 250mAh battery).',
                         style: TextStyle(fontSize: 8.5, color: Colors.white.withOpacity(0.38), fontWeight: FontWeight.w400),
                       ),
                     ),
@@ -4616,7 +4799,7 @@ class _ConfigurationPageState extends State<_ConfigurationPage> {
                           Container(
                             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                             decoration: BoxDecoration(color: Colors.white.withOpacity(0.04), borderRadius: BorderRadius.circular(6)),
-                            child: Text('Extends 200mAh Life', style: TextStyle(fontSize: 8.5, color: Colors.white.withOpacity(0.4))),
+                            child: Text('Extends 250mAh Life', style: TextStyle(fontSize: 8.5, color: Colors.white.withOpacity(0.4))),
                           ),
                         ],
                       ),
@@ -4669,7 +4852,7 @@ class _ConfigurationPageState extends State<_ConfigurationPage> {
                         activeColor: const Color(0xFFFF4D67),
                         title: const Text('Capture Snapshot on DANGER Only', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
                         subtitle: Text(
-                          'Keeps camera in standby during Normal, Warning, and Threat events. Essential to reach 6-8h on 200mAh battery.',
+                          'Keeps camera in standby during Normal, Warning, and Threat events. Essential to reach 7-10h on 250mAh battery.',
                           style: TextStyle(fontSize: 9, color: Colors.white.withOpacity(0.45)),
                         ),
                         contentPadding: EdgeInsets.zero,
@@ -5367,7 +5550,7 @@ class _AnalyticsPage extends StatelessWidget {
                     SizedBox(height: 16),
                     _ResearchMetric(label: 'Edge MCU', value: 'XIAO ESP32S3 Sense (Dual-Core LX7)'),
                     _ResearchMetric(label: 'Clock Speed', value: '80 MHz Eco (Underclocked)'),
-                    _ResearchMetric(label: 'Battery', value: '3.7V 200mAh LiPo (~7h Runtime)'),
+                    _ResearchMetric(label: 'Battery', value: '3.7V 250mAh LiPo (~7-10h Runtime)'),
                     _ResearchMetric(label: 'Microphone', value: 'MSM261D3526H1CPM PDM (16kHz)'),
                     _ResearchMetric(label: 'Pre-roll Buffer', value: '8MB PSRAM (Configurable circular)'),
                     _ResearchMetric(label: 'Speech-to-Text', value: 'Faster-Whisper (Tagalog Conditioned)'),

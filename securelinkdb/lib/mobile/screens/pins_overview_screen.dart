@@ -1478,6 +1478,26 @@ class _PinsOverviewScreenState extends State<PinsOverviewScreen> {
               fontWeight: FontWeight.w600,
             ),
           ),
+          if (inc.snapshots.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            SizedBox(
+              height: 46,
+              child: Row(
+                children: inc.snapshots.take(3).map((s) => Container(
+                  width: 56,
+                  margin: const EdgeInsets.only(right: 6),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: Colors.white24),
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(5),
+                    child: Image.network(s, fit: BoxFit.cover, errorBuilder: (_, __, ___) => const Icon(Icons.broken_image, size: 16, color: Colors.white30)),
+                  ),
+                )).toList(),
+              ),
+            ),
+          ],
           const SizedBox(height: 6),
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,

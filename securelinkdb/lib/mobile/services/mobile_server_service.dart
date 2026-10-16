@@ -17,6 +17,7 @@ class IncidentReport {
   final String? audioFile;
   final String? audioUrl;
   final String? snapshotFile;
+  final List<String> snapshots;
 
   IncidentReport({
     required this.id,
@@ -28,6 +29,7 @@ class IncidentReport {
     this.audioFile,
     this.audioUrl,
     this.snapshotFile,
+    this.snapshots = const [],
   });
 
   bool get isFlagged => threatScore >= 2.0 || threatLabel.toLowerCase() != 'conversational';
@@ -35,12 +37,48 @@ class IncidentReport {
   bool get isDanger => threatScore >= 8.0;
   String get flagType => threatLabel;
 
+  IncidentReport copyWith({
+    String? id,
+    String? deviceId,
+    String? timestamp,
+    String? transcript,
+    double? threatScore,
+    String? threatLabel,
+    String? audioFile,
+    String? audioUrl,
+    String? snapshotFile,
+    List<String>? snapshots,
+  }) {
+    return IncidentReport(
+      id: id ?? this.id,
+      deviceId: deviceId ?? this.deviceId,
+      timestamp: timestamp ?? this.timestamp,
+      transcript: transcript ?? this.transcript,
+      threatScore: threatScore ?? this.threatScore,
+      threatLabel: threatLabel ?? this.threatLabel,
+      audioFile: audioFile ?? this.audioFile,
+      audioUrl: audioUrl ?? this.audioUrl,
+      snapshotFile: snapshotFile ?? this.snapshotFile,
+      snapshots: snapshots ?? this.snapshots,
+    );
+  }
+
   factory IncidentReport.fromJson(Map<String, dynamic> json, {String? host, int? port}) {
     final af = json['audio_file'] as String?;
     final h = host ?? '10.28.20.11';
     final p = port ?? 8080;
     final explicitUrl = json['audio_url'] as String?;
     final computedUrl = af != null && af.isNotEmpty ? 'http://$h:$p/recordings/audio/$af' : explicitUrl;
+
+    final rawSnaps = json['snapshots'] as List?;
+    final snapFile = json['snapshot_file'] as String?;
+    final snapExplicit = json['snapshot_url'] as String?;
+    final defaultSnapUrl = snapFile != null && snapFile.isNotEmpty
+        ? 'http://$h:$p/recordings/snapshots/$snapFile'
+        : snapExplicit;
+    final List<String> parsedSnaps = rawSnaps != null
+        ? rawSnaps.map((e) => e.toString()).toList()
+        : (defaultSnapUrl != null ? [defaultSnapUrl] : []);
 
     return IncidentReport(
       id: json['id'] as String? ?? 'INC-${DateTime.now().millisecondsSinceEpoch}',
@@ -51,7 +89,8 @@ class IncidentReport {
       threatLabel: json['threat_label'] as String? ?? (json['category'] as String? ?? 'Conversational'),
       audioFile: af,
       audioUrl: computedUrl,
-      snapshotFile: json['snapshot_file'] as String?,
+      snapshotFile: snapFile,
+      snapshots: parsedSnaps,
     );
   }
 }
@@ -514,6 +553,30 @@ class MobileServerService extends ChangeNotifier {
             _latestAlert = inc;
           }
           notifyListeners();
+        }
+      } else if (eventType == 'snapshot_ready') {
+        final snapUrl = json['snapshot_url'] as String? ?? (json['snapshot_file'] != null ? 'http://$_host:$_port/recordings/snapshots/${json['snapshot_file']}' : null);
+        final incidentId = json['incident_id'] as String?;
+        final deviceId = json['device_id'] as String?;
+        final rawList = json['snapshots'] as List?;
+        final List<String> newSnaps = rawList != null
+            ? rawList.map((e) => e.toString()).toList()
+            : (snapUrl != null ? [snapUrl] : []);
+
+        if (newSnaps.isNotEmpty) {
+          final idx = _recentIncidents.indexWhere((inc) => (incidentId != null && inc.id == incidentId) || (deviceId != null && inc.deviceId == deviceId && inc.isDanger));
+          if (idx >= 0) {
+            final inc = _recentIncidents[idx];
+            final mergedSnaps = List<String>.from(inc.snapshots);
+            for (final s in newSnaps) {
+              if (!mergedSnaps.contains(s)) mergedSnaps.add(s);
+            }
+            _recentIncidents[idx] = inc.copyWith(snapshots: mergedSnaps);
+            if (_latestAlert != null && _latestAlert!.id == inc.id) {
+              _latestAlert = _recentIncidents[idx];
+            }
+            notifyListeners();
+          }
         }
       }
     } catch (e) {

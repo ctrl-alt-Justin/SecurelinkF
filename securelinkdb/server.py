@@ -317,6 +317,8 @@ ui_clients = set()
 registered_devices = {}
 active_pins = {} # Map of websocket -> device_id
 harmful_words_only = False # Default False so all speech during testing is visible on the dashboard!
+active_incident_for_device = {} # Map device_id -> active incident_id for snapshot burst association
+incident_snapshots = {} # Map incident_id -> list of snapshot URLs
 
 async def broadcast_to_ui(payload: dict):
     if not ui_clients:
@@ -383,6 +385,14 @@ async def get_devices():
         "active_count": len([d for d in devices_list if d.get("online")]),
         "total_count": len(devices_list),
         "timestamp": datetime.now().strftime("%H:%M:%S")
+    }
+
+@app.get("/api/incidents/{incident_id}/snapshots")
+async def get_incident_snapshots(incident_id: str):
+    return {
+        "status": "success",
+        "incident_id": incident_id,
+        "snapshots": incident_snapshots.get(incident_id, [])
     }
 
 @app.post("/api/toggle-harmful-only")
@@ -754,17 +764,32 @@ async def relay_stream_api(payload: dict):
         await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[dev_id]})
 
     # Process snapshot if provided
+    snap_index = payload.get("snapshot_index", 1)
     if snap_b64:
         try:
             snap_bytes = base64.b64decode(snap_b64)
-            snap_id = f"snap_{dev_id}_{int(time.time())}.jpg"
+            inc_id = active_incident_for_device.get(dev_id, f"EVT-{int(time.time() * 1000) % 1000000}")
+            snap_id = f"snap_{dev_id}_{inc_id}_{snap_index}_{int(time.time())}.jpg"
             snap_path = os.path.join("recordings/snapshots", snap_id)
             with open(snap_path, "wb") as f:
                 f.write(snap_bytes)
+            
+            server_ip = get_primary_ip()
+            snap_url = f"http://{server_ip}:8080/recordings/snapshots/{snap_id}"
+            if inc_id not in incident_snapshots:
+                incident_snapshots[inc_id] = []
+            if snap_url not in incident_snapshots[inc_id]:
+                incident_snapshots[inc_id].append(snap_url)
+
             await broadcast_to_ui({
                 "event_type": "snapshot_ready",
                 "device_id": dev_id,
+                "incident_id": inc_id,
                 "snapshot_file": snap_id,
+                "snapshot_url": snap_url,
+                "snapshots": list(incident_snapshots[inc_id]),
+                "index": snap_index,
+                "total": 3,
                 "timestamp": datetime.now().strftime("%H:%M:%S")
             })
         except Exception as e:
@@ -780,10 +805,15 @@ async def relay_stream_api(payload: dict):
         score, category = classify_intent(transcript)
         is_danger = (score >= 0.70) or any(hw in transcript.lower() for hw in ["tulong", "saklolo", "papatayin", "baril", "saksak", "holdap", "bobo", "gago", "pangit", "tanga"])
         incident_id = f"EVT-{int(time.time() * 1000) % 1000000}"
+        active_incident_for_device[dev_id] = incident_id
+        if incident_id not in incident_snapshots:
+            incident_snapshots[incident_id] = []
+
         wav_filename = f"{incident_id}.wav"
         wav_path = os.path.join("recordings/audio", wav_filename)
         await asyncio.to_thread(save_wav, clean_pcm, wav_path)
 
+        server_ip = get_primary_ip()
         await broadcast_to_ui({
             "event_type": "incident",
             "id": incident_id,
@@ -792,9 +822,10 @@ async def relay_stream_api(payload: dict):
             "category": category,
             "transcript": transcript,
             "audio": True,
-            "audio_url": f"http://127.0.0.1:8080/recordings/audio/{wav_filename}",
+            "audio_url": f"http://{server_ip}:8080/recordings/audio/{wav_filename}",
             "audio_file": wav_filename,
             "video": is_danger,
+            "snapshots": list(incident_snapshots.get(incident_id, [])),
             "relay": True,
             "duration": f"00:{max(1, int(len(pcm_bytes)/32000)):02d}"
         })
@@ -845,6 +876,17 @@ async def ui_websocket_endpoint(websocket: WebSocket):
             data = await websocket.receive_text()
             if data == "ping":
                 await websocket.send_text(json.dumps({"event_type": "pong"}))
+                continue
+            if data == "TRIGGER:DANGER":
+                print(f"[UI] Manual TRIGGER:DANGER received! Dispatching snapshot burst to all active pins...")
+                for pin_ws, p_id in list(active_pins.items()):
+                    try:
+                        inc_id = f"EVT-{int(time.time() * 1000) % 1000000}"
+                        active_incident_for_device[p_id] = inc_id
+                        incident_snapshots[inc_id] = []
+                        await pin_ws.send_text("TRIGGER:DANGER")
+                    except Exception:
+                        pass
                 continue
             
             # Handle fleet configuration deployed from Flutter Configuration Tab
@@ -1286,18 +1328,22 @@ async def handle_completed_audio(device_id: str, pcm_bytes: bytes, websocket: We
                     await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
                 return
 
+            incident_id = f"EVT-{int(time.time() * 1000) % 1000000}"
             if is_danger:
+                active_incident_for_device[device_id] = incident_id
+                incident_snapshots[incident_id] = []
                 try:
                     await websocket.send_text("TRIGGER:DANGER")
-                except Exception:
-                    pass
+                    print(f"[WS] Dispatched TRIGGER:DANGER to {device_id} for snapshot burst capture (Incident {incident_id})")
+                except Exception as e:
+                    print(f"[WS] Error dispatching TRIGGER:DANGER to {device_id}: {e}")
 
-            incident_id = f"EVT-{int(time.time() * 1000) % 1000000}"
             wav_filename = f"{incident_id}.wav"
             wav_path = os.path.join("recordings/audio", wav_filename)
             # Save the clean, denoised audio to WAV so playback is crystal-clear and fan-free
             await asyncio.to_thread(save_wav, clean_pcm, wav_path)
 
+            server_ip = get_primary_ip()
             await broadcast_to_ui({
                 "event_type": "incident",
                 "id": incident_id,
@@ -1306,9 +1352,10 @@ async def handle_completed_audio(device_id: str, pcm_bytes: bytes, websocket: We
                 "category": category,
                 "transcript": transcript,
                 "audio": True,
-                "audio_url": f"http://127.0.0.1:8080/recordings/audio/{wav_filename}",
+                "audio_url": f"http://{server_ip}:8080/recordings/audio/{wav_filename}",
                 "audio_file": wav_filename,
                 "video": is_danger,
+                "snapshots": list(incident_snapshots.get(incident_id, [])),
                 "duration": f"00:{max(1, int(dur_sec)):02d}"
             })
         else:
@@ -1378,6 +1425,7 @@ async def pin_websocket_endpoint(websocket: WebSocket):
     audio_accumulator = bytearray()
     last_audio_chunk_time = time.time()
     next_expected_snapshot = False
+    next_snapshot_index = 1
 
     # Audio rate limiting per device (400 KB/s allows pre-roll drain bursts & LittleFS uploads without dropping audio)
     MAX_BYTES_PER_SECOND = 400000
@@ -1451,9 +1499,9 @@ async def pin_websocket_endpoint(websocket: WebSocket):
                             batt_pct = max(0, min(100, batt_pct))
                             registered_devices[device_id]["battery"] = batt_pct
                             # Realistic runtime estimation:
-                            # 200mAh LiPo in 160MHz VAD Standby with modem sleep + camera sleep (~38mA avg):
-                            # Total battery life is ~5.3h = ~315 minutes from 100% to 0%.
-                            rem_mins = int((batt_pct / 100.0) * 315)
+                            # 250mAh LiPo in 160MHz VAD Standby with modem sleep + camera sleep (~36mA avg):
+                            # Total battery life is ~6.9h = ~415 minutes from 100% to 0%.
+                            rem_mins = int((batt_pct / 100.0) * 415)
                             hours = rem_mins // 60
                             mins = rem_mins % 60
                             registered_devices[device_id]["estRuntime"] = f"{hours}h {mins:02d}m"
@@ -1489,7 +1537,16 @@ async def pin_websocket_endpoint(websocket: WebSocket):
                             registered_devices[device_id]["lastSeen"] = f"Active at {now_str}"
                             await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
                 elif text_msg.startswith("SNAP:"):
-                    print(f"\n[CAM] Incoming camera frame snapshot from {device_id}...")
+                    # Format: SNAP:<len> or SNAP:<index>:<len>
+                    parts = text_msg.split(":")
+                    if len(parts) >= 3:
+                        try:
+                            next_snapshot_index = int(parts[1])
+                        except ValueError:
+                            next_snapshot_index = 1
+                    else:
+                        next_snapshot_index = 1
+                    print(f"\n[CAM] Incoming camera frame #{next_snapshot_index} snapshot from {device_id}...")
                     next_expected_snapshot = True
                 elif "ARCHIVE_START" in text_msg:
                     print(f"\n[SYS] {device_id} syncing stored offline incident from LittleFS.")
@@ -1515,16 +1572,34 @@ async def pin_websocket_endpoint(websocket: WebSocket):
                 # If this payload is a JPEG camera snapshot
                 if next_expected_snapshot:
                     next_expected_snapshot = False
-                    snap_id = f"snap_{device_id}_{int(time.time())}.jpg"
+                    inc_id = active_incident_for_device.get(device_id)
+                    if not inc_id:
+                        inc_id = f"EVT-{int(time.time() * 1000) % 1000000}"
+                        active_incident_for_device[device_id] = inc_id
+
+                    snap_id = f"snap_{device_id}_{inc_id}_{next_snapshot_index}_{int(time.time())}.jpg"
                     snap_path = os.path.join("recordings/snapshots", snap_id)
                     with open(snap_path, "wb") as snap_file:
                         snap_file.write(binary_data)
-                    print(f"📸 [CAM] DANGER Snapshot saved to {snap_path} ({len(binary_data)} bytes)")
+                    
+                    server_ip = get_primary_ip()
+                    snap_url = f"http://{server_ip}:8080/recordings/snapshots/{snap_id}"
+                    if inc_id not in incident_snapshots:
+                        incident_snapshots[inc_id] = []
+                    if snap_url not in incident_snapshots[inc_id]:
+                        incident_snapshots[inc_id].append(snap_url)
+
+                    print(f"📸 [CAM] DANGER Snapshot #{next_snapshot_index}/3 saved to {snap_path} ({len(binary_data)} bytes)")
                     
                     await broadcast_to_ui({
                         "event_type": "snapshot_ready",
                         "device_id": device_id,
+                        "incident_id": inc_id,
                         "snapshot_file": snap_id,
+                        "snapshot_url": snap_url,
+                        "snapshots": list(incident_snapshots[inc_id]),
+                        "index": next_snapshot_index,
+                        "total": 3,
                         "timestamp": datetime.now().strftime("%H:%M:%S")
                     })
                     continue
