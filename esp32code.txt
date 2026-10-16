@@ -70,7 +70,7 @@ volatile bool lastVadState = false;
 TaskHandle_t audioTaskHandle = NULL;
 
 unsigned long lastSpeechTime = 0;
-unsigned long SILENCE_TIMEOUT = 1600; // 1.6s silence timeout: returns to VAD Standby promptly when speaker finishes sentence
+unsigned long SILENCE_TIMEOUT = 1400; // 1.4s silence timeout: returns to Standby promptly when speaker finishes sentence
 const unsigned long WS_CONNECT_TIMEOUT_MS = 5000;
 const unsigned long WIFI_CONNECT_TIMEOUT_MS = 8000;
 
@@ -852,9 +852,9 @@ void audioRecordTask(void* pvParameters) {
 
         // Speech detection criteria:
         // 1) Speex VAD confirms vocal fold harmonics (isSpeech != 0)
-        // 2) Amplitude rises significantly above ambient baseline (+40)
-        // 3) Absolute peak >= 150 (ignores mic idle floor 60-110)
-        bool speechDetected = (isSpeech != 0) && (currentPeak > ambientFloor + 40) && (currentPeak >= 150);
+        // 2) Amplitude rises significantly above ambient baseline (+50)
+        // 3) Absolute peak >= 220 (ignores mic idle floor 60-160 and fan hum)
+        bool speechDetected = (isSpeech != 0) && (currentPeak > ambientFloor + 50) && (currentPeak >= 220);
 
         // VAD Hangover Engine: 400ms (20 frames) hangover bridges natural breath pauses & consonants
         if (speechDetected) {
@@ -1124,18 +1124,21 @@ void loop() {
     if (isStreaming) {
         size_t available = (ringHead + RING_BUFFER_SIZE - ringTail) % RING_BUFFER_SIZE;
 
-        if (millis() - lastSpeechTime > SILENCE_TIMEOUT) {
-            // Voice ended and silence timeout reached: drain remaining audio in ring buffer with verified delivery
+        bool maxStreamReached = (streamStartMs > 0 && (millis() - streamStartMs > 8000));
+        if ((millis() - lastSpeechTime > SILENCE_TIMEOUT) || maxStreamReached) {
+            // Voice ended or max stream limit reached: drain remaining audio with verified delivery
             size_t targetHead = ringHead;
             size_t toDrain = (targetHead + RING_BUFFER_SIZE - ringTail) % RING_BUFFER_SIZE;
-            while (toDrain >= sizeof(int16_t)) {
+            int failedAttempts = 0;
+            while (toDrain >= sizeof(int16_t) && failedAttempts < 5) {
+                if (!ws.isConnected() && !isOfflineRecording) break; // Abort drain immediately if socket is closed
                 size_t chunk = min((size_t)BATCH_SIZE, toDrain);
                 uint8_t tempBuf[chunk];
                 for (size_t i = 0; i < chunk; i++) {
                     tempBuf[i] = audioRingBuffer[(ringTail + i) % RING_BUFFER_SIZE];
                 }
 
-                bool sendOk = true;
+                bool sendOk = false;
                 if (hasActiveStream && ws.isConnected()) {
                     sendOk = ws.sendBIN(tempBuf, chunk);
                 } else if (isOfflineRecording && offlineIncidentFile) {
@@ -1145,15 +1148,17 @@ void loop() {
                 if (sendOk) {
                     ringTail = (ringTail + chunk) % RING_BUFFER_SIZE;
                     toDrain -= chunk;
-                    delay(8); // Pace drain batches to give lwIP TCP stack time to flush without drops
+                    failedAttempts = 0;
+                    delay(5);
                 } else {
-                    delay(8); // TCP busy: wait and retry next iteration without advancing ringTail
+                    failedAttempts++;
+                    delay(5);
                 }
             }
 
             if (hasActiveStream && !isUploadingArchive) {
                 ws.sendTXT("STREAM_END");
-                Serial.println("\n[SYS] Silence timeout reached. Stream completed.");
+                Serial.println("\n[SYS] Stream completed (silence or max duration).");
                 hasActiveStream = false;
             }
             if (isOfflineRecording) {
@@ -1200,10 +1205,10 @@ void loop() {
         }
     }
 
-    // --- STANDBY HEARTBEAT (3.0 seconds) ---
-    // Informs the central server that the smart pin is alive and reports live Wi-Fi signal & true battery.
+    // --- PIN KEEP-ALIVE & TELEMETRY HEARTBEAT (3.0 seconds) ---
+    // Transmits regular keep-alive pings to the central server so the watchdog never times out.
     static unsigned long lastHeartbeatMs = 0;
-    if (ws.isConnected() && (!hasActiveStream || !isStreaming)) {
+    if (ws.isConnected()) {
         if (needImmediateHeartbeat || (millis() - lastHeartbeatMs >= 3000)) {
             needImmediateHeartbeat = false;
             lastHeartbeatMs = millis();

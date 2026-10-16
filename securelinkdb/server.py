@@ -1230,11 +1230,11 @@ async def pin_websocket_endpoint(websocket: WebSocket):
     try:
         while True:
             try:
-                # 12-second timeout: With a 3-second pin heartbeat interval,
-                # this tolerates minor Wi-Fi jitter while promptly detecting true unpowered disconnects
-                message = await asyncio.wait_for(websocket.receive(), timeout=12.0)
+                # 15-second timeout: With the ESP32 sending regular keepalive pings every 3.0s,
+                # this provides 5 full retry cycles, completely preventing false offline disconnects!
+                message = await asyncio.wait_for(websocket.receive(), timeout=15.0)
             except asyncio.TimeoutError:
-                print(f"\n[WS] {device_id} heartbeat timed out (no data for 12s, pin disconnected or unpowered).")
+                print(f"\n[WS] {device_id} heartbeat timed out (no data for 15s, pin disconnected or unpowered).")
                 break
             except (WebSocketDisconnect, RuntimeError, OSError):
                 print(f"\n[WS] {device_id} disconnected.")
@@ -1312,6 +1312,11 @@ async def pin_websocket_endpoint(websocket: WebSocket):
                         await handle_completed_audio(device_id, final_pcm, websocket)
                     else:
                         audio_accumulator.clear()
+                        if device_id in registered_devices:
+                            now_str = datetime.now().strftime("%H:%M:%S")
+                            registered_devices[device_id]["state"] = "VAD ARMED"
+                            registered_devices[device_id]["lastSeen"] = f"Active at {now_str}"
+                            await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
 
             elif "bytes" in message:
                 binary_data = message["bytes"]
