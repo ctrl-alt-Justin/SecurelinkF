@@ -39,8 +39,8 @@ class _SecureLinkMobileAppState extends State<SecureLinkMobileApp> {
     }
     _serverService.addListener(_onServiceChanged);
 
-    // 1.5 second splash display, then smooth 300ms fade transition
-    Future.delayed(const Duration(milliseconds: 1500), () {
+    // 2 second splash display, then smooth 300ms fade transition
+    Future.delayed(const Duration(milliseconds: 2000), () {
       if (mounted) {
         setState(() => _splashOpacity = 0.0);
         Future.delayed(const Duration(milliseconds: 300), () {

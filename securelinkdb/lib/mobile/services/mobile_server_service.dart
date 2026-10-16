@@ -157,8 +157,10 @@ class MobileServerService extends ChangeNotifier {
   String? getPinAlias(String pinId) => _pinAliases[pinId.trim().toUpperCase()];
 
   // --------------------------------------------------------------------------
-  // INITIALIZATION & PERSISTENCE
-  // --------------------------------------------------------------------------
+  Future<void> init() async {
+    await _loadPreferences();
+  }
+
   void _initDefaults() {
     _loadPreferences();
   }
@@ -184,6 +186,35 @@ class MobileServerService extends ChangeNotifier {
         _pinAliases.clear();
         decoded.forEach((k, v) => _pinAliases[k.toUpperCase()] = v.toString());
       }
+
+      // Load cached paired devices so paired pins are ALWAYS visible permanently on phone
+      final cachedDevsJson = prefs.getString('paired_devices_cache');
+      if (cachedDevsJson != null) {
+        try {
+          final decoded = jsonDecode(cachedDevsJson) as Map<String, dynamic>;
+          decoded.forEach((k, v) {
+            final dev = DeviceStatus.fromJson(v as Map<String, dynamic>);
+            _devices[k.toUpperCase()] = dev;
+          });
+        } catch (_) {}
+      }
+
+      // Ensure every paired pin ID is permanently populated in _devices
+      for (final pid in _pairedPinIds) {
+        if (!_devices.containsKey(pid)) {
+          _devices[pid] = DeviceStatus(
+            id: pid,
+            online: false,
+            battery: 100,
+            state: 'STANDBY',
+            network: _checkpoints.isNotEmpty ? _checkpoints.first.ssid : 'Campus Wi-Fi',
+            lastSeen: 'Paired Pin',
+            cpuMhz: 160,
+            rssi: -60,
+            estRuntime: '--',
+          );
+        }
+      }
     } catch (e) {
       debugPrint('[PREFS] Load error: $e');
     }
@@ -204,6 +235,15 @@ class MobileServerService extends ChangeNotifier {
       await prefs.setString('user_role', _userRole);
       await prefs.setStringList('paired_pins', _pairedPinIds.toList());
       await prefs.setString('pin_aliases', jsonEncode(_pinAliases));
+
+      // Persist paired devices cache so pins stay on phone even when offline
+      final pairedMap = <String, dynamic>{};
+      for (final pid in _pairedPinIds) {
+        if (_devices.containsKey(pid)) {
+          pairedMap[pid] = _devices[pid]!.toJson();
+        }
+      }
+      await prefs.setString('paired_devices_cache', jsonEncode(pairedMap));
     } catch (e) {
       debugPrint('[PREFS] Save error: $e');
     }
@@ -444,6 +484,9 @@ class MobileServerService extends ChangeNotifier {
       if (eventType == 'device_update' && json['device'] != null) {
         final dev = DeviceStatus.fromJson(json['device']);
         _devices[dev.id.toUpperCase()] = dev;
+        if (_pairedPinIds.contains(dev.id.toUpperCase())) {
+          _savePreferences();
+        }
         notifyListeners();
       } else if (eventType == 'checkpoints_updated' && json['checkpoints'] != null) {
         final list = (json['checkpoints'] as List)
@@ -515,6 +558,7 @@ class MobileServerService extends ChangeNotifier {
           for (final dev in list) {
             _devices[dev.id.toUpperCase()] = dev;
           }
+          _savePreferences();
           notifyListeners();
         }
       }

@@ -3,9 +3,11 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart';
 import 'mobile/securelink_mobile_app.dart';
+import 'mobile/services/mobile_server_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await MobileServerService().init();
 
   // If previewing on desktop, set a realistic mobile phone window dimension
   if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {

@@ -1306,9 +1306,9 @@ async def pin_websocket_endpoint(websocket: WebSocket):
     try:
         while True:
             try:
-                # 15-second timeout: With the ESP32 sending regular keepalive pings every 3.0s,
-                # this provides 5 full retry cycles, completely preventing false offline disconnects!
-                message = await asyncio.wait_for(websocket.receive(), timeout=15.0)
+                # 30-second timeout: With the ESP32 sending keepalive pings every 3.0s,
+                # this gives a generous 10-retry safety buffer against transient Wi-Fi drops!
+                message = await asyncio.wait_for(websocket.receive(), timeout=30.0)
             except asyncio.TimeoutError:
                 print(f"\n[WS] {device_id} heartbeat timed out (no data for 15s, pin disconnected or unpowered).")
                 break

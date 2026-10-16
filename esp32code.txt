@@ -977,7 +977,7 @@ void setup() {
         WiFi.mode(WIFI_STA);
         WiFi.begin(wifi_ssid.c_str(), wifi_pass.c_str());
         unsigned long t0 = millis();
-        while (WiFi.status() != WL_CONNECTED && millis() - t0 < 4500) {
+        while (WiFi.status() != WL_CONNECTED && millis() - t0 < 10000) {
             delay(100);
             Serial.print(".");
             handleSerialCommands();
@@ -995,7 +995,7 @@ void setup() {
         delay(100);
         WiFi.begin(wifi_ssid2.c_str(), wifi_pass2.c_str());
         unsigned long t0 = millis();
-        while (WiFi.status() != WL_CONNECTED && millis() - t0 < 4500) {
+        while (WiFi.status() != WL_CONNECTED && millis() - t0 < 8000) {
             delay(100);
             Serial.print(".");
             handleSerialCommands();
@@ -1010,9 +1010,12 @@ void setup() {
     if (connected) {
         WiFi.setSleep(false); // Disable modem sleep: keeps TCP socket open and eliminates Windows WinError 121 timeouts
         discoverCheckpoint();
-    } else {
-        Serial.println("[WIFI] No authorized checkpoints reached. Launching Setup Portal ('SecureLink-Setup')...");
+    } else if (wifi_ssid.length() == 0) {
+        // Only launch setup portal on boot if NO Wi-Fi credentials have ever been configured
+        Serial.println("[WIFI] No Wi-Fi configured. Launching Setup Portal ('SecureLink-Setup')...");
         startConfigPortal();
+    } else {
+        Serial.println("[WIFI] Initial boot connection pending. Proceeding to non-blocking background retry in loop()...");
     }
 }
 
