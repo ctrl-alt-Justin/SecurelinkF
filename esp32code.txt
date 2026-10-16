@@ -49,6 +49,7 @@ unsigned long wsConnectStartedAt = 0;
 bool wifiConnectInProgress = false;
 unsigned long wifiConnectStartedAt = 0;
 int wifiFailStreak = 0;
+bool needImmediateHeartbeat = false;
 
 // --- DUAL-CORE AUDIO ENGINE & PSRAM RING BUFFER ---
 // 128,000 bytes in PSRAM provides exactly 4.0s of 16kHz 16-bit PCM headroom.
@@ -75,7 +76,7 @@ const unsigned long WIFI_CONNECT_TIMEOUT_MS = 8000;
 
 // VAD SENSITIVITY & CONTINUITY TUNING:
 const uint8_t SPEECH_STREAK_REQUIRED = 2; // 2 frames (40ms) of vocal harmonic detection triggers onset immediately
-const int STREAM_GAIN_SHIFT = 2; // 4x gain — preserves clean dynamic headroom and prevents limiter distortion
+const int STREAM_GAIN_SHIFT = 0; // 0: 1x transparent natural audio (eliminates harsh clipping and raspy distortion)
 
 unsigned long bootStartMs = 0;
 
@@ -183,7 +184,20 @@ int calculateBatteryPct() {
     return constrain(pct, 0, 100);
 }
 
-// --- CAMERA SUBSYSTEM ---
+// --- CAMERA SUBSYSTEM (OV3660 / OV2640 Support) ---
+void setCameraSensorStandby(bool standby) {
+    sensor_t* s = esp_camera_sensor_get();
+    if (!s) return;
+    if (s->id.PID == OV3660_PID) {
+        // OV3660 software standby: register 0x3008 bit 6 (0x40) controls power-down state
+        s->set_reg(s, 0x3008, 0x40, standby ? 0x40 : 0x00);
+    } else {
+        // OV2640 software standby: register 0x09 in bank 1
+        s->set_reg(s, 0xff, 0xff, 0x01);
+        s->set_reg(s, 0x09, 0x10, standby ? 0x10 : 0x00);
+    }
+}
+
 void setupCamera() {
     camera_config_t config;
     config.ledc_channel = LEDC_CHANNEL_0;
@@ -217,11 +231,20 @@ void setupCamera() {
         cameraReady = true;
         sensor_t * s = esp_camera_sensor_get();
         if (s != nullptr) {
-            s->set_vflip(s, 1);
-            s->set_hmirror(s, 0);
-            // Power down OV2640 sensor into deep sleep mode (<1mA) immediately at boot
-            s->set_powersave(s, 1);
-            Serial.println("[CAM] Camera initialized and sensor powered down to standby sleep mode (<1mA).");
+            if (s->id.PID == OV3660_PID) {
+                s->set_vflip(s, 1);
+                s->set_hmirror(s, 0);
+                s->set_brightness(s, 1);
+                s->set_saturation(s, -1);
+                Serial.println("[CAM] OV3660 camera initialized and calibrated successfully.");
+            } else {
+                s->set_vflip(s, 1);
+                s->set_hmirror(s, 0);
+                Serial.println("[CAM] Camera initialized successfully.");
+            }
+            // Power down sensor into deep software standby mode (<1.5mA) immediately at boot
+            setCameraSensorStandby(true);
+            Serial.println("[CAM] Sensor powered down to standby sleep mode (<1.5mA).");
         }
     } else {
         Serial.printf("[CAM] Camera init failed: 0x%x\n", err);
@@ -235,20 +258,15 @@ static unsigned long snapshotStartedAt = 0;
 static camera_fb_t* volatile readySnapshotFb = nullptr;
 
 void snapshotWorkerTask(void* param) {
-    sensor_t* s = esp_camera_sensor_get();
-    if (s != nullptr) {
-        s->set_powersave(s, 0); // Wake OV2640 sensor from powersave
-        delay(50);              // Allow sensor AGC/AEC/clocks to stabilize
-    }
+    setCameraSensorStandby(false); // Wake OV3660/OV2640 sensor from standby
+    delay(50);                     // Allow sensor AGC/AEC/clocks to stabilize
     // Discard any stale frame in FIFO before capturing fresh snapshot
     camera_fb_t * staleFb = esp_camera_fb_get();
     if (staleFb) {
         esp_camera_fb_return(staleFb);
     }
     camera_fb_t * fb = esp_camera_fb_get();
-    if (s != nullptr) {
-        s->set_powersave(s, 1); // Power down OV2640 sensor back into sleep mode (<1mA)
-    }
+    setCameraSensorStandby(true);  // Power down sensor back into standby mode (<1.5mA)
     if (fb) {
         readySnapshotFb = fb;
     } else {
@@ -294,11 +312,7 @@ static void onWebSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
             hasPendingWsConnect = false;
             isStreaming = false; // Always clear stale streaming state on connect
             ringTail = (ringHead + RING_BUFFER_SIZE - PRE_ROLL_BYTES) % RING_BUFFER_SIZE;
-            {
-                int batPct = calculateBatteryPct();
-                int batMv = readBatteryMv();
-                ws.sendTXT("PING:" + String(WiFi.RSSI()) + ":" + String(batPct) + ":" + String(batMv)); // Immediately broadcast keepalive & truthful battery telemetry
-            }
+            needImmediateHeartbeat = true; // Signal main loop to transmit initial PING cleanly once handshake finishes
             Serial.println("[WS] Connected to Checkpoint in Standby (VAD Armed)");
             break;
         case WStype_TEXT:
@@ -706,7 +720,8 @@ void enforceFreeSpace() {
 }
 
 void processArchiveUpload() {
-    if (!hasActiveStream || !fsReady || isOfflineRecording) return;
+    // Only upload offline recordings when connected to WebSocket, idle (not actively streaming live speech), and flash is ready
+    if (!ws.isConnected() || isStreaming || isOfflineRecording || !fsReady) return;
 
     if (!isUploadingArchive) {
         File root = LittleFS.open("/");
@@ -866,13 +881,13 @@ void audioRecordTask(void* pvParameters) {
             lastVadState = speechArmed;
         }
 
-        // 3. Apply Gain & Soft Limiting
+        // 3. Format clean 16-bit PCM for transmission
+        // Passing full natural dynamic range directly preserves vocal warmth and eliminates raspy distortion
         uint8_t outBuf[FRAME_SIZE * sizeof(int16_t)];
         for (int i = 0; i < FRAME_SIZE; i++) {
-            int32_t amp = (int32_t)audioBuffer[i] << STREAM_GAIN_SHIFT;
-            int16_t limited = applySoftLimiter(amp);
-            outBuf[i * 2] = limited & 0xFF;
-            outBuf[i * 2 + 1] = (limited >> 8) & 0xFF;
+            int16_t sample = audioBuffer[i];
+            outBuf[i * 2] = sample & 0xFF;
+            outBuf[i * 2 + 1] = (sample >> 8) & 0xFF;
         }
 
         // 4. Lock-free append to PSRAM Ring Buffer
@@ -992,7 +1007,7 @@ void setup() {
     }
 
     if (connected) {
-        WiFi.setSleep(true); // Enable modem sleep in Standby to drop Wi-Fi radio draw to ~15-20mA
+        WiFi.setSleep(false); // Disable modem sleep: keeps TCP socket open and eliminates Windows WinError 121 timeouts
         discoverCheckpoint();
     } else {
         Serial.println("[WIFI] No authorized checkpoints reached. Launching Setup Portal ('SecureLink-Setup')...");
@@ -1019,9 +1034,9 @@ void loop() {
     static bool wifiWasDisconnected = false;
     if (WiFi.status() == WL_CONNECTED) {
         if (wifiWasDisconnected) {
-            WiFi.setSleep(true); // Re-enable modem sleep in Standby
+            WiFi.setSleep(false); // Re-disable modem sleep after reconnect to eradicate WinError 121
             wifiWasDisconnected = false;
-            Serial.println("[WIFI] Reconnected! Modem sleep enabled.");
+            Serial.println("[WIFI] Reconnected! Modem sleep disabled to prevent WinError 121.");
         }
         ws.loop();
 
@@ -1153,7 +1168,7 @@ void loop() {
                 streamStartMs = 0;
             }
             isStreaming = false;
-            WiFi.setSleep(true); // Return to modem sleep in Standby to conserve battery (~15-20mA draw)
+            WiFi.setSleep(false); // Maintain Wi-Fi modem awake in Standby: eliminates Windows WinError 121 and keeps connection permanently alive
             // Float tail back to pre-roll window
             ringTail = (ringHead + RING_BUFFER_SIZE - PRE_ROLL_BYTES) % RING_BUFFER_SIZE;
         } else {
@@ -1185,12 +1200,12 @@ void loop() {
         }
     }
 
-    // --- STANDBY HEARTBEAT (3.5 seconds) ---
+    // --- STANDBY HEARTBEAT (3.0 seconds) ---
     // Informs the central server that the smart pin is alive and reports live Wi-Fi signal & true battery.
-    // If power is lost or Wi-Fi drops, the server drops the pin to OFFLINE within 8 seconds!
     static unsigned long lastHeartbeatMs = 0;
     if (ws.isConnected() && (!hasActiveStream || !isStreaming)) {
-        if (millis() - lastHeartbeatMs >= 3500) {
+        if (needImmediateHeartbeat || (millis() - lastHeartbeatMs >= 3000)) {
+            needImmediateHeartbeat = false;
             lastHeartbeatMs = millis();
             int rssi = WiFi.RSSI();
             int batPct = calculateBatteryPct();

@@ -101,10 +101,13 @@ class ServerManager {
         isStarting = false;
       });
 
-      // Poll up to 25 seconds for the server to be ready
+      // Poll up to 75 seconds for the heavy AI models (Faster-Whisper large-v3-turbo + RoBERTa) to finish loading
       final stopwatch = Stopwatch()..start();
-      while (stopwatch.elapsedMilliseconds < 25000) {
-        await Future.delayed(const Duration(milliseconds: 800));
+      while (stopwatch.elapsedMilliseconds < 75000) {
+        await Future.delayed(const Duration(milliseconds: 1000));
+        final elapsedSec = (stopwatch.elapsedMilliseconds / 1000).round();
+        statusMessage = 'Loading AI Models (${elapsedSec}s)...';
+        onStatusChanged();
         if (await isAlive()) {
           debugPrint('[SERVER] AI Server successfully initialized and online!');
           isStarting = false;
@@ -797,7 +800,11 @@ class _DashboardShellState extends State<DashboardShell> with WindowListener {
     await ServerManager.startServerIfNeeded(onStatusChanged: () {
       if (mounted) setState(() {});
     });
-    _connectToServer();
+    if (await ServerManager.isAlive()) {
+      _connectToServer();
+    } else {
+      _handleDisconnect();
+    }
   }
 
   void _connectToServer() {
@@ -927,14 +934,18 @@ class _DashboardShellState extends State<DashboardShell> with WindowListener {
     setState(() => isServerConnected = false);
     _reconnectTimer?.cancel();
     _reconnectTimer = Timer(const Duration(seconds: 4), () async {
-      if (!isServerConnected && !ServerManager.isStarting) {
+      if (!isServerConnected) {
         if (!await ServerManager.isAlive()) {
-          ServerManager.startServerIfNeeded(onStatusChanged: () {
+          await ServerManager.startServerIfNeeded(onStatusChanged: () {
             if (mounted) setState(() {});
           });
         }
+        if (await ServerManager.isAlive()) {
+          _connectToServer();
+        } else {
+          _handleDisconnect();
+        }
       }
-      _connectToServer();
     });
   }
 

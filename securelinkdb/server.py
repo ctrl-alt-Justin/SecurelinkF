@@ -19,6 +19,12 @@ from fastapi.staticfiles import StaticFiles
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 import uvicorn
 
+import sys
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
+
 # Ensure Windows locates cuBLAS and cuDNN DLLs from PyTorch package for CTranslate2 / Faster-Whisper
 if torch.cuda.is_available():
     torch_lib_dir = os.path.join(os.path.dirname(torch.__file__), "lib")
@@ -36,11 +42,12 @@ logging.getLogger("websockets.protocol").setLevel(logging.CRITICAL)
 app = FastAPI(title="SecureLink AI Inference Server")
 
 # Ensure required storage directories exist
-os.makedirs("recordings/audio", exist_ok=True)
-os.makedirs("recordings/snapshots", exist_ok=True)
+RECORDINGS_DIR = os.path.join(BASE_DIR, "recordings")
+os.makedirs(os.path.join(RECORDINGS_DIR, "audio"), exist_ok=True)
+os.makedirs(os.path.join(RECORDINGS_DIR, "snapshots"), exist_ok=True)
 
 # Mount recordings directory so dashboard and client devices can fetch/replay audio and snapshots
-app.mount("/recordings", StaticFiles(directory="recordings"), name="recordings")
+app.mount("/recordings", StaticFiles(directory=RECORDINGS_DIR), name="recordings")
 
 # =========================================================================
 # 1. FASTER-WHISPER SPEECH-TO-TEXT SETUP
@@ -111,10 +118,19 @@ except Exception:
 # 3. TAGALOG BERT THREAT CLASSIFIER SETUP
 # =========================================================================
 print("\n[SYS] Loading fine-tuned TagalogBERT into memory...")
-MODEL_PATH = "./securelink_final_model"
+MODEL_PATH = os.path.join(BASE_DIR, "securelink_final_model")
+if not os.path.exists(MODEL_PATH):
+    alt_path = os.path.join(BASE_DIR, "securelink_tagalogbert")
+    if os.path.exists(alt_path):
+        MODEL_PATH = alt_path
+
 try:
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
-    bert_model = AutoModelForSequenceClassification.from_pretrained(MODEL_PATH)
+    if os.path.isdir(MODEL_PATH):
+        tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH, local_files_only=True)
+        bert_model = AutoModelForSequenceClassification.from_pretrained(MODEL_PATH, local_files_only=True)
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
+        bert_model = AutoModelForSequenceClassification.from_pretrained(MODEL_PATH)
     if torch.cuda.is_available():
         bert_model = bert_model.to("cuda")
         print("[SYS] TagalogBERT loaded successfully on CUDA!")
@@ -164,7 +180,7 @@ class ContextEngine:
             predicted_class = logits.argmax(-1).item()
             confidence = probabilities[0][predicted_class].item()
 
-            if confidence < 0.40:
+            if confidence < 0.60:
                 predicted_class = 0
 
             if predicted_class == 0:
@@ -174,11 +190,23 @@ class ContextEngine:
                 base_score = 2.0 + (confidence * 1.9)
                 category = "Verbal Harassment"
             elif predicted_class == 2:
-                base_score = 4.0 + (confidence * 2.0)
-                category = "Extortion / Demand"
+                # Extortion requires confidence >= 0.70 or presence of hard extortion keywords
+                has_extort_check = any(re.search(r'\b' + re.escape(e) + r'\b', text.lower()) for e in self.hard_extort)
+                if confidence >= 0.70 or has_extort_check:
+                    base_score = 4.0 + (confidence * 2.0)
+                    category = "Extortion / Demand"
+                else:
+                    base_score = 1.0
+                    category = "Conversational"
             elif predicted_class == 3:
-                base_score = 7.0 + (confidence * 2.0)
-                category = "Physical Threat"
+                # Physical threat requires confidence >= 0.70 or presence of hard threat keywords
+                has_threat_check = any(re.search(r'\b' + re.escape(t) + r'\b', text.lower()) for t in self.hard_threats)
+                if confidence >= 0.70 or has_threat_check:
+                    base_score = 7.0 + (confidence * 2.0)
+                    category = "Physical Threat"
+                else:
+                    base_score = 1.0
+                    category = "Conversational"
             else:
                 base_score = 1.0
                 category = "Conversational"
@@ -231,7 +259,7 @@ context_engine = ContextEngine()
 ui_clients = set()
 registered_devices = {}
 active_pins = {} # Map of websocket -> device_id
-harmful_words_only = True # Production Default: True so Live Incidents Queue is reserved for real threats, not mic-checks
+harmful_words_only = False # Default False so all speech during testing is visible on the dashboard!
 
 async def broadcast_to_ui(payload: dict):
     if not ui_clients:
@@ -878,28 +906,18 @@ def process_audio_buffer(pcm_bytes: bytes) -> tuple[str, bytes]:
     rms = float(np.sqrt(np.mean(audio_float**2)))
     peak = float(np.max(np.abs(audio_float)))
 
-    # Gate 1: Energy & Ambient Floor Gate
-    if peak < 0.05 or (rms < 0.02 and peak < 0.10):
-        print(f"[ASR] Dropped ambient background noise without speech (RMS={rms:.4f}, Peak={peak:.4f})")
+    # Only drop pure electrical silence or dead mic line (peak < 0.003, raw ADC peak < 100)
+    if peak < 0.003:
+        print(f"[ASR] Dropped pure digital silence (RMS={rms:.4f}, Peak={peak:.4f})")
         return "", pcm_bytes
 
-    # Gate 2: Crest Factor Gate (peak / rms)
-    # Speech has dynamic bursts (crest factor >= 2.2). Steady fan/AC is dense and flat (crest factor < 2.0).
-    crest_factor = peak / (rms + 1e-6)
-    if crest_factor < 2.0 and peak < 0.35:
-        print(f"[ASR] Dropped flat stationary fan noise (Crest={crest_factor:.2f}, RMS={rms:.4f}, Peak={peak:.4f})")
-        return "", pcm_bytes
-
-    # Gate 3: Stationarity Gate (RMS variance across 50ms frames)
-    # If the sound has virtually zero variance across frames, it is a constant fan motor, not human speech.
-    frame_len = int(16000 * 0.05) # 50ms frames
-    if len(audio_float) >= frame_len * 2:
-        frame_rms = [float(np.sqrt(np.mean(audio_float[i:i+frame_len]**2))) for i in range(0, len(audio_float)-frame_len+1, frame_len)]
-        mean_f_rms = np.mean(frame_rms) + 1e-6
-        variance_ratio = float(np.std(frame_rms)) / mean_f_rms
-        if variance_ratio < 0.20 and peak < 0.30:
-            print(f"[ASR] Dropped stationary motor/AC rumble (VarRatio={variance_ratio:.3f}, Peak={peak:.4f})")
-            return "", pcm_bytes
+    # Scale speech dynamically so it enters Whisper at optimal operating level (~0.55 peak)
+    # This ensures soft speech and normal distance speech are recognized crystal-clearly
+    # without squashing or clipping loud words!
+    target_peak = 0.55
+    gain_scale = min(target_peak / (peak + 1e-6), 6.0) # Up to 6x clean linear boost
+    if gain_scale > 1.0:
+        audio_float = audio_float * gain_scale
 
     # 3. Server-side Denoising (Microsoft NSNet2 Neural Speech Isolation with Balanced Strength)
     if has_nsnet2 and nsnet2_denoiser is not None:
@@ -944,17 +962,17 @@ def process_audio_buffer(pcm_bytes: bytes) -> tuple[str, bytes]:
     if has_whisper and whisper_model is not None:
         try:
             transcribe_kwargs = {
-                "language": None, # Auto-detect Tagalog, English, or Taglish code-switching without phoneme distortion
+                "language": "tl", # Set primary language to Tagalog (Whisper handles Taglish & English seamlessly without phoneme confusion)
                 "initial_prompt": INITIAL_TAGALOG_PROMPT if INITIAL_TAGALOG_PROMPT else None,
                 "hotwords": TAGALOG_HOTWORDS if TAGALOG_HOTWORDS else None,
-                "beam_size": 5,
+                "beam_size": 5, # Beam size 5: explores top candidate paths, greatly improving recognition accuracy
                 "temperature": [0.0], # 0.0 only: kills fallback hallucinations like 'ae, taray, taray'
                 "condition_on_previous_text": False,
-                "no_speech_threshold": 0.75, # 0.75: more willing to report silence on quiet background hiss
-                "log_prob_threshold": -0.8,  # -0.8: reject low-confidence text
-                "compression_ratio_threshold": 2.0, # 2.0: drops internal repetitions immediately
+                "no_speech_threshold": 0.65,
+                "log_prob_threshold": -1.0,
+                "compression_ratio_threshold": 2.4,
                 "word_timestamps": False,
-                "vad_parameters": dict(threshold=0.5, min_speech_duration_ms=450, speech_pad_ms=300),
+                "vad_parameters": dict(threshold=0.40, min_speech_duration_ms=250, speech_pad_ms=300),
             }
 
             # Silero VAD isolates genuine human speech segments from noise
@@ -1139,7 +1157,10 @@ async def handle_completed_audio(device_id: str, pcm_bytes: bytes, websocket: We
         is_still_connected = any(d_id == device_id for d_id in active_pins.values())
         registered_devices[device_id]["online"] = is_still_connected
         registered_devices[device_id]["state"] = "VAD ARMED" if is_still_connected else "OFFLINE"
-        registered_devices[device_id]["lastSeen"] = f"Active at {now_str}" if is_still_connected else f"Disconnected at {now_str}"
+        if is_still_connected:
+            registered_devices[device_id]["lastSeen"] = f'Heard: "{transcript[:25]}..."' if transcript else f"Active at {now_str}"
+        else:
+            registered_devices[device_id]["lastSeen"] = f"Disconnected at {now_str}"
         await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
 
 # =========================================================================
@@ -1156,7 +1177,16 @@ async def pin_websocket_endpoint(websocket: WebSocket):
     active_pins[websocket] = device_id
     
     # Check if there is a pending Wi-Fi config queued for this pin or fleet-wide
-    pending_cfg = pending_wifi_configs.get(device_id) or pending_wifi_configs.get("ALL")
+    pending_cfg = None
+    if device_id in pending_wifi_configs:
+        pending_cfg = pending_wifi_configs.pop(device_id)
+    elif "ALL" in pending_wifi_configs:
+        all_cfg = pending_wifi_configs["ALL"]
+        delivered = all_cfg.setdefault("delivered_devices", set())
+        if device_id not in delivered:
+            pending_cfg = all_cfg
+            delivered.add(device_id)
+
     if pending_cfg:
         print(f"[CFG] Pushing queued Wi-Fi checkpoint '{pending_cfg.get('checkpoint_name')}' to {device_id}...")
         try:
@@ -1187,8 +1217,8 @@ async def pin_websocket_endpoint(websocket: WebSocket):
     last_audio_chunk_time = time.time()
     next_expected_snapshot = False
 
-    # Audio rate limiting per device (80 KB/s limit allows ~2.5x normal speed for buffer drain bursts while blocking rogue floods)
-    MAX_BYTES_PER_SECOND = 80000
+    # Audio rate limiting per device (400 KB/s allows pre-roll drain bursts & LittleFS uploads without dropping audio)
+    MAX_BYTES_PER_SECOND = 400000
     rate_window_start = time.time()
     bytes_in_window = 0
 
@@ -1200,11 +1230,11 @@ async def pin_websocket_endpoint(websocket: WebSocket):
     try:
         while True:
             try:
-                # 8-second timeout: If the pin dies, loses power, or drops Wi-Fi,
-                # no packets or pings will arrive. We time out after 8s and mark it OFFLINE!
-                message = await asyncio.wait_for(websocket.receive(), timeout=8.0)
+                # 12-second timeout: With a 3-second pin heartbeat interval,
+                # this tolerates minor Wi-Fi jitter while promptly detecting true unpowered disconnects
+                message = await asyncio.wait_for(websocket.receive(), timeout=12.0)
             except asyncio.TimeoutError:
-                print(f"\n[WS] {device_id} heartbeat timed out (no data for 8s, pin disconnected or unpowered).")
+                print(f"\n[WS] {device_id} heartbeat timed out (no data for 12s, pin disconnected or unpowered).")
                 break
             except (WebSocketDisconnect, RuntimeError, OSError):
                 print(f"\n[WS] {device_id} disconnected.")
@@ -1357,4 +1387,4 @@ if __name__ == "__main__":
     print("=======================================================")
     print(" SECURELINK AI INFERENCE SERVER V7.0 (WHISPER + DENOISE)")
     print("=======================================================")
-    uvicorn.run(app, host="0.0.0.0", port=8080, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=8080, log_level="info", ws_ping_interval=None, ws_ping_timeout=None)
