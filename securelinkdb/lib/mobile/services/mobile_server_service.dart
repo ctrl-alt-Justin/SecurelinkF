@@ -124,6 +124,10 @@ class MobileServerService extends ChangeNotifier {
     return _devices.values.where((d) => _pairedPinIds.contains(d.id.toUpperCase())).toList();
   }
 
+  /// Devices discovered on network but not yet paired to this phone
+  List<DeviceStatus> get unpairedDevices =>
+      _devices.values.where((d) => !_pairedPinIds.contains(d.id.toUpperCase())).toList();
+
   /// All checkpoints from Central System
   List<WifiCheckpoint> get checkpoints => List.unmodifiable(_checkpoints);
 
@@ -357,6 +361,7 @@ class MobileServerService extends ChangeNotifier {
     _statusMessage = 'Connecting to Central System (ws://$_host:$_port/ui)...';
     notifyListeners();
 
+    _fetchDevicesRest();
     _fetchCheckpointsRest();
 
     try {
@@ -368,6 +373,7 @@ class MobileServerService extends ChangeNotifier {
         _isConnecting = false;
         _statusMessage = 'Synced with Central System ($csId @ $_host:$_port)';
         notifyListeners();
+        _fetchDevicesRest();
         _fetchCheckpointsRest();
         _startHeartbeat();
         _syncWithCentralSystem();
@@ -493,29 +499,115 @@ class MobileServerService extends ChangeNotifier {
     } catch (_) {}
   }
 
+  /// Fetches all registered and live pins from Central System REST API
+  Future<void> _fetchDevicesRest() async {
+    try {
+      final client = HttpClient()..connectionTimeout = const Duration(seconds: 2);
+      final req = await client.getUrl(Uri.parse('http://$_host:$_port/api/devices'));
+      final res = await req.close();
+      if (res.statusCode == 200) {
+        final body = await res.transform(utf8.decoder).join();
+        final json = jsonDecode(body);
+        if (json['devices'] != null) {
+          final list = (json['devices'] as List)
+              .map((d) => DeviceStatus.fromJson(d as Map<String, dynamic>))
+              .toList();
+          for (final dev in list) {
+            _devices[dev.id.toUpperCase()] = dev;
+          }
+          notifyListeners();
+        }
+      }
+      client.close();
+    } catch (_) {}
+  }
+
   // --------------------------------------------------------------------------
   // PIN PAIRING & MANAGEMENT (WI-FI & BLUETOOTH)
   // --------------------------------------------------------------------------
 
-  /// Scan for smart pins on startup
+  /// Scan for real smart pins on local Wi-Fi and Central System
   Future<void> searchForSmartPins() async {
     _isSearchingPins = true;
     notifyListeners();
 
-    // 1. Trigger UDP discovery
+    // 1. Fetch live registered pins from Central System API
+    await _fetchDevicesRest();
+    await _fetchCheckpointsRest();
+
+    // 2. Direct probe for Pin in Setup AP mode (192.168.4.1)
+    try {
+      final client = HttpClient()..connectionTimeout = const Duration(milliseconds: 900);
+      final req = await client.getUrl(Uri.parse('http://192.168.4.1/'));
+      final res = await req.close();
+      if (res.statusCode == 200) {
+        final setupDev = DeviceStatus(
+          id: 'PIN-SETUP-AP',
+          online: true,
+          battery: 100,
+          state: 'SETUP AP READY',
+          network: 'SecureLink-Setup (192.168.4.1)',
+          lastSeen: 'Captive Portal Detected',
+          cpuMhz: 160,
+          rssi: -35,
+          estRuntime: 'Setup Mode',
+        );
+        _devices['PIN-SETUP-AP'] = setupDev;
+      }
+      client.close();
+    } catch (_) {}
+
+    // 3. UDP broadcast to ping subnet & listen for pin keep-alive announcements
     if (!kIsWeb) {
       try {
         final socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
         socket.broadcastEnabled = true;
-        socket.send(utf8.encode('SECURELINK_PIN_V1'), InternetAddress('255.255.255.255'), 8888);
-        await Future.delayed(const Duration(milliseconds: 800));
+
+        // Listen for pins broadcasting on the LAN
+        socket.listen((event) {
+          if (event == RawSocketEvent.read) {
+            final dg = socket.receive();
+            if (dg != null) {
+              final text = utf8.decode(dg.data, allowMalformed: true);
+              if (text.contains('SECURELINK_PIN') || text.contains('PING:')) {
+                final pinIp = dg.address.address;
+                final suffix = pinIp.split('.').last.padLeft(3, '0');
+                final pinId = 'PIN-$suffix';
+                if (!_devices.containsKey(pinId)) {
+                  _devices[pinId] = DeviceStatus(
+                    id: pinId,
+                    online: true,
+                    battery: 95,
+                    state: 'VAD ARMED',
+                    network: 'Campus Wi-Fi ($pinIp)',
+                    lastSeen: 'Direct LAN Broadcast',
+                    cpuMhz: 160,
+                    rssi: -55,
+                    estRuntime: '5h 30m',
+                  );
+                  notifyListeners();
+                }
+              }
+            }
+          }
+        });
+
+        // Broadcast discovery ping across subnet
+        final probeData = utf8.encode('SECURELINK_DISCOVER_PIN');
+        socket.send(probeData, InternetAddress('255.255.255.255'), 8888);
+
+        if (_host.contains('.')) {
+          final parts = _host.split('.');
+          if (parts.length == 4) {
+            final subnetBcast = '${parts[0]}.${parts[1]}.${parts[2]}.255';
+            socket.send(probeData, InternetAddress(subnetBcast), 8888);
+          }
+        }
+
+        await Future.delayed(const Duration(milliseconds: 900));
         socket.close();
       } catch (_) {}
     }
-
-    // 2. Poll server for active devices
-    await _fetchCheckpointsRest();
-    await Future.delayed(const Duration(milliseconds: 700));
 
     _isSearchingPins = false;
     notifyListeners();

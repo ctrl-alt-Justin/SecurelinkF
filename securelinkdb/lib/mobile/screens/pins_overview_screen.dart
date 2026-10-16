@@ -37,6 +37,10 @@ class _PinsOverviewScreenState extends State<PinsOverviewScreen> {
     if (_viewAllFleet) {
       return widget.service.allDevices;
     }
+    // Auto-show discovered devices if none are explicitly paired yet
+    if (widget.service.pairedDevices.isEmpty && widget.service.allDevices.isNotEmpty) {
+      return widget.service.allDevices;
+    }
     return widget.service.pairedDevices;
   }
 
@@ -424,6 +428,91 @@ class _PinsOverviewScreenState extends State<PinsOverviewScreen> {
     );
   }
 
+  void _showPairPinQuickDialog(DeviceStatus dev) {
+    final controller = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF101622),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(20),
+          side: BorderSide(color: Colors.white.withValues(alpha: 0.1)),
+        ),
+        title: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: MobileDesignSystem.primaryGreenMint.withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: const Icon(Icons.add_link_rounded, color: MobileDesignSystem.primaryGreenMint, size: 22),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Pair ${dev.id}', style: const TextStyle(color: Colors.white, fontSize: 16.5, fontWeight: FontWeight.w800)),
+                  Text(dev.network, style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 11)),
+                ],
+              ),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Assign a student name or identifier for this smart pin (optional):', style: TextStyle(color: Colors.white.withValues(alpha: 0.72), fontSize: 12.5)),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              autofocus: true,
+              style: const TextStyle(color: Colors.white, fontSize: 14),
+              decoration: InputDecoration(
+                hintText: 'e.g. Student Alex, Room 101, Badge A',
+                hintStyle: TextStyle(color: Colors.white.withValues(alpha: 0.35), fontSize: 13),
+                prefixIcon: const Icon(Icons.person_rounded, color: MobileDesignSystem.primaryGreenMint, size: 20),
+                filled: true,
+                fillColor: Colors.white.withValues(alpha: 0.05),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text('Cancel', style: TextStyle(color: Colors.white.withValues(alpha: 0.55))),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(ctx);
+              await widget.service.pairPin(dev.id, alias: controller.text.trim());
+              if (mounted) {
+                setState(() {});
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    backgroundColor: const Color(0xFF131722),
+                    content: Text('Pin ${dev.id} paired to ${widget.service.userName}!'),
+                    duration: const Duration(seconds: 2),
+                  ),
+                );
+              }
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: MobileDesignSystem.primaryGreen,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+            child: const Text('Confirm Pair'),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _showQuickDeployModal(DeviceStatus dev) {
     showModalBottomSheet(
       context: context,
@@ -773,6 +862,67 @@ class _PinsOverviewScreenState extends State<PinsOverviewScreen> {
           ),
           const SizedBox(height: 14),
 
+          // Fleet View Toggle (My Paired Pins vs Campus Network Fleet)
+          Container(
+            padding: const EdgeInsets.all(4),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.05),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: Colors.white10),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: GestureDetector(
+                    onTap: () => setState(() => _viewAllFleet = false),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      decoration: BoxDecoration(
+                        color: !_viewAllFleet ? MobileDesignSystem.primaryGreen.withValues(alpha: 0.25) : Colors.transparent,
+                        borderRadius: BorderRadius.circular(10),
+                        border: !_viewAllFleet ? Border.all(color: MobileDesignSystem.primaryGreenMint.withValues(alpha: 0.4)) : null,
+                      ),
+                      child: Center(
+                        child: Text(
+                          'My Paired Pins (${widget.service.pairedDevices.length})',
+                          style: TextStyle(
+                            color: !_viewAllFleet ? MobileDesignSystem.primaryGreenMint : Colors.white60,
+                            fontSize: 11.5,
+                            fontWeight: !_viewAllFleet ? FontWeight.w800 : FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                Expanded(
+                  child: GestureDetector(
+                    onTap: () => setState(() => _viewAllFleet = true),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      decoration: BoxDecoration(
+                        color: _viewAllFleet ? MobileDesignSystem.primaryGreen.withValues(alpha: 0.25) : Colors.transparent,
+                        borderRadius: BorderRadius.circular(10),
+                        border: _viewAllFleet ? Border.all(color: MobileDesignSystem.primaryGreenMint.withValues(alpha: 0.4)) : null,
+                      ),
+                      child: Center(
+                        child: Text(
+                          'Campus Fleet (${widget.service.allDevices.length})',
+                          style: TextStyle(
+                            color: _viewAllFleet ? MobileDesignSystem.primaryGreenMint : Colors.white60,
+                            fontSize: 11.5,
+                            fontWeight: _viewAllFleet ? FontWeight.w800 : FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+
           // Search and Filter Bar
           Row(
             children: [
@@ -1018,6 +1168,23 @@ class _PinsOverviewScreenState extends State<PinsOverviewScreen> {
                             minHeight: 4.5,
                           ),
                         ),
+                        if (!widget.service.isPinPaired(dev.id)) ...[
+                          const SizedBox(height: 12),
+                          SizedBox(
+                            width: double.infinity,
+                            child: ElevatedButton.icon(
+                              onPressed: () => _showPairPinQuickDialog(dev),
+                              icon: const Icon(Icons.add_link_rounded, size: 16),
+                              label: Text('Pair ${dev.id} to My Companion'),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: MobileDesignSystem.primaryGreen,
+                                foregroundColor: Colors.white,
+                                padding: const EdgeInsets.symmetric(vertical: 9),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                              ),
+                            ),
+                          ),
+                        ],
                       ],
                     ),
                   ),

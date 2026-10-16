@@ -366,6 +366,25 @@ async def get_network_info():
         "harmful_words_only": harmful_words_only,
     }
 
+@app.get("/api/devices")
+async def get_devices():
+    """Returns all currently registered and active smart pins on the network."""
+    devices_list = []
+    for dev_id, dev in registered_devices.items():
+        is_active = any(d_id == dev_id for d_id in active_pins.values())
+        dev_copy = dict(dev)
+        dev_copy["online"] = is_active
+        if not is_active and dev_copy.get("state") != "OFFLINE":
+            dev_copy["state"] = "OFFLINE"
+        devices_list.append(dev_copy)
+    return {
+        "status": "success",
+        "devices": devices_list,
+        "active_count": len([d for d in devices_list if d.get("online")]),
+        "total_count": len(devices_list),
+        "timestamp": datetime.now().strftime("%H:%M:%S")
+    }
+
 @app.post("/api/toggle-harmful-only")
 async def toggle_harmful_only(payload: dict = None):
     global harmful_words_only

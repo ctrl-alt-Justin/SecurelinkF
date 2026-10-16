@@ -900,6 +900,10 @@ class _PairPinModalState extends State<PairPinModal> with SingleTickerProviderSt
       _ssidCtrl.text = widget.service.checkpoints.first.ssid;
       _passCtrl.text = widget.service.checkpoints.first.pass;
     }
+    // Auto-scan on modal open
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      widget.service.searchForSmartPins();
+    });
   }
 
   @override
@@ -1021,7 +1025,7 @@ class _PairPinModalState extends State<PairPinModal> with SingleTickerProviderSt
               labelColor: Colors.white,
               unselectedLabelColor: Colors.white54,
               tabs: const [
-                Tab(icon: Icon(Icons.wifi_rounded, size: 18), text: 'Wi-Fi Pairing'),
+                Tab(icon: Icon(Icons.wifi_rounded, size: 18), text: 'Wi-Fi & Network'),
                 Tab(icon: Icon(Icons.bluetooth_rounded, size: 18), text: 'Bluetooth (BLE)'),
               ],
             ),
@@ -1044,9 +1048,148 @@ class _PairPinModalState extends State<PairPinModal> with SingleTickerProviderSt
   }
 
   Widget _buildWifiPairingTab() {
+    final discovered = widget.service.allDevices;
+
     return ListView(
       children: [
-        // Instructions
+        // Real Discovered Smart Pins Section
+        if (discovered.isNotEmpty) ...[
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                'DETECTED ON NETWORK (${discovered.length})',
+                style: const TextStyle(
+                  color: MobileDesignSystem.primaryGreenMint,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: 0.8,
+                ),
+              ),
+              GestureDetector(
+                onTap: () async {
+                  await widget.service.searchForSmartPins();
+                  setState(() {});
+                },
+                child: const Row(
+                  children: [
+                    Icon(Icons.refresh_rounded, size: 13, color: Colors.white70),
+                    SizedBox(width: 3),
+                    Text('Refresh', style: TextStyle(color: Colors.white70, fontSize: 11, fontWeight: FontWeight.w600)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          ...discovered.map((dev) {
+            final isPaired = widget.service.isPinPaired(dev.id);
+            return Container(
+              margin: const EdgeInsets.only(bottom: 8),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: isPaired
+                    ? Colors.white.withValues(alpha: 0.03)
+                    : MobileDesignSystem.primaryGreen.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: isPaired
+                      ? Colors.white12
+                      : MobileDesignSystem.primaryGreenMint.withValues(alpha: 0.35),
+                ),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.sensors_rounded,
+                    color: dev.stateColor,
+                    size: 22,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Text(
+                              dev.id,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.w800,
+                                fontSize: 13.5,
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            if (isPaired)
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                                decoration: BoxDecoration(
+                                  color: MobileDesignSystem.primaryGreen.withValues(alpha: 0.25),
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: const Text(
+                                  'PAIRED',
+                                  style: TextStyle(color: MobileDesignSystem.primaryGreenMint, fontSize: 8.5, fontWeight: FontWeight.w900),
+                                ),
+                              ),
+                          ],
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          '${dev.state} • ${dev.battery}% (${dev.estRuntime}) • ${dev.network}',
+                          style: TextStyle(
+                            color: Colors.white.withValues(alpha: 0.6),
+                            fontSize: 10.5,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  ElevatedButton(
+                    onPressed: () async {
+                      _pinIdCtrl.text = dev.id;
+                      if (!isPaired) {
+                        await widget.service.pairPin(dev.id, alias: _aliasCtrl.text.trim());
+                        if (!mounted) return;
+                        Navigator.pop(context);
+                        widget.onPaired?.call();
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            backgroundColor: const Color(0xFF0E151A),
+                            content: Text(
+                              'Pin ${dev.id} successfully paired!',
+                              style: const TextStyle(color: MobileDesignSystem.primaryGreenMint),
+                            ),
+                          ),
+                        );
+                      }
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: isPaired
+                          ? Colors.white12
+                          : MobileDesignSystem.primaryGreen,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      minimumSize: Size.zero,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    ),
+                    child: Text(
+                      isPaired ? 'Selected' : '1-Tap Pair',
+                      style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w800),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }),
+          const SizedBox(height: 14),
+          const Divider(color: Colors.white12),
+          const SizedBox(height: 10),
+        ],
+
+        // Manual / Direct Setup Section
         Container(
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
@@ -1057,10 +1200,10 @@ class _PairPinModalState extends State<PairPinModal> with SingleTickerProviderSt
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text('How to Pair via Wi-Fi:', style: TextStyle(color: Colors.white, fontSize: 11.5, fontWeight: FontWeight.w700)),
+              const Text('Manual Pin Pairing & Wi-Fi Provisioning:', style: TextStyle(color: Colors.white, fontSize: 11.5, fontWeight: FontWeight.w700)),
               const SizedBox(height: 6),
               Text(
-                '1. Turn on Pin badge switch.\n2. Hold the BOOT button for 2s (Pin AP launches "SecureLink-Setup").\n3. Enter Wi-Fi credentials below to deploy OTA directly to the Pin.',
+                'Enter Pin ID to assign it directly, or boot Pin into Setup AP mode ("SecureLink-Setup") and push network credentials.',
                 style: TextStyle(color: Colors.white.withValues(alpha: 0.65), fontSize: 10.5, height: 1.4),
               ),
             ],
@@ -1074,7 +1217,7 @@ class _PairPinModalState extends State<PairPinModal> with SingleTickerProviderSt
           decoration: InputDecoration(
             labelText: 'Smart Pin ID',
             labelStyle: TextStyle(color: Colors.white.withValues(alpha: 0.7), fontSize: 12),
-            hintText: 'e.g. PIN-001',
+            hintText: 'e.g. PIN-001 or PIN-005',
             prefixIcon: const Icon(Icons.tag_rounded, color: MobileDesignSystem.primaryGreenMint, size: 18),
             filled: true,
             fillColor: Colors.white.withValues(alpha: 0.04),
@@ -1134,8 +1277,13 @@ class _PairPinModalState extends State<PairPinModal> with SingleTickerProviderSt
                 ? null
                 : () async {
                     setState(() => _isPairing = true);
+                    final pinId = _pinIdCtrl.text.trim();
+                    if (pinId.isEmpty) {
+                      setState(() => _isPairing = false);
+                      return;
+                    }
                     await widget.service.provisionPinWifiSetup(
-                      pinId: _pinIdCtrl.text.trim(),
+                      pinId: pinId,
                       ssid: _ssidCtrl.text.trim(),
                       password: _passCtrl.text.trim(),
                       alias: _aliasCtrl.text.trim(),
@@ -1148,7 +1296,7 @@ class _PairPinModalState extends State<PairPinModal> with SingleTickerProviderSt
                       SnackBar(
                         backgroundColor: const Color(0xFF0E151A),
                         content: Text(
-                          'Smart Pin ${_pinIdCtrl.text.toUpperCase()} paired to ${widget.service.userName}!',
+                          'Smart Pin ${pinId.toUpperCase()} paired to ${widget.service.userName}!',
                           style: const TextStyle(color: MobileDesignSystem.primaryGreenMint),
                         ),
                       ),
@@ -1158,7 +1306,7 @@ class _PairPinModalState extends State<PairPinModal> with SingleTickerProviderSt
                 ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
                 : const Icon(Icons.check_circle_rounded),
             label: Text(
-              _isPairing ? 'Provisioning Pin & Syncing CS...' : 'Pair & Connect Pin (Wi-Fi)',
+              _isPairing ? 'Provisioning Pin & Syncing CS...' : 'Pair & Connect Pin',
               style: const TextStyle(fontWeight: FontWeight.w800),
             ),
             style: ElevatedButton.styleFrom(
@@ -1174,33 +1322,76 @@ class _PairPinModalState extends State<PairPinModal> with SingleTickerProviderSt
   }
 
   Widget _buildBluetoothPairingTab() {
+    final nearbyDevices = widget.service.allDevices;
+
     return ListView(
       children: [
         Center(
           child: Container(
-            width: 72,
-            height: 72,
+            width: 68,
+            height: 68,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
               color: MobileDesignSystem.primaryGreen.withValues(alpha: 0.12),
               border: Border.all(color: MobileDesignSystem.primaryGreenMint.withValues(alpha: 0.35)),
             ),
-            child: const Icon(Icons.bluetooth_searching_rounded, color: MobileDesignSystem.primaryGreenMint, size: 36),
+            child: const Icon(Icons.bluetooth_searching_rounded, color: MobileDesignSystem.primaryGreenMint, size: 34),
           ),
         ),
         const SizedBox(height: 10),
-        const Center(
+        Center(
           child: Text(
-            'Scanning for Nearby BLE Smart Pins...',
-            style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w700),
+            widget.service.isSearchingPins
+                ? 'Scanning for Nearby Smart Pins...'
+                : 'Nearby Smart Pins in Signal Range',
+            style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w700),
           ),
         ),
         const SizedBox(height: 16),
 
-        // Discovered Devices list
-        _bleDeviceTile('SECURELINK-PIN-001', -52, 'XIAO ESP32S3 • Armed Standby'),
-        const SizedBox(height: 8),
-        _bleDeviceTile('SECURELINK-PIN-002', -68, 'XIAO ESP32S3 • In Range'),
+        // Discovered Devices list from actual network/BLE pool
+        if (nearbyDevices.isNotEmpty)
+          ...nearbyDevices.map((dev) => _bleDeviceTile(
+            dev.id,
+            dev.rssi,
+            '${dev.state} • Battery ${dev.battery}% (${dev.network})',
+          ))
+        else
+          Container(
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.04),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: Colors.white10),
+            ),
+            child: Column(
+              children: [
+                const Icon(Icons.radar_rounded, color: MobileDesignSystem.primaryGreenMint, size: 32),
+                const SizedBox(height: 10),
+                const Text(
+                  'No Smart Pins Discovered Nearby Yet',
+                  style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  'Ensure your pin is powered on and within Wi-Fi range or Setup AP mode.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 11),
+                ),
+                const SizedBox(height: 14),
+                ElevatedButton.icon(
+                  onPressed: () => widget.service.searchForSmartPins(),
+                  icon: const Icon(Icons.search_rounded, size: 16),
+                  label: const Text('Probe Local Network'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: MobileDesignSystem.primaryGreen,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                ),
+              ],
+            ),
+          ),
         const SizedBox(height: 14),
 
         TextField(
@@ -1221,11 +1412,11 @@ class _PairPinModalState extends State<PairPinModal> with SingleTickerProviderSt
         SizedBox(
           width: double.infinity,
           child: ElevatedButton.icon(
-            onPressed: _isPairing
+            onPressed: _isPairing || nearbyDevices.isEmpty
                 ? null
                 : () async {
                     setState(() => _isPairing = true);
-                    final pinId = _selectedBlePin.replaceAll('SECURELINK-', '');
+                    final pinId = _selectedBlePin.replaceAll('SECURELINK-', '').trim();
                     await widget.service.pairPinViaBluetooth(
                       pinId: pinId,
                       alias: _aliasCtrl.text.trim(),
@@ -1238,7 +1429,7 @@ class _PairPinModalState extends State<PairPinModal> with SingleTickerProviderSt
                       SnackBar(
                         backgroundColor: const Color(0xFF0E151A),
                         content: Text(
-                          'Pin $pinId paired via Bluetooth to ${widget.service.userName}!',
+                          'Pin $pinId paired to ${widget.service.userName}!',
                           style: const TextStyle(color: MobileDesignSystem.primaryGreenMint),
                         ),
                       ),
@@ -1248,7 +1439,7 @@ class _PairPinModalState extends State<PairPinModal> with SingleTickerProviderSt
                 ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
                 : const Icon(Icons.bluetooth_connected_rounded),
             label: Text(
-              _isPairing ? 'Pairing via BLE...' : 'Pair Selected Pin via Bluetooth',
+              _isPairing ? 'Pairing via BLE...' : 'Pair Selected Pin',
               style: const TextStyle(fontWeight: FontWeight.w800),
             ),
             style: ElevatedButton.styleFrom(
