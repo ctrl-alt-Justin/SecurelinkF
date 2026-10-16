@@ -721,6 +721,92 @@ async def provision_pin_serial(payload: dict):
         print(f"[PROVISION] Error on {port}: {e}")
         return {"status": "error", "message": f"Could not communicate with {port}: {str(e)}"}
 
+@app.post("/api/relay-stream")
+async def relay_stream_api(payload: dict):
+    """
+    Receives relayed audio packets from a Mobile Companion bridging an offline ESP32 Pin.
+    Expects:
+      - device_id: e.g. "PIN-005"
+      - audio_base64: base64-encoded 16kHz 16-bit PCM bytes
+      - snapshot_base64: (optional) base64-encoded JPEG snapshot
+    """
+    import base64
+    dev_id = str(payload.get("device_id", "PIN-005")).strip().upper()
+    audio_b64 = payload.get("audio_base64", "")
+    snap_b64 = payload.get("snapshot_base64", "")
+
+    if not audio_b64:
+        return {"status": "error", "message": "Missing audio_base64 payload"}
+
+    try:
+        pcm_bytes = base64.b64decode(audio_b64)
+    except Exception as e:
+        return {"status": "error", "message": f"Base64 decode failed: {e}"}
+
+    print(f"\n[RELAY-API] Received {len(pcm_bytes)} PCM bytes relayed from mobile for {dev_id}...")
+
+    # Update device status on dashboard
+    if dev_id in registered_devices:
+        registered_devices[dev_id]["online"] = True
+        registered_devices[dev_id]["state"] = "BLE RELAY ACTIVE"
+        registered_devices[dev_id]["network"] = "Cellular Relay (BLE Bridge)"
+        registered_devices[dev_id]["lastSeen"] = "Relayed just now"
+        await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[dev_id]})
+
+    # Process snapshot if provided
+    if snap_b64:
+        try:
+            snap_bytes = base64.b64decode(snap_b64)
+            snap_id = f"snap_{dev_id}_{int(time.time())}.jpg"
+            snap_path = os.path.join("recordings/snapshots", snap_id)
+            with open(snap_path, "wb") as f:
+                f.write(snap_bytes)
+            await broadcast_to_ui({
+                "event_type": "snapshot_ready",
+                "device_id": dev_id,
+                "snapshot_file": snap_id,
+                "timestamp": datetime.now().strftime("%H:%M:%S")
+            })
+        except Exception as e:
+            print(f"[RELAY] Snapshot decode error: {e}")
+
+    # Process through ASR + BERT
+    transcript, clean_pcm = process_audio_buffer(pcm_bytes)
+    is_danger = False
+    score = 0.0
+    category = "NORMAL"
+
+    if transcript:
+        score, category = classify_intent(transcript)
+        is_danger = (score >= 0.70) or any(hw in transcript.lower() for hw in ["tulong", "saklolo", "papatayin", "baril", "saksak", "holdap", "bobo", "gago", "pangit", "tanga"])
+        incident_id = f"EVT-{int(time.time() * 1000) % 1000000}"
+        wav_filename = f"{incident_id}.wav"
+        wav_path = os.path.join("recordings/audio", wav_filename)
+        await asyncio.to_thread(save_wav, clean_pcm, wav_path)
+
+        await broadcast_to_ui({
+            "event_type": "incident",
+            "id": incident_id,
+            "device_id": dev_id,
+            "score": float(score),
+            "category": category,
+            "transcript": transcript,
+            "audio": True,
+            "audio_url": f"http://127.0.0.1:8080/recordings/audio/{wav_filename}",
+            "audio_file": wav_filename,
+            "video": is_danger,
+            "relay": True,
+            "duration": f"00:{max(1, int(len(pcm_bytes)/32000)):02d}"
+        })
+
+    return {
+        "status": "success",
+        "device_id": dev_id,
+        "transcript": transcript,
+        "is_danger": is_danger,
+        "score": float(score),
+        "category": category
+    }
 
 @app.websocket("/ui")
 async def ui_websocket_endpoint(websocket: WebSocket):
@@ -1321,7 +1407,36 @@ async def pin_websocket_endpoint(websocket: WebSocket):
 
             if "text" in message:
                 text_msg = message["text"]
-                if text_msg.startswith("PING:"):
+                if text_msg.startswith("RELAY_INIT:") or text_msg.startswith("DEV_ID:"):
+                    relayed_id = text_msg.split(":")[1].strip().upper()
+                    if relayed_id:
+                        device_id = relayed_id
+                        active_pins[websocket] = device_id
+                        if device_id not in registered_devices:
+                            registered_devices[device_id] = {
+                                "id": device_id,
+                                "online": True,
+                                "battery": 100,
+                                "state": "BLE RELAY ACTIVE",
+                                "network": "Cellular Relay (BLE Bridge)",
+                                "lastSeen": "Relaying audio now",
+                                "cpuMhz": 160,
+                                "rssi": -55,
+                                "estRuntime": "4h 45m"
+                            }
+                        else:
+                            registered_devices[device_id]["online"] = True
+                            registered_devices[device_id]["state"] = "BLE RELAY ACTIVE"
+                            registered_devices[device_id]["network"] = "Cellular Relay (BLE Bridge)"
+                            registered_devices[device_id]["lastSeen"] = "Relaying audio now"
+                        print(f"\n[RELAY] Mobile Companion initiated BLE-to-Cellular relay for pin: {device_id}")
+                        await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
+                        try:
+                            await websocket.send_text(f"RELAY_ACK:{device_id}")
+                        except Exception:
+                            pass
+                    continue
+                elif text_msg.startswith("PING:"):
                     # Standby keep-alive ping from ESP32: PING:<rssi>[:<battery_pct>[:<battery_mv>]]
                     parts = text_msg.split(":")
                     if len(parts) >= 2:

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/device_model.dart';
 import '../services/mobile_server_service.dart';
+import '../services/ble_relay_service.dart';
 import '../widgets/mobile_components.dart';
 
 class PinsOverviewScreen extends StatefulWidget {
@@ -18,6 +19,7 @@ class PinsOverviewScreen extends StatefulWidget {
 }
 
 class _PinsOverviewScreenState extends State<PinsOverviewScreen> {
+  final BleRelayService _bleRelay = BleRelayService();
   String _filter = 'ALL';
   String _searchQuery = '';
   bool _viewAllFleet = false;
@@ -25,12 +27,24 @@ class _PinsOverviewScreenState extends State<PinsOverviewScreen> {
   @override
   void initState() {
     super.initState();
+    _bleRelay.addListener(_onBleChanged);
+    _bleRelay.updateServerEndpoint(widget.service.host, widget.service.port);
     // At first open, actively look for smart pins
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (widget.service.pairedDevices.isEmpty) {
         widget.service.searchForSmartPins();
       }
     });
+  }
+
+  @override
+  void dispose() {
+    _bleRelay.removeListener(_onBleChanged);
+    super.dispose();
+  }
+
+  void _onBleChanged() {
+    if (mounted) setState(() {});
   }
 
   List<DeviceStatus> get _targetDevicePool {
@@ -674,6 +688,84 @@ class _PinsOverviewScreenState extends State<PinsOverviewScreen> {
           ),
           const SizedBox(height: 12),
 
+          // High-Priority Bluetooth Sentinel Alert (When BT is disabled)
+          if (!_bleRelay.isBluetoothEnabled || _bleRelay.sentinelAlertMessage != null) ...[
+            Container(
+              margin: const EdgeInsets.only(bottom: 12),
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  colors: [Color(0xFF3B151E), Color(0xFF220B11)],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: const Color(0xFFFF4B6E).withValues(alpha: 0.6), width: 1.2),
+                boxShadow: [
+                  BoxShadow(
+                    color: const Color(0xFFFF4B6E).withValues(alpha: 0.25),
+                    blurRadius: 14,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(7),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFF4B6E).withValues(alpha: 0.2),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: const Icon(Icons.bluetooth_disabled_rounded, color: Color(0xFFFF4B6E), size: 19),
+                      ),
+                      const SizedBox(width: 10),
+                      const Expanded(
+                        child: Text(
+                          'BLUETOOTH DISABLED • DEADZONE RELAY OFFLINE',
+                          style: TextStyle(
+                            color: Color(0xFFFF4B6E),
+                            fontSize: 11.5,
+                            fontWeight: FontWeight.w900,
+                            letterSpacing: 0.4,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    _bleRelay.sentinelAlertMessage ??
+                        'SecureLink Smart Pin disconnected: Enable Bluetooth to ensure emergency coverage in campus Wi-Fi blind spots.',
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.88),
+                      fontSize: 11,
+                      height: 1.35,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: () => _bleRelay.requestEnableBluetooth(),
+                      icon: const Icon(Icons.bluetooth_rounded, size: 16),
+                      label: const Text('Enable Bluetooth Now', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 12)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFFFF4B6E),
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 9),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+
           // Harmful Words Filter Control Card
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
@@ -784,6 +876,145 @@ class _PinsOverviewScreenState extends State<PinsOverviewScreen> {
                   onChanged: (val) {
                     widget.service.toggleHarmfulWordsOnly(val);
                   },
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // Opportunistic BLE Relay & Blindspot Bridge Card
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+              gradient: _bleRelay.isBleConnected
+                  ? const LinearGradient(
+                      colors: [Color(0xFF0A2B38), Color(0xFF071822)],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    )
+                  : LinearGradient(
+                      colors: [const Color(0xFF131B26), const Color(0xFF0B1017)],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    ),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(
+                color: _bleRelay.isBleConnected
+                    ? MobileDesignSystem.accentCyan.withValues(alpha: 0.5)
+                    : Colors.white.withValues(alpha: 0.08),
+                width: 1.0,
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      width: 36,
+                      height: 36,
+                      decoration: BoxDecoration(
+                        color: _bleRelay.isBleConnected
+                            ? MobileDesignSystem.accentCyan.withValues(alpha: 0.22)
+                            : Colors.white.withValues(alpha: 0.05),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                          color: _bleRelay.isBleConnected
+                              ? MobileDesignSystem.accentCyan.withValues(alpha: 0.45)
+                              : Colors.white10,
+                        ),
+                      ),
+                      child: Icon(
+                        _bleRelay.isBleConnected ? Icons.cell_tower_rounded : Icons.bluetooth_searching_rounded,
+                        color: _bleRelay.isBleConnected ? MobileDesignSystem.accentCyan : Colors.white60,
+                        size: 20,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              const Text(
+                                'DEADZONE BLE RELAY',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w800,
+                                  letterSpacing: 0.3,
+                                ),
+                              ),
+                              const SizedBox(width: 6),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                                decoration: BoxDecoration(
+                                  color: _bleRelay.isBleConnected
+                                      ? MobileDesignSystem.accentCyan.withValues(alpha: 0.25)
+                                      : Colors.white.withValues(alpha: 0.1),
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: Text(
+                                  _bleRelay.isBleConnected ? 'TIER 2 ARMED' : 'STANDBY',
+                                  style: TextStyle(
+                                    color: _bleRelay.isBleConnected ? MobileDesignSystem.accentCyan : Colors.white60,
+                                    fontSize: 8.5,
+                                    fontWeight: FontWeight.w900,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            _bleRelay.bridgeStatus,
+                            style: TextStyle(
+                              color: _bleRelay.isBleConnected
+                                  ? MobileDesignSystem.accentCyan.withValues(alpha: 0.9)
+                                  : Colors.white.withValues(alpha: 0.5),
+                              fontSize: 10.5,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                const Divider(color: Colors.white10, height: 1),
+                const SizedBox(height: 8),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'Target: ${_bleRelay.connectedPinId} • MTU ${_bleRelay.negotiatedMtu} • ${_bleRelay.packetsRelayed} Pkts Relayed',
+                      style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.55),
+                        fontSize: 10,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    GestureDetector(
+                      onTap: () {
+                        if (_bleRelay.isBleConnected) {
+                          _bleRelay.disconnectPin();
+                        } else {
+                          final paired = widget.service.pairedDevices;
+                          final pinToBridge = paired.isNotEmpty ? paired.first.id : 'PIN-005';
+                          _bleRelay.connectToPin(pinToBridge);
+                        }
+                      },
+                      child: Text(
+                        _bleRelay.isBleConnected ? 'Disconnect' : 'Connect Bridge',
+                        style: TextStyle(
+                          color: _bleRelay.isBleConnected ? const Color(0xFFFF5E72) : MobileDesignSystem.accentCyan,
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),

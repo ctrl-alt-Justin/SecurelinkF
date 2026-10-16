@@ -11,6 +11,25 @@
 #include <Preferences.h>
 #include "esp_camera.h"
 
+// --- OPPORTUNISTIC BLE RELAY (WI-FI DEADZONE BRIDGE) ---
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
+
+#define SECURELINK_SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+#define AUDIO_STREAM_CHAR_UUID         "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+#define EVENT_CONTROL_CHAR_UUID        "88b1220a-6c19-4b36-a192-35e67c8be009"
+
+BLEServer* pBleServer = nullptr;
+BLECharacteristic* pAudioChar = nullptr;
+BLECharacteristic* pEventChar = nullptr;
+bool bleClientConnected = false;
+bool bleAdvertisingStarted = false;
+uint16_t bleMtu = 240; // Default MTU, negotiated up to 517
+bool hasActiveBleStream = false;
+String pinId = "PIN-005";
+
 // =========================================================================
 // SECURELINK SMART PIN FIRMWARE (XIAO ESP32S3 Sense)
 // Optimized for: 160MHz Balanced Clock | 200mAh LiPo (6-8h Target) | 16kHz VAD
@@ -277,7 +296,7 @@ void snapshotWorkerTask(void* param) {
 }
 
 void captureIncidentSnapshot() {
-    if (!cameraReady || !hasActiveStream) return;
+    if (!cameraReady || (!hasActiveStream && !hasActiveBleStream && !isOfflineRecording)) return;
     if (snapshotInProgress) {
         if (millis() - snapshotStartedAt > 3500) {
             Serial.println("[CAM] Snapshot task timed out (>3.5s). Camera driver unresponsive, disabling camera to prevent crash.");
@@ -303,6 +322,97 @@ void captureIncidentSnapshot() {
         snapshotInProgress = false;
         Serial.println("[CAM] Failed to create camSnapTask.");
     }
+}
+
+// --- BLE RELAY GATT CALLBACKS & HELPERS ---
+class BleServerCallbacks : public BLEServerCallbacks {
+    void onConnect(BLEServer* pServer) {
+        bleClientConnected = true;
+        Serial.println("\n[BLE] Mobile Companion connected! BLE Relay layer ARMED.");
+    }
+    void onDisconnect(BLEServer* pServer) {
+        bleClientConnected = false;
+        hasActiveBleStream = false;
+        Serial.println("\n[BLE] Mobile Companion disconnected. Restarting BLE advertising...");
+        pServer->getAdvertising()->start();
+    }
+};
+
+class EventControlCallbacks : public BLECharacteristicCallbacks {
+    void onWrite(BLECharacteristic* pCharacteristic) {
+        String val = String(pCharacteristic->getValue().c_str());
+        val.trim();
+        if (val.length() > 0) {
+            Serial.printf("[BLE] Command received from Mobile Companion: %s\n", val.c_str());
+            if (val.startsWith("TRIGGER:DANGER")) {
+                Serial.println("[BLE] DANGER confirmed by Central Server via Relay! Triggering camera snapshot...");
+                captureIncidentSnapshot();
+            } else if (val.startsWith("CMD:CAPTURE_SNAPSHOT")) {
+                captureIncidentSnapshot();
+            } else if (val.startsWith("PING")) {
+                int rssi = WiFi.RSSI();
+                int batPct = calculateBatteryPct();
+                int batMv = readBatteryMv();
+                String pong = "PONG:" + String(rssi) + ":" + String(batPct) + ":" + String(batMv);
+                pCharacteristic->setValue(pong.c_str());
+                pCharacteristic->notify();
+            }
+        }
+    }
+};
+
+void sendBleAudioChunk(const uint8_t* data, size_t len) {
+    if (!bleClientConnected || pAudioChar == nullptr) return;
+    // Chunk according to negotiated MTU (or default 240 bytes)
+    size_t chunkSize = (bleMtu > 3) ? min((size_t)(bleMtu - 3), (size_t)240) : 120;
+    size_t offset = 0;
+    while (offset < len) {
+        size_t currentChunk = min(chunkSize, len - offset);
+        pAudioChar->setValue((uint8_t*)(data + offset), currentChunk);
+        pAudioChar->notify();
+        offset += currentChunk;
+        delay(3); // Micro-pacing prevents BLE GATT buffer saturation
+    }
+}
+
+void setupBle() {
+    Serial.println("\n[BLE] Initializing Opportunistic BLE Relay stack (NimBLE/ESP32)...");
+    String bleName = "SecureLink-" + pinId;
+    BLEDevice::init(bleName.c_str());
+    BLEDevice::setMTU(517);
+
+    pBleServer = BLEDevice::createServer();
+    pBleServer->setCallbacks(new BleServerCallbacks());
+
+    BLEService* pService = pBleServer->createService(SECURELINK_SERVICE_UUID);
+
+    // 1. Audio stream characteristic (NOTIFY)
+    pAudioChar = pService->createCharacteristic(
+        AUDIO_STREAM_CHAR_UUID,
+        BLECharacteristic::PROPERTY_NOTIFY
+    );
+    pAudioChar->addDescriptor(new BLE2902());
+
+    // 2. Event control characteristic (NOTIFY | READ | WRITE)
+    pEventChar = pService->createCharacteristic(
+        EVENT_CONTROL_CHAR_UUID,
+        BLECharacteristic::PROPERTY_NOTIFY |
+        BLECharacteristic::PROPERTY_READ   |
+        BLECharacteristic::PROPERTY_WRITE
+    );
+    pEventChar->setCallbacks(new EventControlCallbacks());
+    pEventChar->addDescriptor(new BLE2902());
+
+    pService->start();
+
+    BLEAdvertising* pAdvertising = BLEDevice::getAdvertising();
+    pAdvertising->addServiceUUID(SECURELINK_SERVICE_UUID);
+    pAdvertising->setScanResponse(true);
+    pAdvertising->setMinPreferred(0x06);
+    pAdvertising->setMinPreferred(0x12);
+    BLEDevice::startAdvertising();
+    bleAdvertisingStarted = true;
+    Serial.printf("[BLE] Deadzone Relay Service active! Advertising as '%s'\n", bleName.c_str());
 }
 
 static void onWebSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
@@ -429,6 +539,8 @@ void loadPreferences() {
     server_host = prefs.getString("server", "10.28.20.28");
     server_port = prefs.getInt("port", 8080);
     cachedServerIP = server_host;
+    pinId = prefs.getString("pin_id", "PIN-005");
+    Serial.printf("[CFG] Smart Pin ID: '%s'\n", pinId.c_str());
     Serial.printf("[CFG] Primary Wi-Fi SSID: '%s'\n", wifi_ssid.c_str());
     if (wifi_ssid2.length() > 0) {
         Serial.printf("[CFG] Backup/Roaming Wi-Fi SSID: '%s'\n", wifi_ssid2.c_str());
@@ -720,8 +832,12 @@ void enforceFreeSpace() {
 }
 
 void processArchiveUpload() {
-    // Only upload offline recordings when connected to WebSocket, idle (not actively streaming live speech), and flash is ready
-    if (!ws.isConnected() || isStreaming || isOfflineRecording || !fsReady) return;
+    // Only upload offline recordings when idle (not actively streaming live speech) and flash is ready
+    if (isStreaming || isOfflineRecording || !fsReady) return;
+
+    bool canWs = ws.isConnected();
+    bool canBle = (!canWs && bleClientConnected && pEventChar != nullptr && pAudioChar != nullptr);
+    if (!canWs && !canBle) return;
 
     if (!isUploadingArchive) {
         File root = LittleFS.open("/");
@@ -732,8 +848,14 @@ void processArchiveUpload() {
                 uploadFilePath = "/" + name;
                 uploadFile = LittleFS.open(uploadFilePath, FILE_READ);
                 isUploadingArchive = true;
-                ws.sendTXT("ARCHIVE_START:" + uploadFilePath);
-                Serial.printf("[INC] Syncing stored incident: %s\n", uploadFilePath.c_str());
+                if (canWs) {
+                    ws.sendTXT("ARCHIVE_START:" + uploadFilePath);
+                    Serial.printf("[INC] Syncing stored incident via Wi-Fi: %s\n", uploadFilePath.c_str());
+                } else {
+                    pEventChar->setValue("ARCHIVE_START:" + pinId + ":" + uploadFilePath);
+                    pEventChar->notify();
+                    Serial.printf("[INC] Syncing stored incident via BLE Relay: %s\n", uploadFilePath.c_str());
+                }
                 file.close();
                 root.close();
                 return;
@@ -745,20 +867,38 @@ void processArchiveUpload() {
     }
 
     static unsigned long lastArchiveChunkMs = 0;
-    if (millis() - lastArchiveChunkMs < 40) return; // 40ms timer pace = 51.2 KB/s (safely below server 80 KB/s rate limit)
+    unsigned long pace = canWs ? 40 : 15;
+    if (millis() - lastArchiveChunkMs < pace) return;
 
     if (uploadFile.available()) {
-        uint8_t buf[2048];
-        size_t bytesRead = uploadFile.read(buf, sizeof(buf));
-        if (bytesRead > 0) {
-            ws.sendBIN(buf, bytesRead);
-            lastArchiveChunkMs = millis();
+        if (canWs) {
+            uint8_t buf[2048];
+            size_t bytesRead = uploadFile.read(buf, sizeof(buf));
+            if (bytesRead > 0) {
+                ws.sendBIN(buf, bytesRead);
+                lastArchiveChunkMs = millis();
+            }
+        } else if (canBle) {
+            size_t bleChunk = (bleMtu > 3) ? min((size_t)(bleMtu - 3), (size_t)240) : 120;
+            uint8_t buf[bleChunk];
+            size_t bytesRead = uploadFile.read(buf, sizeof(buf));
+            if (bytesRead > 0) {
+                pAudioChar->setValue(buf, bytesRead);
+                pAudioChar->notify();
+                lastArchiveChunkMs = millis();
+            }
         }
     } else {
         uploadFile.close();
         LittleFS.remove(uploadFilePath);
-        ws.sendTXT("ARCHIVE_END:" + uploadFilePath);
-        Serial.printf("[INC] Sync complete. Deleted: %s\n", uploadFilePath.c_str());
+        if (canWs) {
+            ws.sendTXT("ARCHIVE_END:" + uploadFilePath);
+            Serial.printf("[INC] Sync complete via Wi-Fi. Deleted: %s\n", uploadFilePath.c_str());
+        } else if (canBle) {
+            pEventChar->setValue("ARCHIVE_END:" + pinId + ":" + uploadFilePath);
+            pEventChar->notify();
+            Serial.printf("[INC] Sync complete via BLE Relay. Deleted: %s\n", uploadFilePath.c_str());
+        }
         isUploadingArchive = false;
         lastArchiveChunkMs = 0;
     }
@@ -768,7 +908,15 @@ void handleSerialCommands() {
     if (Serial.available()) {
         String cmd = Serial.readStringUntil('\n');
         cmd.trim();
-        if (cmd.startsWith("SET_WIFI:") || cmd.startsWith("CONFIG_WIFI:")) {
+        if (cmd.startsWith("SET_PIN_ID:")) {
+            String newId = cmd.substring(11);
+            newId.trim();
+            if (newId.length() > 0) {
+                pinId = newId;
+                prefs.putString("pin_id", pinId);
+                Serial.printf("[SYS] Pin ID updated to: %s\n", pinId.c_str());
+            }
+        } else if (cmd.startsWith("SET_WIFI:") || cmd.startsWith("CONFIG_WIFI:")) {
             // Format: SET_WIFI:<ssid>:<pass>:<server_ip>:<port>
             int p1 = cmd.indexOf(':');
             int p2 = cmd.indexOf(':', p1 + 1);
@@ -950,6 +1098,7 @@ void setup() {
 
     setupMicrophone();
     setupCamera();
+    setupBle(); // Initialize Opportunistic BLE Relay & deadzone advertising
 
     // Launch Dedicated Audio Engine on Core 1 (Core 0 handles Wi-Fi, WebSocket, LittleFS, and System)
     xTaskCreatePinnedToCore(
@@ -1052,7 +1201,22 @@ void loop() {
                 String header = "SNAP:" + String(fb->len);
                 ws.sendTXT(header);
                 ws.sendBIN(fb->buf, fb->len);
-                Serial.println("[CAM] Incident snapshot sent to server");
+                Serial.println("[CAM] Incident snapshot sent to server via Wi-Fi");
+            } else if (bleClientConnected && pEventChar != nullptr) {
+                pEventChar->setValue("SNAP_START:" + pinId + ":" + String(fb->len));
+                pEventChar->notify();
+                sendBleAudioChunk(fb->buf, fb->len);
+                pEventChar->setValue("SNAP_END:" + pinId);
+                pEventChar->notify();
+                Serial.println("[CAM] Incident snapshot sent to Mobile Companion via BLE Relay");
+            } else if (fsReady) {
+                String snapPath = "/snap_" + String(millis()) + ".jpg";
+                File snapFile = LittleFS.open(snapPath, FILE_WRITE);
+                if (snapFile) {
+                    snapFile.write(fb->buf, fb->len);
+                    snapFile.close();
+                    Serial.printf("[CAM] Saved snapshot to LittleFS blackbox: %s\n", snapPath.c_str());
+                }
             }
             esp_camera_fb_return(fb);
             snapshotInProgress = false;
@@ -1102,35 +1266,55 @@ void loop() {
     }
 
     // --- AUDIO STREAMING & RECORDING PIPELINE (Core 0 Network Consumer) ---
-    // TRIGGER STREAMING WHEN VOICE IS DETECTED
+    // TRIGGER STREAMING WHEN VOICE IS DETECTED (3-TIER FAILOVER HIERARCHY)
     if (speechArmed) {
         lastSpeechTime = millis();
         if (!isStreaming) {
+            // TIER 1 (Primary): Direct WebSocket streaming over campus Wi-Fi
             if (ws.isConnected()) {
                 hasActiveStream = true;
+                hasActiveBleStream = false;
+                isOfflineRecording = false;
                 isStreaming = true;
                 WiFi.setSleep(false); // Active speech: wake Wi-Fi radio for zero-latency, reliable streaming
                 streamStartMs = millis();
-                Serial.println("[VAD] Voice triggered! Streaming started.");
+                Serial.println("[VAD] Voice triggered! [Tier 1: Wi-Fi WebSocket] Streaming started.");
             } else {
                 discoverCheckpoint();
                 if (ws.isConnected()) {
                     hasActiveStream = true;
+                    hasActiveBleStream = false;
+                    isOfflineRecording = false;
                     isStreaming = true;
                     WiFi.setSleep(false);
                     streamStartMs = millis();
-                    Serial.println("[VAD] Voice triggered after checkpoint discovery! Streaming started.");
+                    Serial.println("[VAD] Voice triggered after checkpoint discovery! [Tier 1] Streaming started.");
                 }
             }
             
-            if (!wifiConnectInProgress && !hasActiveStream && fsReady) {
+            // TIER 2 (Opportunistic Relay): Bridge to student's phone over BLE in Wi-Fi blind spots
+            if (!hasActiveStream && bleClientConnected && pEventChar != nullptr) {
+                hasActiveStream = false;
+                hasActiveBleStream = true;
+                isOfflineRecording = false;
+                isStreaming = true;
+                streamStartMs = millis();
+                pEventChar->setValue("STREAM_START:" + pinId);
+                pEventChar->notify();
+                Serial.println("[VAD] Voice triggered in deadzone! [Tier 2: BLE Relay] Streaming via smartphone bridge...");
+            }
+
+            // TIER 3 (Local Blackbox): LittleFS flash recording if both Wi-Fi and Phone BLE are unavailable
+            if (!hasActiveStream && !hasActiveBleStream && fsReady) {
                 enforceFreeSpace();
                 isOfflineRecording = true;
+                hasActiveStream = false;
+                hasActiveBleStream = false;
                 isStreaming = true;
                 streamStartMs = millis();
                 currentIncidentPath = "/inc_" + String(millis()) + ".pcm";
                 offlineIncidentFile = LittleFS.open(currentIncidentPath, FILE_WRITE);
-                Serial.printf("[FS] Network unavailable. Recording locally to %s\n", currentIncidentPath.c_str());
+                Serial.printf("[VAD] Wi-Fi & BLE unavailable. [Tier 3: Blackbox] Recording to %s\n", currentIncidentPath.c_str());
             }
         }
     }
@@ -1146,7 +1330,7 @@ void loop() {
             size_t toDrain = (targetHead + RING_BUFFER_SIZE - ringTail) % RING_BUFFER_SIZE;
             int failedAttempts = 0;
             while (toDrain >= sizeof(int16_t) && failedAttempts < 5) {
-                if (!ws.isConnected() && !isOfflineRecording) break; // Abort drain immediately if socket is closed
+                if (!ws.isConnected() && !hasActiveBleStream && !isOfflineRecording) break;
                 size_t chunk = min((size_t)BATCH_SIZE, toDrain);
                 uint8_t tempBuf[chunk];
                 for (size_t i = 0; i < chunk; i++) {
@@ -1156,6 +1340,9 @@ void loop() {
                 bool sendOk = false;
                 if (hasActiveStream && ws.isConnected()) {
                     sendOk = ws.sendBIN(tempBuf, chunk);
+                } else if (hasActiveBleStream && bleClientConnected) {
+                    sendBleAudioChunk(tempBuf, chunk);
+                    sendOk = true;
                 } else if (isOfflineRecording && offlineIncidentFile) {
                     sendOk = (offlineIncidentFile.write(tempBuf, chunk) == chunk);
                 }
@@ -1173,14 +1360,21 @@ void loop() {
 
             if (hasActiveStream && !isUploadingArchive) {
                 ws.sendTXT("STREAM_END");
-                Serial.println("\n[SYS] Stream completed (silence or max duration).");
+                Serial.println("\n[SYS] Stream completed via Wi-Fi.");
                 hasActiveStream = false;
+            } else if (hasActiveBleStream) {
+                if (pEventChar) {
+                    pEventChar->setValue("STREAM_END:" + pinId);
+                    pEventChar->notify();
+                }
+                Serial.println("\n[SYS] Stream completed via BLE Relay.");
+                hasActiveBleStream = false;
             }
             if (isOfflineRecording) {
                 isOfflineRecording = false;
                 if (offlineIncidentFile) {
                     offlineIncidentFile.close();
-                    Serial.println("[FS] Offline recording saved and closed.");
+                    Serial.println("[FS] Offline recording saved and closed in LittleFS blackbox.");
                 }
             }
             if (streamStartMs > 0) {
@@ -1188,14 +1382,14 @@ void loop() {
                 streamStartMs = 0;
             }
             isStreaming = false;
-            WiFi.setSleep(false); // Maintain Wi-Fi modem awake in Standby: eliminates Windows WinError 121 and keeps connection permanently alive
+            WiFi.setSleep(false); // Maintain Wi-Fi modem awake in Standby
             // Float tail back to pre-roll window
             ringTail = (ringHead + RING_BUFFER_SIZE - PRE_ROLL_BYTES) % RING_BUFFER_SIZE;
         } else {
-            // Actively draining audio from ringTail to ringHead in steady, verified BATCH_SIZE chunks
+            // Actively draining audio from ringTail to ringHead in steady chunks
             if (available >= BATCH_SIZE) {
                 static unsigned long lastBatchSentAt = 0;
-                unsigned long paceMs = (available > 16000) ? 12 : 35; // Catch up pre-roll smoothly without flooding TCP
+                unsigned long paceMs = (available > 16000) ? 12 : 35; // Catch up pre-roll smoothly
                 if (millis() - lastBatchSentAt >= paceMs) {
                     uint8_t txBuf[BATCH_SIZE];
                     for (size_t i = 0; i < BATCH_SIZE; i++) {
@@ -1205,6 +1399,9 @@ void loop() {
                     bool sendOk = true;
                     if (hasActiveStream && ws.isConnected() && !isUploadingArchive) {
                         sendOk = ws.sendBIN(txBuf, BATCH_SIZE);
+                    } else if (hasActiveBleStream && bleClientConnected) {
+                        sendBleAudioChunk(txBuf, BATCH_SIZE);
+                        sendOk = true;
                     } else if (isOfflineRecording && offlineIncidentFile) {
                         sendOk = (offlineIncidentFile.write(txBuf, BATCH_SIZE) == BATCH_SIZE);
                     }
@@ -1213,15 +1410,15 @@ void loop() {
                         ringTail = (ringTail + BATCH_SIZE) % RING_BUFFER_SIZE;
                         lastBatchSentAt = millis();
                     } else {
-                        delay(6); // TCP congested: hold pointer and retry next tick
+                        delay(6);
                     }
                 }
             }
         }
     }
 
-    // --- PIN KEEP-ALIVE & TELEMETRY HEARTBEAT (3.0 seconds) ---
-    // Transmits regular keep-alive pings to the central server so the watchdog never times out.
+    // --- PIN KEEP-ALIVE & TELEMETRY HEARTBEAT ---
+    // Transmits regular keep-alive pings over Wi-Fi (if connected) or BLE Relay (if Wi-Fi down)
     static unsigned long lastHeartbeatMs = 0;
     if (ws.isConnected()) {
         if (needImmediateHeartbeat || (millis() - lastHeartbeatMs >= 3000)) {
@@ -1232,14 +1429,22 @@ void loop() {
             int batMv = readBatteryMv();
             ws.sendTXT("PING:" + String(rssi) + ":" + String(batPct) + ":" + String(batMv));
         }
+    } else if (bleClientConnected && pEventChar != nullptr) {
+        static unsigned long lastBlePingMs = 0;
+        if (millis() - lastBlePingMs >= 3000) {
+            lastBlePingMs = millis();
+            int rssi = WiFi.RSSI();
+            int batPct = calculateBatteryPct();
+            int batMv = readBatteryMv();
+            String blePing = "PING:" + pinId + ":" + String(rssi) + ":" + String(batPct) + ":" + String(batMv);
+            pEventChar->setValue(blePing.c_str());
+            pEventChar->notify();
+        }
     }
 
     processArchiveUpload();
 
     // --- THERMAL & POWER MANAGEMENT ---
-    // In dual-core mode, audio sampling runs on Core 1. When not actively streaming,
-    // yield Core 0 to the FreeRTOS idle task (waiti) for 10ms to drop CPU load from 100% to ~2%
-    // and keep the ESP32 cool to the touch!
     if (!isStreaming && !isUploadingArchive) {
         delay(10);
     }
