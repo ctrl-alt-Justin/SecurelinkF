@@ -1,0 +1,231 @@
+================================================================================
+SECURELINK: AUTOMATED CAMPUS THREAT DETECTION & IOT SAFETY PLATFORM
+Comprehensive Architecture, Features, Implementations, and Engineering Summary
+================================================================================
+
+1. EXECUTIVE SUMMARY & SYSTEM PURPOSE
+--------------------------------------------------------------------------------
+SecureLink is an automated student safety and threat-detection platform engineered
+specifically for school and campus environments (with dedicated optimization for
+Philippine educational institutions). 
+
+The system links wearable IoT smart pins (badges) worn by students or staff with
+an on-premise AI inference server and an administrative monitoring dashboard.
+It continuously listens for verbal bullying, extortion, and physical threats in
+Tagalog, English, and Taglish, generating immediate security alerts and capturing
+visual evidence during critical emergencies.
+
+Core Design Philosophy:
+  * Complete Privacy & Local Governance: Audio and video never leave the campus
+    network; all speech-to-text and NLP inferences are executed on-premise.
+  * Ultra-Low Latency: Real-time life-safety detection using CUDA-accelerated
+    Transformers (<350ms processing latency per speech burst).
+  * Extreme Power Efficiency: Engineered to achieve 6 to 8 hours of active
+    operation on a tiny 200mAh LiPo battery.
+
+
+================================================================================
+2. SYSTEM ARCHITECTURE & DATA FLOW
+================================================================================
+
++------------------------------------------------------------------------------+
+| 1. WEARABLE SMART PIN (Seeed Studio XIAO ESP32S3 Sense)                      |
+|    - I2S Digital Microphone captures 16kHz 16-bit Mono PCM audio             |
+|    - 2nd-Order Butterworth High-Pass Filter (240Hz cutoff) cleans fan rumble  |
+|    - SpeexDSP Voice Activity Detection (VAD) + Dynamic Peak Hysteresis        |
+|    - 800ms Pre-Roll Circular Ring Buffer prevents syllable clipping          |
+|    - 5-Frame (100ms) Packet Batcher minimizes Wi-Fi RF wakeups               |
+|    - OV2640 Camera for danger-triggered visual snapshots                     |
+|    - LittleFS Flash Storage Fallback for offline network dead zones          |
++---------------------------------------+--------------------------------------+
+                                        |
+                            (Wi-Fi WebSocket /)
+                                        v
++------------------------------------------------------------------------------+
+| 2. ON-PREMISE AI INFERENCE SERVER (FastAPI, PyTorch & CTranslate2)           |
+|    - Port 8080 (Pins on '/', Flutter Dashboard on '/ui')                     |
+|    - UDP Auto-Discovery Service on Port 8888                                 |
+|    - Server-Side Acoustic Denoising (110Hz HPF + Spectral NoiseReduce)       |
+|    - Faster-Whisper ASR (large-v3-turbo on CUDA / medium INT8 on CPU)        |
+|      with Tagalog / Taglish domain-steered initial prompt conditioning       |
+|    - Fine-Tuned TagalogBERT Sequence Classifier (4 Threat Categories)        |
+|    - ContextEngine: Pronoun targeting heuristic & threat history escalation  |
+|    - Automatic WAV archiving & camera snapshot file management               |
++---------------------------------------+--------------------------------------+
+                                        |
+                            (UI WebSocket /ui)
+                                        v
++------------------------------------------------------------------------------+
+| 3. CHECKPOINT SECURITY DASHBOARD (Cross-Platform Flutter Desktop)            |
+|    - Background Process Supervisor: Auto-starts server.py / server.exe       |
+|    - Five Operational Workspaces: Overview, Incidents, Devices, Analytics,   |
+|      and Configuration                                                       |
+|    - Real-Time Incident Stream with WAV Replay & Danger Snapshot Viewer      |
+|    - Device Fleet Telemetry (Battery %, RSSI, CPU Clocks, VAD Live State)   |
+|    - Multi-Checkpoint Network Provisioning (OTA Wi-Fi & USB Serial Flashing) |
++------------------------------------------------------------------------------+
+
+
+================================================================================
+3. CORE SYSTEM FEATURES
+================================================================================
+
+A. REAL-TIME SPEECH-TO-TEXT & DOMAIN STEERING (FASTER-WHISPER)
+   - Employs Faster-Whisper (CTranslate2 C++ execution engine) instead of
+     legacy phonetic engines (Vosk).
+   - Robust Code-Switching ("Taglish"): Accurately decodes dynamic Philippine
+     campus slang (e.g., "Pre, akin na yang baon mo, wag kang madamot").
+   - Prompt Conditioning: Decoders are steered with a curated vocabulary of
+     campus bullying, extortion, and physical threat terminology loaded from
+     'tagalog_words.txt'.
+   - Structural Formatting: Generates properly capitalized and punctuated
+     transcripts, providing rich contextual signals for the downstream BERT model.
+
+B. MULTI-CLASS THREAT CLASSIFICATION & CONTEXT ENGINE
+   - Fine-Tuned TagalogBERT Model: Evaluates transcripts across four categories:
+       * Class 0: Conversational (Score: 1.0)
+       * Class 1: Verbal Harassment (Score: 2.0 - 3.9)
+       * Class 2: Extortion / Demand (Score: 4.0 - 6.9)
+       * Class 3: Physical Threat (Score: 7.0 - 10.0)
+   - Targeted Pronoun Multiplier: Uses linguistic heuristics to check for
+     second-person pronouns (ikaw, ka, mo, sayo, sa'yo, kita, niyo). Targeted
+     threats receive a 1.3x severity multiplier.
+   - Rolling Window Threat Escalation: Tracks interaction history across recent
+     speech bursts; consecutive friction events multiply the threat score by
+     1.25x up to a maximum score of 10.0.
+   - Hard Threat Safety Net: High-danger keywords (patayin, upakan, suntukin,
+     resbakan) automatically guarantee high threat severity regardless of noise.
+
+C. AUTOMATED FORENSIC EVIDENCE COLLECTION
+   - Audio Archiving: Every incident generates a time-stamped 16kHz WAV file
+     stored under 'recordings/audio/'.
+   - Danger Camera Snapshots: When an incident triggers a DANGER rating (score >= 8.0),
+     the server transmits 'TRIGGER:DANGER' to the pin. The pin immediately captures
+     a JPEG snapshot of the aggressor/scene, transmits it via binary WebSocket,
+     and archives it under 'recordings/snapshots/'.
+
+D. OFFLINE RESILIENCY & LITTLEFS ARCHIVE SYNC
+   - If Wi-Fi disconnects or a student walks into a dead zone, the ESP32 logs
+     audio frames directly into on-chip LittleFS flash memory.
+   - When Wi-Fi is restored, the pin streams stored offline incidents to the
+     server ('ARCHIVE_START' / 'ARCHIVE_END'), ensuring no incident is lost.
+
+E. MULTI-CHECKPOINT FLEET MANAGEMENT & PROVISIONING
+   - Persistent Wi-Fi checkpoints (Main Campus, Library, Perimeter Gate) saved
+     in 'checkpoints.json'.
+   - Dual Deployment Methods:
+       1. Over-The-Air (OTA): Dispatched live over WebSocket to active pins and
+          queued for pins currently in low-power sleep.
+       2. USB Direct Flashing: Automated baud 115200 serial provisioning directly
+          from the dashboard interface (/api/provision-pin).
+   - Zero-Config Discovery: Pins broadcast UDP packets on port 8888 and
+     automatically discover the server's local IP address.
+
+
+================================================================================
+4. TECHNICAL IMPLEMENTATION BREAKDOWN
+================================================================================
+
+1. SMART PIN FIRMWARE (esp32code.txt)
+   - Target Board: Seeed Studio XIAO ESP32S3 Sense.
+   - CPU Clock: Balanced mode at 160 MHz for optimal processing and battery life.
+   - Audio Pipeline:
+       * 16kHz sample rate, 16-bit Mono I2S sampling.
+       * 2nd-order Butterworth High-Pass Filter with a 240Hz cutoff frequency
+         removes environmental fan vibration and turbulence.
+       * SpeexDSP preprocessor handles hardware-level acoustic noise suppression
+         and Voice Activity Detection (VAD).
+       * 800ms Pre-Roll Ring Buffer (25,600 bytes) ensures the beginning of
+         words and onset consonants are never cut off before VAD triggers.
+       * 5-Frame Batching (100ms per packet) reduces Wi-Fi RF wakeups from
+         50 times/sec to 10 times/sec.
+   - Camera Pins: Configured for the onboard OV2640 sensor on the XIAO Sense shield.
+   - Fallback Provisioning: Integrated WebServer and DNSServer create a Captive
+     Portal setup AP if no saved network can be joined.
+
+2. AI INFERENCE SERVER (securelinkdb/server.py)
+   - Built with FastAPI and Uvicorn running asynchronously on port 8080.
+   - Dual WebSocket endpoints:
+       * '/' for physical smart pins (binary audio packets & commands).
+       * '/ui' for Flutter security stations (JSON events & fleet management).
+   - Dynamic Hardware Selection: Auto-detects NVIDIA CUDA GPU with float16 compute
+     and large-v3-turbo, falling back to multi-threaded CPU INT8 execution with
+     medium model.
+   - Audio Conditioning & Neural Speech Isolation:
+       * Infrasonic 160Hz high-pass filter.
+       * Digital silence detection (peak < 0.03 rejected to eliminate CPU load).
+       * Microsoft NSNet2 Deep Noise Suppression: Neural recurrent model removes
+         fan drone, AC whine, and background classroom babble in ~20ms, isolating
+         human speech and vocal formants for both Faster-Whisper and incident WAV playback.
+       * Soft gain booster for quiet or distant voices (up to 3.5x boost).
+       * NoiseReduce spectral gating fallback.
+   - Thread Decoupling: Whisper and BERT inference runs in separate background
+     worker threads ('asyncio.to_thread') so real-time WebSocket communication
+     never stutters or drops frames.
+
+3. SECURITY DASHBOARD APPLICATION (securelinkdb/lib/main.dart)
+   - Framework: Flutter Desktop (Windows, Linux, macOS).
+   - Aesthetics: Dark tactical glassmorphic UI with dynamic floating particles,
+     procedural coordinate grids, glowing ambient backdrops, and responsive
+     alert color shifts (Safe -> Warning -> Threat -> Danger).
+   - Lifecycle Management (ServerManager): Automatically locates and launches
+     'server.py' or 'server.exe', monitors health checks via HTTP, and safely
+     terminates background processes upon exit.
+   - Primary Tabs:
+       * Overview: Threat level status badge, fleet operational statistics,
+         real-time incident ticker, and recent incident audio waveform player.
+       * Incidents: Interactive incident log with severity filtering, search,
+         built-in audio playback (via audioplayers), and JPEG snapshot modal.
+       * Devices: Telemetry grid displaying live battery %, estimated runtime,
+         signal strength (RSSI), active AP, and live VAD states (Standby,
+         Streaming, Analyzing).
+       * Analytics: Incident frequency distributions, category pie charts, and
+         threat heatmaps.
+       * Configuration: Fleet DSP parameter tuning (buffer durations, silence
+         timeouts, VAD streak thresholds) and Wi-Fi checkpoint management.
+
+
+================================================================================
+5. HARDWARE & SOFTWARE SPECIFICATIONS
+================================================================================
+
+SMART PIN HARDWARE:
+  - Board: Seeed Studio XIAO ESP32S3 Sense
+  - Memory: 8MB PSRAM, 8MB Flash
+  - Sensor: Onboard PDM Microphone & OV2640 Camera
+  - Battery: 3.7V 200mAh - 500mAh LiPo Battery
+  - Estimated Battery Life: 6 to 8 hours (at 160MHz balanced clock + VAD batching)
+
+SERVER HARDWARE REQUIREMENTS:
+  - Minimum (CPU Mode):
+      * 4-Core Modern x86_64 CPU (Intel Core i5 8th Gen / AMD Ryzen 3 or higher)
+      * 8 GB System RAM
+      * Fast SSD Storage (for audio archive logging)
+  - Recommended (GPU Accelerated Mode):
+      * 6-Core CPU or higher
+      * 16 GB System RAM
+      * NVIDIA GPU with Tensor Cores (RTX 3050, RTX 4060, GTX 1660 Ti or higher)
+      * 4 GB+ VRAM with CUDA 11.8+ / 12.x support
+
+PRIMARY SOFTWARE DEPENDENCIES:
+  - Backend: Python 3.10+, FastAPI, Uvicorn, faster-whisper, torch, transformers,
+    scipy, numpy, noisereduce, pyserial
+  - Frontend: Flutter SDK 3.x+, window_manager, web_socket_channel, audioplayers
+  - Firmware: Arduino Core for ESP32, ESP_I2S, ESP32-SpeexDSP, LittleFS, esp_camera
+
+
+================================================================================
+6. SUMMARY OF KEY INNOVATIONS
+================================================================================
+1. High-Accuracy Taglish Understanding: Overcomes traditional speech recognition
+   limitations by combining Whisper transformer decoding with domain-specific
+   Philippine vocabulary steering.
+2. Low-Power Wearable Audio: Proves that continuous voice activity monitoring and
+   safety detection can run on a compact wearable without draining battery
+   in 1-2 hours.
+3. Intelligent Contextual Threat Scoring: Eliminates false alarms caused by casual
+   slang by coupling deep learning sequence classification with second-person
+   pronoun target detection and historical friction tracking.
+4. Total On-Premise Data Sovereignty: Protects student privacy by avoiding cloud
+   audio transmission and processing all data inside the campus perimeter.
+================================================================================

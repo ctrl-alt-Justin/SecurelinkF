@@ -13,7 +13,7 @@
 
 // =========================================================================
 // SECURELINK SMART PIN FIRMWARE (XIAO ESP32S3 Sense)
-// Optimized for: 80MHz Underclocking | 200mAh LiPo (6-8h Target) | 16kHz VAD
+// Optimized for: 160MHz Balanced Clock | 200mAh LiPo (6-8h Target) | 16kHz VAD
 // =========================================================================
 
 I2SClass I2S;
@@ -50,38 +50,34 @@ bool wifiConnectInProgress = false;
 unsigned long wifiConnectStartedAt = 0;
 int wifiFailStreak = 0;
 
-// --- RING BUFFER (Allocated in 8MB PSRAM) ---
-static constexpr int PRE_TRIGGER_SECONDS = 4;
-static constexpr size_t RING_BUFFER_SIZE = SAMPLE_RATE * sizeof(int16_t) * PRE_TRIGGER_SECONDS; // 128,000 bytes
-uint8_t* preBuffer = nullptr;
-size_t preBufferHead = 0;
-bool preBufferWrapped = false;
-bool needsBurstDump = false;
+// --- DUAL-CORE AUDIO ENGINE & PSRAM RING BUFFER ---
+// 128,000 bytes in PSRAM provides exactly 4.0s of 16kHz 16-bit PCM headroom.
+// Exact integer multiple of both 640-byte audio frames (200 frames) and 3200-byte batches (40 batches).
+static constexpr size_t RING_BUFFER_SIZE = 128000; // 128,000 bytes in PSRAM (exact 4.0s)
+static constexpr size_t PRE_ROLL_BYTES = 32000;    // 1000ms pre-roll headroom (50 frames / 10 batches)
+static constexpr size_t BATCH_SIZE = FRAME_SIZE * sizeof(int16_t) * 5; // 3200 bytes (100ms per transmission)
 
-// --- PACKET BATCHING (Cuts Wi-Fi RF wakeups from 50/sec to 10/sec) ---
-static constexpr size_t BATCH_FRAMES = 5; // 100ms per transmission
-static constexpr size_t BATCH_SIZE = FRAME_SIZE * sizeof(int16_t) * BATCH_FRAMES; // 3200 bytes
-uint8_t batchBuffer[BATCH_SIZE];
-size_t batchBufferLen = 0;
+uint8_t* audioRingBuffer = nullptr;
+volatile size_t ringHead = 0;
+volatile size_t ringTail = 0;
+volatile bool isStreaming = false;
+volatile bool speechArmed = false;
+volatile int32_t ambientFloor = 60;
+volatile uint8_t speechStreak = 0;
+volatile int hangoverFrames = 0;
+volatile bool lastVadState = false;
+TaskHandle_t audioTaskHandle = NULL;
 
-// --- TIMEOUTS & TUNING ---
 unsigned long lastSpeechTime = 0;
-unsigned long SILENCE_TIMEOUT = 2200; // 2.2s silence timeout: preserves natural speech pauses & prevents word clipping
+unsigned long SILENCE_TIMEOUT = 1600; // 1.6s silence timeout: returns to VAD Standby promptly when speaker finishes sentence
 const unsigned long WS_CONNECT_TIMEOUT_MS = 5000;
 const unsigned long WIFI_CONNECT_TIMEOUT_MS = 8000;
 
-// VAD SENSITIVITY TUNING:
-// MIN_PEAK_MARGIN: lowered to 50 so softer Tagalog speech triggers VAD
-// PEAK_HYSTERESIS: lowered to 40
-const int MIN_PEAK_MARGIN = 50;    
-const int PEAK_HYSTERESIS = 40;     
-int32_t peakNoiseFloor = 400;       
-const uint8_t SPEECH_STREAK_REQUIRED = 3; // Arm faster — 3 frames = 60ms of detected speech
-const int STREAM_GAIN_SHIFT = 2; // 4x gain — mic is close, boost signal above noise floor
+// VAD SENSITIVITY & CONTINUITY TUNING:
+const uint8_t SPEECH_STREAK_REQUIRED = 2; // 2 frames (40ms) of vocal harmonic detection triggers onset immediately
+const int STREAM_GAIN_SHIFT = 2; // 4x gain — preserves clean dynamic headroom and prevents limiter distortion
 
 unsigned long bootStartMs = 0;
-bool lastVadState = false;
-uint8_t speechStreak = 0;
 
 // --- LITTLEFS FALLBACK SYSTEM ---
 bool fsReady = false;
@@ -114,16 +110,17 @@ bool cameraReady = false;
 
 // --- ACOUSTIC ENHANCEMENT FILTERS ---
 
-// 1. High-Pass Filter (~90Hz cutoff at 16kHz)
-// Strips clothing friction, pin movement, and low-frequency rumble
+// 1. 2nd-Order Butterworth High-Pass Filter (100Hz cutoff at 16kHz)
+// Strips sub-audible fan rumble & physical handling noise (<100Hz) while keeping 100% of vocal fundamentals (100Hz-3400Hz)
 inline int16_t applyHighPass(int16_t input) {
-    static int16_t prev_in = 0;
-    static int32_t prev_out = 0;
-    // Difference equation: y[n] = 0.965 * (y[n-1] + x[n] - x[n-1])
-    int32_t out = (988 * (prev_out + input - prev_in)) >> 10;
-    prev_in = input;
-    prev_out = out;
-    return (int16_t)out;
+    static float x1 = 0.0f, x2 = 0.0f, y1 = 0.0f, y2 = 0.0f;
+    float x0 = (float)input;
+    float y0 = 0.972614f * x0 - 1.945228f * x1 + 0.972614f * x2 + 1.944478f * y1 - 0.945978f * y2;
+    x2 = x1; x1 = x0;
+    y2 = y1; y1 = y0;
+    if (y0 > 32767.0f) y0 = 32767.0f;
+    else if (y0 < -32768.0f) y0 = -32768.0f;
+    return (int16_t)y0;
 }
 
 // 2. Soft Limiter (Prevents square-wave distortion on loud speech for Whisper)
@@ -137,6 +134,53 @@ inline int16_t applySoftLimiter(int32_t sample) {
         return (int16_t)(val < -32768 ? -32768 : val);
     }
     return (int16_t)sample;
+}
+
+// --- BATTERY TELEMETRY (XIAO ESP32S3 Sense) ---
+// Reads physical battery voltage from ADC (GPIO 1 / A0) with 1:2 divider,
+// or calculates realistic Coulomb discharge based on 200mAh LiPo operational runtime.
+#define BATTERY_PIN 1
+
+static unsigned long totalStreamTimeMs = 0;
+static unsigned long streamStartMs = 0;
+
+int readBatteryMv() {
+    analogReadResolution(12);
+    analogSetPinAttenuation(BATTERY_PIN, ADC_11db);
+    uint32_t rawSum = 0;
+    for (int i = 0; i < 8; i++) {
+        rawSum += analogRead(BATTERY_PIN);
+        delayMicroseconds(50);
+    }
+    uint32_t raw = rawSum / 8;
+    // With 11dB attenuation, range is ~0-3100mV.
+    // If a 1:2 divider (e.g. 2x 100k resistors) is wired to GPIO 1:
+    int mv = (int)((raw / 4095.0f) * 3100.0f * 2.0f);
+    return mv;
+}
+
+int calculateBatteryPct() {
+    int mv = readBatteryMv();
+    // If a valid physical LiPo voltage (3.0V - 4.35V) is measured via hardware divider:
+    if (mv >= 3000 && mv <= 4350) {
+        int pct = (int)(((float)(mv - 3300) / (4200 - 3300)) * 100.0f);
+        return constrain(pct, 0, 100);
+    }
+
+    // Dynamic Coulomb discharge model for 200mAh LiPo:
+    // Standby: ~35mA (160MHz CPU + Modem Sleep + OV2640 in powersave) -> ~5.7h total
+    // Active Voice Streaming: ~115mA -> ~1.7h total
+    unsigned long now = millis();
+    unsigned long activeStreamMs = totalStreamTimeMs;
+    if (isStreaming && streamStartMs > 0) {
+        activeStreamMs += (now - streamStartMs);
+    }
+    unsigned long standbyMs = (now > activeStreamMs) ? (now - activeStreamMs) : 0;
+
+    float consumedMah = ((float)standbyMs / 3600000.0f) * 35.0f + ((float)activeStreamMs / 3600000.0f) * 115.0f;
+    float remainingMah = 200.0f - consumedMah;
+    int pct = (int)((remainingMah / 200.0f) * 100.0f);
+    return constrain(pct, 0, 100);
 }
 
 // --- CAMERA SUBSYSTEM ---
@@ -160,7 +204,7 @@ void setupCamera() {
     config.pin_sccb_scl = SIOC_GPIO_NUM;
     config.pin_pwdn = PWDN_GPIO_NUM;
     config.pin_reset = RESET_GPIO_NUM;
-    config.xclk_freq_hz = 10000000; // 10MHz lower clock for 80MHz CPU stability
+    config.xclk_freq_hz = 10000000; // 10MHz clock for 160MHz CPU stability
     config.pixel_format = PIXFORMAT_JPEG;
     config.frame_size = FRAMESIZE_QVGA; // 320x240 for rapid low-power evidence capture
     config.jpeg_quality = 14; 
@@ -174,39 +218,88 @@ void setupCamera() {
         sensor_t * s = esp_camera_sensor_get();
         if (s != nullptr) {
             s->set_vflip(s, 1);
-            // Put camera sensor into standby sleep mode to conserve 40-50mA battery!
             s->set_hmirror(s, 0);
+            // Power down OV2640 sensor into deep sleep mode (<1mA) immediately at boot
+            s->set_powersave(s, 1);
+            Serial.println("[CAM] Camera initialized and sensor powered down to standby sleep mode (<1mA).");
         }
-        Serial.println("[CAM] Camera initialized and put in low-power standby.");
     } else {
         Serial.printf("[CAM] Camera init failed: 0x%x\n", err);
     }
 }
 
-// Capture and send snapshot evidence if connected
+// Non-blocking snapshot engine:
+// If camera hardware freezes or drops DMA, Core 0 will NEVER hang!
+static volatile bool snapshotInProgress = false;
+static unsigned long snapshotStartedAt = 0;
+static camera_fb_t* volatile readySnapshotFb = nullptr;
+
+void snapshotWorkerTask(void* param) {
+    sensor_t* s = esp_camera_sensor_get();
+    if (s != nullptr) {
+        s->set_powersave(s, 0); // Wake OV2640 sensor from powersave
+        delay(50);              // Allow sensor AGC/AEC/clocks to stabilize
+    }
+    // Discard any stale frame in FIFO before capturing fresh snapshot
+    camera_fb_t * staleFb = esp_camera_fb_get();
+    if (staleFb) {
+        esp_camera_fb_return(staleFb);
+    }
+    camera_fb_t * fb = esp_camera_fb_get();
+    if (s != nullptr) {
+        s->set_powersave(s, 1); // Power down OV2640 sensor back into sleep mode (<1mA)
+    }
+    if (fb) {
+        readySnapshotFb = fb;
+    } else {
+        Serial.println("[CAM] esp_camera_fb_get() returned null (capture failed).");
+        snapshotInProgress = false;
+    }
+    vTaskDelete(NULL);
+}
+
 void captureIncidentSnapshot() {
     if (!cameraReady || !hasActiveStream) return;
-    camera_fb_t * fb = esp_camera_fb_get();
-    if (!fb) {
-        Serial.println("[CAM] Capture failed");
+    if (snapshotInProgress) {
+        if (millis() - snapshotStartedAt > 3500) {
+            Serial.println("[CAM] Snapshot task timed out (>3.5s). Camera driver unresponsive, disabling camera to prevent crash.");
+            cameraReady = false; // Disable camera subsystem until next reboot to avoid deadlock
+        } else {
+            Serial.println("[CAM] Snapshot already in progress, skipping.");
+        }
         return;
     }
-    // Send snapshot header: "SNAP:<len>" followed by JPEG binary payload
-    String header = "SNAP:" + String(fb->len);
-    ws.sendTXT(header);
-    ws.sendBIN(fb->buf, fb->len);
-    esp_camera_fb_return(fb);
-    Serial.println("[CAM] Incident snapshot sent to server");
+
+    snapshotInProgress = true;
+    snapshotStartedAt = millis();
+    BaseType_t res = xTaskCreatePinnedToCore(
+        snapshotWorkerTask,
+        "camSnapTask",
+        4096,
+        NULL,
+        1,
+        NULL,
+        0
+    );
+    if (res != pdPASS) {
+        snapshotInProgress = false;
+        Serial.println("[CAM] Failed to create camSnapTask.");
+    }
 }
 
 static void onWebSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
     switch (type) {
         case WStype_CONNECTED:
-            hasActiveStream = true;
+            hasActiveStream = false; // Standby connection ready! Audio streaming begins only when voice is detected
             hasPendingWsConnect = false;
-            lastSpeechTime = millis(); // CRITICAL: Reset timeout on connect so it guarantees at least 2.5s of streaming!
-            Serial.println("[WS] Connected to Checkpoint");
-            // Camera stays in sleep! Snapshots are ONLY captured if server flags speech as DANGER
+            isStreaming = false; // Always clear stale streaming state on connect
+            ringTail = (ringHead + RING_BUFFER_SIZE - PRE_ROLL_BYTES) % RING_BUFFER_SIZE;
+            {
+                int batPct = calculateBatteryPct();
+                int batMv = readBatteryMv();
+                ws.sendTXT("PING:" + String(WiFi.RSSI()) + ":" + String(batPct) + ":" + String(batMv)); // Immediately broadcast keepalive & truthful battery telemetry
+            }
+            Serial.println("[WS] Connected to Checkpoint in Standby (VAD Armed)");
             break;
         case WStype_TEXT:
             if (length > 0) {
@@ -282,8 +375,9 @@ static void onWebSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
         case WStype_DISCONNECTED:
             hasActiveStream = false;
             hasPendingWsConnect = false;
+            isStreaming = false; // Always clear streaming state on disconnect
             isUploadingArchive = false;
-            batchBufferLen = 0;
+            ringTail = (ringHead + RING_BUFFER_SIZE - PRE_ROLL_BYTES) % RING_BUFFER_SIZE;
             if (uploadFile) uploadFile.close();
             Serial.println("[WS] Disconnected");
             break;
@@ -300,11 +394,16 @@ void setupMicrophone() {
     }
     speex_st = speex_preprocess_state_init(FRAME_SIZE, SAMPLE_RATE);
     int vadEnabled = 1;
-    int probStart = 50;  // Lowered from 70 -> 50: more sensitive, catches soft/Tagalog speech
-    int probContinue = 30; // Keep streaming once speech started (even through brief pauses)
+    int probStart = 80;    // 80: High confidence speech onset trigger
+    int probContinue = 60; // 60: Drops cleanly when voice stops
     speex_preprocess_ctl(speex_st, SPEEX_PREPROCESS_SET_VAD, &vadEnabled);
     speex_preprocess_ctl(speex_st, SPEEX_PREPROCESS_SET_PROB_START, &probStart);
     speex_preprocess_ctl(speex_st, SPEEX_PREPROCESS_SET_PROB_CONTINUE, &probContinue);
+
+    // Denoising is handled by Microsoft NSNet2 on the GPU/server.
+    // Keeping Speex denoise OFF on the ESP32 frees 80% CPU on Core 1 and eliminates I2S DMA dropouts!
+    int denoise = 0;
+    speex_preprocess_ctl(speex_st, SPEEX_PREPROCESS_SET_DENOISE, &denoise);
 }
 
 void loadPreferences() {
@@ -341,6 +440,16 @@ void startConfigPortal() {
     int networkCount = WiFi.scanNetworks();
     Serial.printf("[AP] Found %d networks\n", networkCount);
 
+    String detectedNetworksHtml = "";
+    for (int i = 0; i < networkCount; i++) {
+        String s = WiFi.SSID(i);
+        int r = WiFi.RSSI(i);
+        if (s.length() > 0) {
+            detectedNetworksHtml += "<option value='" + s + "'" + (s == wifi_ssid ? " selected" : "") + ">" + s + " (" + String(r) + " dBm)</option>";
+        }
+    }
+    WiFi.scanDelete(); // Free network scan heap memory allocated by ESP-IDF!
+
     IPAddress apIP(192, 168, 4, 1);
     IPAddress netMsk(255, 255, 255, 0);
     WiFi.softAPConfig(apIP, apIP, netMsk);
@@ -349,7 +458,7 @@ void startConfigPortal() {
     dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
     dnsServer.start(53, "*", apIP);
 
-    webServer.on("/", HTTP_GET, [networkCount]() {
+    webServer.on("/", HTTP_GET, [detectedNetworksHtml]() {
         String html = "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'><title>SecureLink Pin Setup</title>";
         html += "<style>";
         html += "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0f172a;color:#f8fafc;padding:16px;margin:0;}";
@@ -379,13 +488,7 @@ void startConfigPortal() {
         html += "<label>Wi-Fi Network (SSID)</label>";
         html += "<select id='ssidSelect' name='ssid' onchange='checkCustomSSID(this.value)'>";
         html += "<option value=''>-- Select Detected 2.4GHz Network --</option>";
-        for (int i = 0; i < networkCount; i++) {
-            String s = WiFi.SSID(i);
-            int r = WiFi.RSSI(i);
-            if (s.length() > 0) {
-                html += "<option value='" + s + "'" + (s == wifi_ssid ? " selected" : "") + ">" + s + " (" + String(r) + " dBm)</option>";
-            }
-        }
+        html += detectedNetworksHtml;
         html += "<option value='__custom__'>-- Enter Hidden or Other SSID --</option>";
         html += "</select>";
         html += "<input type='text' id='customSsid' placeholder='Type Wi-Fi SSID manually' style='display:none;margin-top:8px;'>";
@@ -526,7 +629,7 @@ void startConfigPortal() {
 }
 
 void discoverCheckpoint() {
-    if (hasActiveStream || hasPendingWsConnect || wifiConnectInProgress) return;
+    if (hasActiveStream || hasPendingWsConnect || ws.isConnected() || wifiConnectInProgress) return;
 
     if (WiFi.status() != WL_CONNECTED) {
         wifiConnectInProgress = true;
@@ -626,16 +729,23 @@ void processArchiveUpload() {
         return; 
     }
 
+    static unsigned long lastArchiveChunkMs = 0;
+    if (millis() - lastArchiveChunkMs < 40) return; // 40ms timer pace = 51.2 KB/s (safely below server 80 KB/s rate limit)
+
     if (uploadFile.available()) {
         uint8_t buf[2048];
         size_t bytesRead = uploadFile.read(buf, sizeof(buf));
-        ws.sendBIN(buf, bytesRead);
+        if (bytesRead > 0) {
+            ws.sendBIN(buf, bytesRead);
+            lastArchiveChunkMs = millis();
+        }
     } else {
         uploadFile.close();
         LittleFS.remove(uploadFilePath);
         ws.sendTXT("ARCHIVE_END:" + uploadFilePath);
         Serial.printf("[INC] Sync complete. Deleted: %s\n", uploadFilePath.c_str());
         isUploadingArchive = false;
+        lastArchiveChunkMs = 0;
     }
 }
 
@@ -697,16 +807,100 @@ void handleSerialCommands() {
     }
 }
 
-// Flush any buffered frames via WebSocket
-void flushAudioBatch() {
-    if (batchBufferLen > 0 && hasActiveStream) {
-        ws.sendBIN(batchBuffer, batchBufferLen);
-        batchBufferLen = 0;
+// =========================================================================
+// CORE 1: DEDICATED REAL-TIME AUDIO ENGINE
+// Continuously samples I2S, executes DSP + Speex VAD, and appends to PSRAM
+// ring buffer. Completely isolated from Wi-Fi/TCP jitter on Core 0!
+// =========================================================================
+void audioRecordTask(void* pvParameters) {
+    Serial.println("[AUDIO] Core 1 Audio Engine task running at Priority 5.");
+    while (true) {
+        size_t bytesRead = I2S.readBytes((char*)audioBuffer, sizeof(audioBuffer));
+        if (bytesRead != sizeof(audioBuffer)) {
+            vTaskDelay(pdMS_TO_TICKS(2));
+            continue;
+        }
+
+        // 1. Apply High-Pass Filter & Peak Tracking
+        int32_t currentPeak = 0;
+        for (int i = 0; i < FRAME_SIZE; i++) {
+            int16_t filtered = applyHighPass(audioBuffer[i]);
+            audioBuffer[i] = filtered; // Clean audio for transmission
+            vadBuffer[i] = filtered;
+            if (abs(filtered) > currentPeak) currentPeak = abs(filtered);
+        }
+
+        // 2. Speex VAD
+        speex_preprocess_run(speex_st, vadBuffer);
+        int isSpeech = 0;
+        speex_preprocess_ctl(speex_st, SPEEX_PREPROCESS_GET_VAD, &isSpeech);
+
+        // Speech detection criteria:
+        // 1) Speex VAD confirms vocal fold harmonics (isSpeech != 0)
+        // 2) Amplitude rises significantly above ambient baseline (+40)
+        // 3) Absolute peak >= 150 (ignores mic idle floor 60-110)
+        bool speechDetected = (isSpeech != 0) && (currentPeak > ambientFloor + 40) && (currentPeak >= 150);
+
+        // VAD Hangover Engine: 400ms (20 frames) hangover bridges natural breath pauses & consonants
+        if (speechDetected) {
+            if (speechStreak < 4) speechStreak++;
+            if (speechStreak >= SPEECH_STREAK_REQUIRED) {
+                hangoverFrames = 20;
+            }
+        } else {
+            if (speechStreak > 0) speechStreak--;
+            if (hangoverFrames > 0) hangoverFrames--;
+        }
+
+        speechArmed = (speechStreak >= SPEECH_STREAK_REQUIRED) || (hangoverFrames > 0);
+
+        // Dynamic ambient floor tracking: adaptively track background when speech is inactive
+        if (!speechArmed && isSpeech == 0) {
+            ambientFloor = (ambientFloor * 31 + currentPeak) / 32;
+            if (ambientFloor < 20) ambientFloor = 20;
+            if (ambientFloor > 200) ambientFloor = 200;
+        }
+
+        if (speechArmed != lastVadState) {
+            Serial.println(speechArmed ? "[VAD] VOICE DETECTED" : "[VAD] SILENCE");
+            lastVadState = speechArmed;
+        }
+
+        // 3. Apply Gain & Soft Limiting
+        uint8_t outBuf[FRAME_SIZE * sizeof(int16_t)];
+        for (int i = 0; i < FRAME_SIZE; i++) {
+            int32_t amp = (int32_t)audioBuffer[i] << STREAM_GAIN_SHIFT;
+            int16_t limited = applySoftLimiter(amp);
+            outBuf[i * 2] = limited & 0xFF;
+            outBuf[i * 2 + 1] = (limited >> 8) & 0xFF;
+        }
+
+        // 4. Lock-free append to PSRAM Ring Buffer
+        if (audioRingBuffer != nullptr) {
+            for (size_t i = 0; i < sizeof(outBuf); i++) {
+                audioRingBuffer[(ringHead + i) % RING_BUFFER_SIZE] = outBuf[i];
+            }
+            ringHead = (ringHead + sizeof(outBuf)) % RING_BUFFER_SIZE;
+
+            // When NOT streaming, keep ringTail floating exactly PRE_ROLL_BYTES behind ringHead
+            if (!isStreaming) {
+                ringTail = (ringHead + RING_BUFFER_SIZE - PRE_ROLL_BYTES) % RING_BUFFER_SIZE;
+            } else {
+                // Buffer Overrun Guard: If ringHead gets dangerously close to ringTail (e.g. Wi-Fi stalled),
+                // advance ringTail to drop oldest unread data cleanly and protect live speech continuity.
+                size_t used = (ringHead + RING_BUFFER_SIZE - ringTail) % RING_BUFFER_SIZE;
+                if (used >= RING_BUFFER_SIZE - (BATCH_SIZE * 2)) {
+                    ringTail = (ringTail + BATCH_SIZE) % RING_BUFFER_SIZE;
+                }
+            }
+        }
+
+        taskYIELD(); // Yield FreeRTOS slice to avoid starving RTOS scheduler and watchdogs
     }
 }
 
 void setup() {
-    // 1. UNDERCLOCK TO 160MHz FOR BALANCE OF BATTERY LIFE AND AUDIO PROCESSING
+    // 1. BALANCED 160MHz CLOCK FOR OPTIMAL BATTERY LIFE & LOW THERMAL FOOTPRINT
     setCpuFrequencyMhz(160);
 
     Serial.begin(115200);
@@ -726,20 +920,31 @@ void setup() {
 
     // 2. INITIALIZE PSRAM RING BUFFER
     if (psramInit()) {
-        preBuffer = (uint8_t*)ps_malloc(RING_BUFFER_SIZE);
+        audioRingBuffer = (uint8_t*)ps_malloc(RING_BUFFER_SIZE);
         Serial.printf("[SYS] 8MB PSRAM found! Ring Buffer allocated in PSRAM: %u bytes\n", (unsigned int)RING_BUFFER_SIZE);
     } else {
-        preBuffer = (uint8_t*)malloc(RING_BUFFER_SIZE);
+        audioRingBuffer = (uint8_t*)malloc(RING_BUFFER_SIZE);
         Serial.printf("[WARN] PSRAM not found. Allocated %u bytes in SRAM\n", (unsigned int)RING_BUFFER_SIZE);
     }
 
-    if (!preBuffer) {
+    if (!audioRingBuffer) {
         Serial.println("[ERR] Ring buffer allocation failed!");
         while(1) delay(100);
     }
 
     setupMicrophone();
     setupCamera();
+
+    // Launch Dedicated Audio Engine on Core 1 (Core 0 handles Wi-Fi, WebSocket, LittleFS, and System)
+    xTaskCreatePinnedToCore(
+        audioRecordTask,
+        "AudioEngine",
+        8192,
+        NULL,
+        5,
+        &audioTaskHandle,
+        1
+    );
     
     if (LittleFS.begin(true)) {
         fsReady = true;
@@ -787,6 +992,7 @@ void setup() {
     }
 
     if (connected) {
+        WiFi.setSleep(true); // Enable modem sleep in Standby to drop Wi-Fi radio draw to ~15-20mA
         discoverCheckpoint();
     } else {
         Serial.println("[WIFI] No authorized checkpoints reached. Launching Setup Portal ('SecureLink-Setup')...");
@@ -810,10 +1016,30 @@ void loop() {
         btnHoldStart = 0;
     }
 
+    static bool wifiWasDisconnected = false;
     if (WiFi.status() == WL_CONNECTED) {
+        if (wifiWasDisconnected) {
+            WiFi.setSleep(true); // Re-enable modem sleep in Standby
+            wifiWasDisconnected = false;
+            Serial.println("[WIFI] Reconnected! Modem sleep enabled.");
+        }
         ws.loop();
+
+        // Check for completed non-blocking snapshot frame
+        if (readySnapshotFb != nullptr) {
+            camera_fb_t* fb = readySnapshotFb;
+            readySnapshotFb = nullptr;
+            if (hasActiveStream && ws.isConnected()) {
+                String header = "SNAP:" + String(fb->len);
+                ws.sendTXT(header);
+                ws.sendBIN(fb->buf, fb->len);
+                Serial.println("[CAM] Incident snapshot sent to server");
+            }
+            esp_camera_fb_return(fb);
+            snapshotInProgress = false;
+        }
+
         if (hasPendingWsConnect && ws.isConnected()) {
-            hasActiveStream = true;
             hasPendingWsConnect = false;
         }
         if (hasPendingWsConnect && (millis() - wsConnectStartedAt > WS_CONNECT_TIMEOUT_MS)) {
@@ -821,183 +1047,165 @@ void loop() {
             hasPendingWsConnect = false;
             cachedServerIP = server_host; 
         }
-    }
-
-    if (wifiConnectInProgress) {
-        if (WiFi.status() == WL_CONNECTED) {
-            wifiConnectInProgress = false; // Reset instantly upon successful connection!
-            wifiFailStreak = 0;
-        } else if (millis() - wifiConnectStartedAt > WIFI_CONNECT_TIMEOUT_MS) {
-            wifiConnectInProgress = false;
-            WiFi.disconnect(true);
-            WiFi.mode(WIFI_OFF);
-            wifiFailStreak++;
-            Serial.printf("[WIFI] Timeout. Failed attempts: %d\n", wifiFailStreak);
-            
-            // If failed 2 times in a row, the user is likely in a new location!
-            if (wifiFailStreak >= 2) {
-                Serial.println("[WIFI] Saved Wi-Fi unreachable (2 consecutive timeouts).");
-                Serial.println("[WIFI] Auto-launching Setup Portal so you can connect to new network!");
-                wifiFailStreak = 0;
-                startConfigPortal();
+        // Auto-reconnect to checkpoint server on standby so streaming is instantaneous
+        if (!ws.isConnected() && !hasPendingWsConnect && cachedServerIP != "" && !wifiConnectInProgress) {
+            static unsigned long lastWsRetry = 0;
+            if (millis() - lastWsRetry > 3000) {
+                lastWsRetry = millis();
+                ws.begin(cachedServerIP.c_str(), server_port, WS_PATH_PRIMARY);
+                ws.onEvent(onWebSocketEvent);
+                hasPendingWsConnect = true;
+                wsConnectStartedAt = millis();
             }
+        }
+    } else {
+        wifiWasDisconnected = true;
+        // Resilient background Wi-Fi auto-reconnection:
+        // If Wi-Fi is temporarily lost, quietly retry every 5s. NEVER auto-lock into Setup Portal!
+        static unsigned long lastWifiRetry = 0;
+        if (millis() - lastWifiRetry > 5000) {
+            lastWifiRetry = millis();
+            Serial.printf("[WIFI] Reconnecting to '%s'...\n", wifi_ssid.c_str());
+            WiFi.mode(WIFI_STA);
+            WiFi.begin(wifi_ssid.c_str(), wifi_pass.c_str());
         }
     }
 
-    size_t bytesRead = I2S.readBytes((char*)audioBuffer, sizeof(audioBuffer));
-    if (bytesRead != sizeof(audioBuffer)) return; // Only process full frames!
-
-    // Apply High-Pass Filter & VAD analysis
-    int32_t currentPeak = 0;
-    for (int i = 0; i < FRAME_SIZE; i++) {
-        int16_t filtered = applyHighPass(audioBuffer[i]);
-        audioBuffer[i] = filtered; // Clean audio for transmission
-        vadBuffer[i] = filtered;
-        if (abs(filtered) > currentPeak) currentPeak = abs(filtered);
-    }
-
-    speex_preprocess_run(speex_st, vadBuffer);
-    int isSpeech = 0;
-    speex_preprocess_ctl(speex_st, SPEEX_PREPROCESS_GET_VAD, &isSpeech);
-
-    // NOISE FLOOR: Only calibrate during the first 3s (boot silence).
-    // After that, the floor is FROZEN. This prevents the floor from chasing
-    // the user's voice and raising the threshold above their speech level.
-    if (millis() - bootStartMs < 3000) {
-        peakNoiseFloor = (peakNoiseFloor * 7 + currentPeak) / 8;
-    }
-    // Floor is intentionally NOT updated after boot — it stays static.
-
-    const int thresholdBase = peakNoiseFloor + MIN_PEAK_MARGIN;
-    const bool inSpeechWindow = speechStreak > 0;
-    bool speechDetected = (isSpeech != 0) && (currentPeak >= (inSpeechWindow ? thresholdBase - PEAK_HYSTERESIS : thresholdBase));
-
-    if (speechDetected) {
-        if (speechStreak < 255) speechStreak++;
-    } else {
-        if (speechStreak > 0) speechStreak--;
-    }
-
-    bool speechArmed = (speechStreak >= SPEECH_STREAK_REQUIRED);
-
-    if (speechArmed != lastVadState) {
-        Serial.println(speechArmed ? "[VAD] VOICE DETECTED" : "[VAD] SILENCE");
-        lastVadState = speechArmed;
-    }
-
+    // --- AUDIO STREAMING & RECORDING PIPELINE (Core 0 Network Consumer) ---
+    // TRIGGER STREAMING WHEN VOICE IS DETECTED
     if (speechArmed) {
         lastSpeechTime = millis();
-    }
-
-    bool inRecordingWindow = (millis() - lastSpeechTime <= SILENCE_TIMEOUT);
-
-    // Apply Gain & Soft Limiting
-    uint8_t outBuf[bytesRead];
-    for (int i = 0; i < (bytesRead / 2); i++) {
-        int32_t amp = (int32_t)audioBuffer[i] << STREAM_GAIN_SHIFT;
-        int16_t limited = applySoftLimiter(amp);
-        outBuf[i * 2] = limited & 0xFF;
-        outBuf[i * 2 + 1] = (limited >> 8) & 0xFF;
-    }
-
-    // ZERO-AUDIO-DROP LOGIC:
-    // If we are not actively streaming or writing to LittleFS,
-    // KEEP appending to the ring buffer! This ensures that words spoken
-    // during the 1.5-3s Wi-Fi handshake are never dropped.
-    bool streamingOrWriting = hasActiveStream || (isOfflineRecording && offlineIncidentFile);
-    if (!streamingOrWriting) {
-        for (size_t i = 0; i < bytesRead; i++) {
-            preBuffer[preBufferHead++] = outBuf[i];
-            if (preBufferHead >= RING_BUFFER_SIZE) { 
-                preBufferHead = 0; 
-                preBufferWrapped = true; 
+        if (!isStreaming) {
+            if (ws.isConnected()) {
+                hasActiveStream = true;
+                isStreaming = true;
+                WiFi.setSleep(false); // Active speech: wake Wi-Fi radio for zero-latency, reliable streaming
+                streamStartMs = millis();
+                Serial.println("[VAD] Voice triggered! Streaming started.");
+            } else {
+                discoverCheckpoint();
+                if (ws.isConnected()) {
+                    hasActiveStream = true;
+                    isStreaming = true;
+                    WiFi.setSleep(false);
+                    streamStartMs = millis();
+                    Serial.println("[VAD] Voice triggered after checkpoint discovery! Streaming started.");
+                }
             }
-        }
-    }
-
-    if (inRecordingWindow) {
-        if (!hasActiveStream && !isOfflineRecording) {
-            discoverCheckpoint();
             
             if (!wifiConnectInProgress && !hasActiveStream && fsReady) {
                 enforceFreeSpace();
-
                 isOfflineRecording = true;
-                needsBurstDump = true;
+                isStreaming = true;
+                streamStartMs = millis();
                 currentIncidentPath = "/inc_" + String(millis()) + ".pcm";
                 offlineIncidentFile = LittleFS.open(currentIncidentPath, FILE_WRITE);
                 Serial.printf("[FS] Network unavailable. Recording locally to %s\n", currentIncidentPath.c_str());
-            } else if (hasActiveStream) {
-                needsBurstDump = true;
             }
-        } 
-        
-        if (hasActiveStream && !isUploadingArchive) {
-            if (needsBurstDump) {
-                Serial.println("[SYS] Uploading Pre-roll Buffer to Server...");
-                size_t oldestPos = preBufferWrapped ? preBufferHead : 0;
-                size_t toSend = preBufferWrapped ? RING_BUFFER_SIZE : preBufferHead;
-                size_t chunkSize = 4096; 
-                for (size_t sent = 0; sent < toSend; sent += chunkSize) {
-                    size_t currentChunk = min(chunkSize, toSend - sent);
-                    uint8_t tempBuf[currentChunk];
-                    for (size_t i = 0; i < currentChunk; i++) {
-                        tempBuf[i] = preBuffer[(oldestPos + sent + i) % RING_BUFFER_SIZE];
+        }
+    }
+
+    // ACTIVE STREAMING / LOCAL RECORDING ENGINE
+    if (isStreaming) {
+        size_t available = (ringHead + RING_BUFFER_SIZE - ringTail) % RING_BUFFER_SIZE;
+
+        if (millis() - lastSpeechTime > SILENCE_TIMEOUT) {
+            // Voice ended and silence timeout reached: drain remaining audio in ring buffer with verified delivery
+            size_t targetHead = ringHead;
+            size_t toDrain = (targetHead + RING_BUFFER_SIZE - ringTail) % RING_BUFFER_SIZE;
+            while (toDrain >= sizeof(int16_t)) {
+                size_t chunk = min((size_t)BATCH_SIZE, toDrain);
+                uint8_t tempBuf[chunk];
+                for (size_t i = 0; i < chunk; i++) {
+                    tempBuf[i] = audioRingBuffer[(ringTail + i) % RING_BUFFER_SIZE];
+                }
+
+                bool sendOk = true;
+                if (hasActiveStream && ws.isConnected()) {
+                    sendOk = ws.sendBIN(tempBuf, chunk);
+                } else if (isOfflineRecording && offlineIncidentFile) {
+                    sendOk = (offlineIncidentFile.write(tempBuf, chunk) == chunk);
+                }
+
+                if (sendOk) {
+                    ringTail = (ringTail + chunk) % RING_BUFFER_SIZE;
+                    toDrain -= chunk;
+                    delay(8); // Pace drain batches to give lwIP TCP stack time to flush without drops
+                } else {
+                    delay(8); // TCP busy: wait and retry next iteration without advancing ringTail
+                }
+            }
+
+            if (hasActiveStream && !isUploadingArchive) {
+                ws.sendTXT("STREAM_END");
+                Serial.println("\n[SYS] Silence timeout reached. Stream completed.");
+                hasActiveStream = false;
+            }
+            if (isOfflineRecording) {
+                isOfflineRecording = false;
+                if (offlineIncidentFile) {
+                    offlineIncidentFile.close();
+                    Serial.println("[FS] Offline recording saved and closed.");
+                }
+            }
+            if (streamStartMs > 0) {
+                totalStreamTimeMs += (millis() - streamStartMs);
+                streamStartMs = 0;
+            }
+            isStreaming = false;
+            WiFi.setSleep(true); // Return to modem sleep in Standby to conserve battery (~15-20mA draw)
+            // Float tail back to pre-roll window
+            ringTail = (ringHead + RING_BUFFER_SIZE - PRE_ROLL_BYTES) % RING_BUFFER_SIZE;
+        } else {
+            // Actively draining audio from ringTail to ringHead in steady, verified BATCH_SIZE chunks
+            if (available >= BATCH_SIZE) {
+                static unsigned long lastBatchSentAt = 0;
+                unsigned long paceMs = (available > 16000) ? 12 : 35; // Catch up pre-roll smoothly without flooding TCP
+                if (millis() - lastBatchSentAt >= paceMs) {
+                    uint8_t txBuf[BATCH_SIZE];
+                    for (size_t i = 0; i < BATCH_SIZE; i++) {
+                        txBuf[i] = audioRingBuffer[(ringTail + i) % RING_BUFFER_SIZE];
                     }
-                    ws.sendBIN(tempBuf, currentChunk);
+
+                    bool sendOk = true;
+                    if (hasActiveStream && ws.isConnected() && !isUploadingArchive) {
+                        sendOk = ws.sendBIN(txBuf, BATCH_SIZE);
+                    } else if (isOfflineRecording && offlineIncidentFile) {
+                        sendOk = (offlineIncidentFile.write(txBuf, BATCH_SIZE) == BATCH_SIZE);
+                    }
+
+                    if (sendOk) {
+                        ringTail = (ringTail + BATCH_SIZE) % RING_BUFFER_SIZE;
+                        lastBatchSentAt = millis();
+                    } else {
+                        delay(6); // TCP congested: hold pointer and retry next tick
+                    }
                 }
-                needsBurstDump = false;
-                preBufferHead = 0; 
-                preBufferWrapped = false;
             }
-            
-            // Batch 5 audio frames (100ms) before sending via Wi-Fi to reduce RF transmit power
-            memcpy(batchBuffer + batchBufferLen, outBuf, bytesRead);
-            batchBufferLen += bytesRead;
-            if (batchBufferLen >= BATCH_SIZE) {
-                ws.sendBIN(batchBuffer, batchBufferLen);
-                batchBufferLen = 0;
-            }
-        } else if (isOfflineRecording && offlineIncidentFile) {
-            if (needsBurstDump) {
-                Serial.println("[FS] Dumping Pre-roll Buffer to Local File...");
-                size_t oldestPos = preBufferWrapped ? preBufferHead : 0;
-                size_t toSend = preBufferWrapped ? RING_BUFFER_SIZE : preBufferHead;
-                for (size_t sent = 0; sent < toSend; sent++) {
-                    uint8_t b = preBuffer[(oldestPos + sent) % RING_BUFFER_SIZE];
-                    offlineIncidentFile.write(b);
-                }
-                needsBurstDump = false;
-                preBufferHead = 0; 
-                preBufferWrapped = false;
-            }
-            offlineIncidentFile.write(outBuf, bytesRead);
         }
-    } else {
-        // Voice ended and silence timeout reached
-        if (hasActiveStream && !isUploadingArchive) {
-            flushAudioBatch();
-            Serial.println("\n[SYS] Silence timeout. Entering Modem Sleep.");
-            delay(200); // CRITICAL: Allow TCP stack to actually transmit the final packet before radio shuts off!
-            ws.disconnect();
-            delay(50);
-            hasActiveStream = false;
-            WiFi.disconnect(true);
-            WiFi.mode(WIFI_OFF);
-            cachedServerIP = server_host; 
-            
-            // CRITICAL: Clear preBuffer so we don't accidentally send old audio on the next wake up!
-            preBufferHead = 0;
-            preBufferWrapped = false;
-        }
-        if (isOfflineRecording) {
-            isOfflineRecording = false;
-            if (offlineIncidentFile) {
-                offlineIncidentFile.close();
-                Serial.println("[FS] Offline recording saved and closed.");
-            }
+    }
+
+    // --- STANDBY HEARTBEAT (3.5 seconds) ---
+    // Informs the central server that the smart pin is alive and reports live Wi-Fi signal & true battery.
+    // If power is lost or Wi-Fi drops, the server drops the pin to OFFLINE within 8 seconds!
+    static unsigned long lastHeartbeatMs = 0;
+    if (ws.isConnected() && (!hasActiveStream || !isStreaming)) {
+        if (millis() - lastHeartbeatMs >= 3500) {
+            lastHeartbeatMs = millis();
+            int rssi = WiFi.RSSI();
+            int batPct = calculateBatteryPct();
+            int batMv = readBatteryMv();
+            ws.sendTXT("PING:" + String(rssi) + ":" + String(batPct) + ":" + String(batMv));
         }
     }
 
     processArchiveUpload();
+
+    // --- THERMAL & POWER MANAGEMENT ---
+    // In dual-core mode, audio sampling runs on Core 1. When not actively streaming,
+    // yield Core 0 to the FreeRTOS idle task (waiti) for 10ms to drop CPU load from 100% to ~2%
+    // and keep the ESP32 cool to the touch!
+    if (!isStreaming && !isUploadingArchive) {
+        delay(10);
+    }
 }

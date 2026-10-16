@@ -63,31 +63,23 @@ except Exception as e:
     has_whisper = False
     whisper_model = None
 
-def load_tagalog_vocabulary(filepath: str = "tagalog_words.txt"):
-    """
-    Loads categorized Tagalog words and phrases from text file.
-    Returns:
-        (initial_prompt, hotwords_str)
-    """
-    default_prompt = "Hello mic check. Pangit ka! Nagana pa ba 'to? Anong meron diyan? Anong ginagawa mo? Kumusta ka? Usapan sa wikang Tagalog, Filipino, at Taglish ng mga mag-aaral sa paaralan."
-    if not os.path.exists(filepath):
-        print(f"[SYS] {filepath} not found. Using default Tagalog prompt.")
-        return default_prompt, ""
+# =========================================================================
+# 1.1 ANTI-HALLUCINATION CONFIGURATION
+# =========================================================================
+# Whisper treats initial_prompt as fake preceding conversation history.
+# Paragraph prompts trigger endless repetition loops ("magandang magandang...").
+# Keeping it empty or tiny ("Hello.") completely starves Whisper of hallucination seeds.
+INITIAL_TAGALOG_PROMPT = ""
 
-    words = []
-    try:
-        with open(filepath, "r", encoding="utf-8-sig") as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and not line.startswith("["):
-                    words.append(line)
-        print(f"[SYS] Successfully loaded {len(words)} Tagalog words/phrases from {filepath}")
-        return default_prompt, ""
-    except Exception as e:
-        print(f"[WARN] Failed to load prompt ({e}).")
-        return default_prompt, ""
+# Hotwords: strictly true safety threats & physical violence terms (15-20 words max).
+# Never include conversational slang like 'taray' or 'ganda' which Whisper hallucinates from fan noise.
+TAGALOG_HOTWORDS = "pangit gago tanga bobo tarantado bastos suntukan sapakan bugbog holdap nakaw pera bawal bully patayin layuan"
 
-INITIAL_TAGALOG_PROMPT, _ = load_tagalog_vocabulary()
+# Content words from common prompt-echo regurgitations to discard immediately
+PROMPT_ECHO_WORDS = {
+    "magandang", "araw", "umaga", "hapon", "gabi", "kumusta", "usapan",
+    "tagalog", "filipino", "paaralan", "silid-aralan", "sandali", "opo", "tara"
+}
 
 # =========================================================================
 # 2. SERVER-SIDE ACOUSTIC DENOISING SETUP (MICROSOFT NSNet2 + NOISEREDUCE)
@@ -106,8 +98,8 @@ except Exception as e:
     has_nsnet2 = False
 
 # Adjustable noise reduction strength (0.0 = transparent/off, 1.0 = maximum suppression)
-# 0.60 is the balanced sweet spot: fan noise is eliminated while words ('anong ginagawa mo') remain complete
-DENOISE_STRENGTH = 0.60
+# 0.50 is the balanced sweet spot: fan noise is eliminated while trailing syllables decay smoothly
+DENOISE_STRENGTH = 0.50
 
 try:
     import noisereduce as nr  # type: ignore
@@ -194,16 +186,16 @@ class ContextEngine:
             base_score = 1.0
             category = "Conversational"
 
-        # 2. Targetedness & Heuristic Safety Net
+        # 2. Targetedness & Heuristic Safety Net (Exact word boundary matching to eliminate false positives)
         text_lower = text.lower()
         words = text_lower.split()
         
         is_targeted = any(p in words for p in self.target_pronouns)
         targetedness_multiplier = 1.3 if is_targeted else 1.0
 
-        has_threat = any(t in text_lower for t in self.hard_threats)
-        has_extort = any(e in text_lower for e in self.hard_extort)
-        has_harass = any(h in text_lower for h in self.hard_harass)
+        has_threat = any(re.search(r'\b' + re.escape(t) + r'\b', text_lower) for t in self.hard_threats)
+        has_extort = any(re.search(r'\b' + re.escape(e) + r'\b', text_lower) for e in self.hard_extort)
+        has_harass = any(re.search(r'\b' + re.escape(h) + r'\b', text_lower) for h in self.hard_harass)
 
         if has_threat:
             base_score = max(base_score, 8.5)
@@ -239,7 +231,7 @@ context_engine = ContextEngine()
 ui_clients = set()
 registered_devices = {}
 active_pins = {} # Map of websocket -> device_id
-harmful_words_only = False # Filter Mode: When True, ignores normal speech and only detects harmful words/threats
+harmful_words_only = True # Production Default: True so Live Incidents Queue is reserved for real threats, not mic-checks
 
 async def broadcast_to_ui(payload: dict):
     if not ui_clients:
@@ -816,6 +808,33 @@ async def pin_liveness_watchdog():
         except Exception as e:
             print(f"[WATCHDOG] Error: {e}")
 
+RECORDINGS_RETENTION_DAYS = int(os.getenv("RECORDINGS_RETENTION_DAYS", "30"))
+
+async def periodic_recordings_cleanup():
+    """Periodically purges audio recordings and snapshots older than RECORDINGS_RETENTION_DAYS."""
+    while True:
+        try:
+            now = time.time()
+            cutoff_sec = now - (RECORDINGS_RETENTION_DAYS * 86400)
+            deleted_count = 0
+            for folder in ["recordings/audio", "recordings/snapshots"]:
+                if os.path.exists(folder):
+                    for fname in os.listdir(folder):
+                        fpath = os.path.join(folder, fname)
+                        if os.path.isfile(fpath):
+                            try:
+                                if os.path.getmtime(fpath) < cutoff_sec:
+                                    os.remove(fpath)
+                                    deleted_count += 1
+                            except Exception:
+                                pass
+            if deleted_count > 0:
+                print(f"[CLEANUP] Purged {deleted_count} recording files older than {RECORDINGS_RETENTION_DAYS} days.")
+        except Exception as e:
+            print(f"[CLEANUP] Error during recordings cleanup: {e}")
+        # Run cleanup every 12 hours
+        await asyncio.sleep(43200)
+
 @app.on_event("startup")
 async def startup_event():
     loop = asyncio.get_running_loop()
@@ -830,6 +849,9 @@ async def startup_event():
     
     # Launch background watchdog that monitors socket health and forces ghost pins OFFLINE
     asyncio.create_task(pin_liveness_watchdog())
+    
+    # Launch background recording retention cleaner (30-day default)
+    asyncio.create_task(periodic_recordings_cleanup())
 
     print("[SYS] WebSocket Server active on port 8080 (UI: /ui | Pins: /)")
     print("[SYS] Ready for connections!\n")
@@ -856,12 +878,30 @@ def process_audio_buffer(pcm_bytes: bytes) -> tuple[str, bytes]:
     rms = float(np.sqrt(np.mean(audio_float**2)))
     peak = float(np.max(np.abs(audio_float)))
 
-    # Reject ambient noise / quiet room hiss before Whisper (EVT-72450 was RMS=0.0127)
-    if peak < 0.04 or (rms < 0.018 and peak < 0.09):
+    # Gate 1: Energy & Ambient Floor Gate
+    if peak < 0.05 or (rms < 0.02 and peak < 0.10):
         print(f"[ASR] Dropped ambient background noise without speech (RMS={rms:.4f}, Peak={peak:.4f})")
         return "", pcm_bytes
 
-    # 3. Server-side Denoising (Microsoft NSNet2 Neural Speech Isolation with Adjustable Strength)
+    # Gate 2: Crest Factor Gate (peak / rms)
+    # Speech has dynamic bursts (crest factor >= 2.2). Steady fan/AC is dense and flat (crest factor < 2.0).
+    crest_factor = peak / (rms + 1e-6)
+    if crest_factor < 2.0 and peak < 0.35:
+        print(f"[ASR] Dropped flat stationary fan noise (Crest={crest_factor:.2f}, RMS={rms:.4f}, Peak={peak:.4f})")
+        return "", pcm_bytes
+
+    # Gate 3: Stationarity Gate (RMS variance across 50ms frames)
+    # If the sound has virtually zero variance across frames, it is a constant fan motor, not human speech.
+    frame_len = int(16000 * 0.05) # 50ms frames
+    if len(audio_float) >= frame_len * 2:
+        frame_rms = [float(np.sqrt(np.mean(audio_float[i:i+frame_len]**2))) for i in range(0, len(audio_float)-frame_len+1, frame_len)]
+        mean_f_rms = np.mean(frame_rms) + 1e-6
+        variance_ratio = float(np.std(frame_rms)) / mean_f_rms
+        if variance_ratio < 0.20 and peak < 0.30:
+            print(f"[ASR] Dropped stationary motor/AC rumble (VarRatio={variance_ratio:.3f}, Peak={peak:.4f})")
+            return "", pcm_bytes
+
+    # 3. Server-side Denoising (Microsoft NSNet2 Neural Speech Isolation with Balanced Strength)
     if has_nsnet2 and nsnet2_denoiser is not None:
         try:
             audio_float = nsnet2_denoiser.enhance(audio_float, fs=16000, strength=DENOISE_STRENGTH)
@@ -880,7 +920,6 @@ def process_audio_buffer(pcm_bytes: bytes) -> tuple[str, bytes]:
                     pass
     elif has_noisereduce:
         try:
-            # Fallback stationary noise reduction with gentle 65% strength to protect nasal phonemes
             audio_float = nr.reduce_noise(
                 y=audio_float,
                 sr=16000,
@@ -894,49 +933,113 @@ def process_audio_buffer(pcm_bytes: bytes) -> tuple[str, bytes]:
     # Ensure float32 for Whisper/Silero VAD ONNX models
     audio_float = np.asarray(audio_float, dtype=np.float32)
 
-    # 4. Soft automatic gain boost & peak normalization for audible, prominent speech
-    clean_peak = float(np.max(np.abs(audio_float)))
-    if 0.02 < clean_peak < 0.70:
-        boost = min(3.5, 0.75 / max(clean_peak, 0.02))
-        audio_float = np.clip(audio_float * boost, -0.99, 0.99)
+    # Do NOT artificially boost gain on fan hiss; keep speech dynamics natural
+    audio_float = np.clip(audio_float, -0.99, 0.99)
 
-    # 5. Convert clean audio float back to 16-bit PCM bytes for playback in recordings
+    # 4. Convert clean audio float back to 16-bit PCM bytes for playback in recordings
     clean_int16 = np.clip(audio_float * 32767.0, -32768, 32767).astype(np.int16)
     clean_pcm_bytes = clean_int16.tobytes()
 
-    # 6. Faster-Whisper Speech Recognition with Silero VAD Trimming & Beam 5 Search
+    # 5. Faster-Whisper Speech Recognition with Tightened Speech Knobs
     if has_whisper and whisper_model is not None:
         try:
             transcribe_kwargs = {
-                "language": "tl",
-                "initial_prompt": INITIAL_TAGALOG_PROMPT,
-                "beam_size": 5, # Beam 5 provides high accuracy for nuanced Tagalog vocabulary
-                "temperature": [0.0, 0.2], # Only 2 temperatures max: fast on GPU without infinite fallback loops
+                "language": None, # Auto-detect Tagalog, English, or Taglish code-switching without phoneme distortion
+                "initial_prompt": INITIAL_TAGALOG_PROMPT if INITIAL_TAGALOG_PROMPT else None,
+                "hotwords": TAGALOG_HOTWORDS if TAGALOG_HOTWORDS else None,
+                "beam_size": 5,
+                "temperature": [0.0], # 0.0 only: kills fallback hallucinations like 'ae, taray, taray'
                 "condition_on_previous_text": False,
-                "no_speech_threshold": 0.6, 
-                "log_prob_threshold": -1.0,
-                "compression_ratio_threshold": 2.4,
+                "no_speech_threshold": 0.75, # 0.75: more willing to report silence on quiet background hiss
+                "log_prob_threshold": -0.8,  # -0.8: reject low-confidence text
+                "compression_ratio_threshold": 2.0, # 2.0: drops internal repetitions immediately
                 "word_timestamps": False,
-                "vad_parameters": dict(threshold=0.15, min_speech_duration_ms=60, speech_pad_ms=500),
+                "vad_parameters": dict(threshold=0.5, min_speech_duration_ms=450, speech_pad_ms=300),
             }
 
-            # Silero VAD reliably isolates human speech from silence/noise
+            # Silero VAD isolates genuine human speech segments from noise
             segments, info = whisper_model.transcribe(
                 audio_float,
                 vad_filter=True,
                 **transcribe_kwargs
             )
-            transcript = " ".join([seg.text for seg in segments]).strip()
 
-            # Ignore typical Whisper silence hallucinations on faint background noise
-            clean_t = transcript.lower().strip().rstrip(".")
-            if clean_t in ["thank you", "you", "thanks", "salamat", "maraming salamat"]:
+            # Silero Gate: if vad_filter returned zero speech segments, return empty immediately
+            valid_segments = [seg.text.strip() for seg in segments if getattr(seg, 'no_speech_prob', 0.0) < 0.5 and seg.text.strip()]
+            if not valid_segments:
                 return "", clean_pcm_bytes
 
-            # Detect repetition loops (e.g. 'Pagkakakakakakakakaka...' or 'ka ka ka ka ka')
-            if re.search(r'(.)\1{4,}', transcript) or re.search(r'(.{2,5})\1{3,}', transcript.lower()):
-                print(f"[ASR] Dropped Whisper repetition loop: \"{transcript[:50]}...\"")
+            # Fallback Rule: only force 'tl' if duration >= 2.5s and detected language is non-Philippine
+            dur_sec = len(audio_float) / 16000.0
+            detected_lang = getattr(info, 'language', 'tl')
+            if detected_lang not in ('tl', 'en'):
+                if dur_sec >= 2.5:
+                    print(f"[ASR] Auto-detected '{detected_lang}' on {dur_sec:.1f}s clip. Re-running with forced Tagalog ('tl')...")
+                    fallback_kwargs = dict(transcribe_kwargs)
+                    fallback_kwargs["language"] = "tl"
+                    segments, info = whisper_model.transcribe(
+                        audio_float,
+                        vad_filter=True,
+                        **fallback_kwargs
+                    )
+                    valid_segments = [seg.text.strip() for seg in segments if getattr(seg, 'no_speech_prob', 0.0) < 0.5 and seg.text.strip()]
+                else:
+                    print(f"[ASR] Discarded short noisy clip ({dur_sec:.1f}s) misdetected as '{detected_lang}'")
+                    return "", clean_pcm_bytes
+
+            transcript = " ".join(valid_segments).strip()
+
+            # Word-level tokenization for human-style loop & prompt-echo detection
+            words = [re.sub(r'[^a-zA-Z0-9ñÑ]', '', w.lower()) for w in transcript.split()]
+            words = [w for w in words if w]
+
+            if not words:
                 return "", clean_pcm_bytes
+
+            # Reject standard mic-check & silence hallucinations
+            clean_t = transcript.lower().strip().rstrip(".!?,")
+            if clean_t in [
+                "hello my check", "hello mic check", "mic check", "my check", 
+                "thank you", "you", "thanks", "salamat", "maraming salamat"
+            ]:
+                return "", clean_pcm_bytes
+
+            # Check 1: The same word (length >= 3) appears >= 4 times consecutively
+            streak = 1
+            max_streak = 1
+            for idx in range(1, len(words)):
+                if len(words[idx]) >= 3 and words[idx] == words[idx - 1]:
+                    streak += 1
+                    if streak > max_streak:
+                        max_streak = streak
+                else:
+                    streak = 1
+            if max_streak >= 4:
+                print(f"[ASR] Dropped consecutive word repetition loop (streak={max_streak}): \"{transcript[:50]}...\"")
+                return "", clean_pcm_bytes
+
+            # Check 2: Lexical diversity (unique words / total words < 0.35 on clips with >= 6 words)
+            if len(words) >= 6:
+                lexical_diversity = len(set(words)) / len(words)
+                if lexical_diversity < 0.35:
+                    print(f"[ASR] Dropped low-diversity loop (diversity={lexical_diversity:.2f}): \"{transcript[:50]}...\"")
+                    return "", clean_pcm_bytes
+
+            # Check 3: Token concentration (> 40% of words are identical in clip with >= 5 words)
+            if len(words) >= 5:
+                from collections import Counter
+                word_counts = Counter(words)
+                most_common_word, count = word_counts.most_common(1)[0]
+                if len(most_common_word) >= 3 and (count / len(words)) > 0.40:
+                    print(f"[ASR] Dropped word-concentrated loop ('{most_common_word}' is {count}/{len(words)} tokens): \"{transcript[:50]}...\"")
+                    return "", clean_pcm_bytes
+
+            # Check 4: Prompt-echo filter (if >= 50% of words match prompt echo vocabulary)
+            if PROMPT_ECHO_WORDS and len(words) >= 2:
+                echo_count = sum(1 for w in words if w in PROMPT_ECHO_WORDS)
+                if (echo_count / len(words)) >= 0.50:
+                    print(f"[ASR] Dropped prompt-echo hallucination ({echo_count}/{len(words)} prompt words): \"{transcript[:50]}...\"")
+                    return "", clean_pcm_bytes
 
             return transcript, clean_pcm_bytes
         except Exception as e:
@@ -952,6 +1055,10 @@ def save_wav(pcm_bytes: bytes, filepath: str):
         wav_file.setsampwidth(2) # 16-bit
         wav_file.setframerate(16000)
         wav_file.writeframes(pcm_bytes)
+
+# Global mutex for AI inference: guarantees single-pipeline execution for NSNet2, Whisper, and BERT
+# Prevents concurrent thread race conditions, CUDA memory corruption, and out-of-memory errors
+ai_inference_lock = asyncio.Lock()
 
 async def handle_completed_audio(device_id: str, pcm_bytes: bytes, websocket: WebSocket):
     """Processes accumulated speech audio buffer, runs Faster-Whisper + BERT, and updates UI."""
@@ -975,56 +1082,57 @@ async def handle_completed_audio(device_id: str, pcm_bytes: bytes, websocket: We
         registered_devices[device_id]["lastSeen"] = "Whisper inferencing..."
         await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
 
-    t_infer_start = time.time()
-    transcript, clean_pcm = await asyncio.to_thread(process_audio_buffer, pcm_bytes)
-    infer_dur = time.time() - t_infer_start
+    async with ai_inference_lock:
+        t_infer_start = time.time()
+        transcript, clean_pcm = await asyncio.to_thread(process_audio_buffer, pcm_bytes)
+        infer_dur = time.time() - t_infer_start
 
-    if transcript:
-        print(f"[FINAL TRANSCRIPT] ({device_id} in {infer_dur:.2f}s, dur={dur_sec:.2f}s, peak={audio_peak:.2f}) -> \"{transcript}\"")
-        score, category = context_engine.evaluate(transcript)
-        is_danger = score >= 8.0
+        if transcript:
+            print(f"[FINAL TRANSCRIPT] ({device_id} in {infer_dur:.2f}s, dur={dur_sec:.2f}s, peak={audio_peak:.2f}) -> \"{transcript}\"")
+            score, category = context_engine.evaluate(transcript)
+            is_danger = score >= 8.0
 
-        # --- HARMFUL WORDS ONLY FILTER ---
-        # When active, ignore benign/conversational speech and do not save WAV or log incident
-        is_harmful = (category != "Conversational") or (score >= 2.0)
-        if harmful_words_only and not is_harmful:
-            print(f"[FILTER] Ignored conversational speech under 'Harmful Words Only' mode: \"{transcript}\" (cat={category}, score={score})")
-            if device_id in registered_devices:
-                now_str = datetime.now().strftime("%H:%M:%S")
-                is_still_connected = any(d_id == device_id for d_id in active_pins.values())
-                registered_devices[device_id]["online"] = is_still_connected
-                registered_devices[device_id]["state"] = "VAD ARMED" if is_still_connected else "OFFLINE"
-                registered_devices[device_id]["lastSeen"] = f"Filtered benign speech at {now_str}" if is_still_connected else f"Disconnected at {now_str}"
-                await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
-            return
+            # --- HARMFUL WORDS ONLY FILTER ---
+            # When active, ignore benign/conversational speech and do not save WAV or log incident
+            is_harmful = (category != "Conversational") or (score >= 2.0)
+            if harmful_words_only and not is_harmful:
+                print(f"[FILTER] Ignored conversational speech under 'Harmful Words Only' mode: \"{transcript}\" (cat={category}, score={score})")
+                if device_id in registered_devices:
+                    now_str = datetime.now().strftime("%H:%M:%S")
+                    is_still_connected = any(d_id == device_id for d_id in active_pins.values())
+                    registered_devices[device_id]["online"] = is_still_connected
+                    registered_devices[device_id]["state"] = "VAD ARMED" if is_still_connected else "OFFLINE"
+                    registered_devices[device_id]["lastSeen"] = f"Filtered benign speech at {now_str}" if is_still_connected else f"Disconnected at {now_str}"
+                    await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
+                return
 
-        if is_danger:
-            try:
-                await websocket.send_text("TRIGGER:DANGER")
-            except Exception:
-                pass
+            if is_danger:
+                try:
+                    await websocket.send_text("TRIGGER:DANGER")
+                except Exception:
+                    pass
 
-        incident_id = f"EVT-{int(time.time() * 1000) % 1000000}"
-        wav_filename = f"{incident_id}.wav"
-        wav_path = os.path.join("recordings/audio", wav_filename)
-        # Save the clean, denoised audio to WAV so playback is crystal-clear and fan-free
-        await asyncio.to_thread(save_wav, clean_pcm, wav_path)
+            incident_id = f"EVT-{int(time.time() * 1000) % 1000000}"
+            wav_filename = f"{incident_id}.wav"
+            wav_path = os.path.join("recordings/audio", wav_filename)
+            # Save the clean, denoised audio to WAV so playback is crystal-clear and fan-free
+            await asyncio.to_thread(save_wav, clean_pcm, wav_path)
 
-        await broadcast_to_ui({
-            "event_type": "incident",
-            "id": incident_id,
-            "device_id": device_id,
-            "score": float(score),
-            "category": category,
-            "transcript": transcript,
-            "audio": True,
-            "audio_url": f"http://127.0.0.1:8080/recordings/audio/{wav_filename}",
-            "audio_file": wav_filename,
-            "video": is_danger,
-            "duration": f"00:{max(1, int(dur_sec)):02d}"
-        })
-    else:
-        print(f"[ASR] ({device_id} in {infer_dur:.2f}s) Audio received ({dur_sec:.2f}s, peak={audio_peak:.2f}) -> No speech recognized (faint noise/silence)")
+            await broadcast_to_ui({
+                "event_type": "incident",
+                "id": incident_id,
+                "device_id": device_id,
+                "score": float(score),
+                "category": category,
+                "transcript": transcript,
+                "audio": True,
+                "audio_url": f"http://127.0.0.1:8080/recordings/audio/{wav_filename}",
+                "audio_file": wav_filename,
+                "video": is_danger,
+                "duration": f"00:{max(1, int(dur_sec)):02d}"
+            })
+        else:
+            print(f"[ASR] ({device_id} in {infer_dur:.2f}s) Audio received ({dur_sec:.2f}s, peak={audio_peak:.2f}) -> No speech recognized (faint noise/silence)")
 
     if device_id in registered_devices:
         now_str = datetime.now().strftime("%H:%M:%S")
@@ -1056,17 +1164,20 @@ async def pin_websocket_endpoint(websocket: WebSocket):
         except Exception as e:
             print(f"[CFG] Error pushing queued config: {e}")
 
-    prev_net = registered_devices.get(device_id, {}).get("network", "Campus Wi-Fi")
+    prev_dev = registered_devices.get(device_id, {})
+    prev_net = prev_dev.get("network", "Campus Wi-Fi")
+    prev_batt = prev_dev.get("battery", 100)
+    prev_runtime = prev_dev.get("estRuntime", "--")
     registered_devices[device_id] = {
         "id": device_id,
         "online": True,
-        "battery": 92,
+        "battery": prev_batt,
         "state": "VAD ARMED",
         "network": pending_cfg["ssid"] if pending_cfg else prev_net,
         "lastSeen": "Just now",
         "cpuMhz": 160,
         "rssi": -60,
-        "estRuntime": "6h 45m"
+        "estRuntime": prev_runtime
     }
     
     await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
@@ -1075,7 +1186,17 @@ async def pin_websocket_endpoint(websocket: WebSocket):
     audio_accumulator = bytearray()
     last_audio_chunk_time = time.time()
     next_expected_snapshot = False
-    
+
+    # Audio rate limiting per device (80 KB/s limit allows ~2.5x normal speed for buffer drain bursts while blocking rogue floods)
+    MAX_BYTES_PER_SECOND = 80000
+    rate_window_start = time.time()
+    bytes_in_window = 0
+
+    # Streaming audio chunking: Process 15-second blocks with 1-second overlap
+    # Prevents huge latency on continuous speech and avoids mid-word truncations
+    CHUNK_LIMIT_BYTES = 480000 # 15s @ 16kHz 16-bit mono
+    OVERLAP_BYTES = 32000      # 1s overlap
+
     try:
         while True:
             try:
@@ -1095,12 +1216,34 @@ async def pin_websocket_endpoint(websocket: WebSocket):
             if "text" in message:
                 text_msg = message["text"]
                 if text_msg.startswith("PING:"):
-                    # Standby keep-alive ping from ESP32
-                    try:
-                        rssi_val = int(text_msg.split(":")[1])
-                        registered_devices[device_id]["rssi"] = rssi_val
-                    except Exception:
-                        pass
+                    # Standby keep-alive ping from ESP32: PING:<rssi>[:<battery_pct>[:<battery_mv>]]
+                    parts = text_msg.split(":")
+                    if len(parts) >= 2:
+                        try:
+                            rssi_val = int(parts[1])
+                            registered_devices[device_id]["rssi"] = rssi_val
+                        except Exception:
+                            pass
+                    if len(parts) >= 3:
+                        try:
+                            batt_pct = int(parts[2])
+                            batt_pct = max(0, min(100, batt_pct))
+                            registered_devices[device_id]["battery"] = batt_pct
+                            # Realistic runtime estimation:
+                            # 200mAh LiPo in 160MHz VAD Standby with modem sleep + camera sleep (~38mA avg):
+                            # Total battery life is ~5.3h = ~315 minutes from 100% to 0%.
+                            rem_mins = int((batt_pct / 100.0) * 315)
+                            hours = rem_mins // 60
+                            mins = rem_mins % 60
+                            registered_devices[device_id]["estRuntime"] = f"{hours}h {mins:02d}m"
+                        except Exception:
+                            pass
+                    if len(parts) >= 4:
+                        try:
+                            batt_mv = int(parts[3])
+                            registered_devices[device_id]["batteryMv"] = batt_mv
+                        except Exception:
+                            pass
                     now_str = datetime.now().strftime("%H:%M:%S")
                     registered_devices[device_id]["online"] = True
                     registered_devices[device_id]["state"] = "VAD ARMED"
@@ -1129,8 +1272,16 @@ async def pin_websocket_endpoint(websocket: WebSocket):
                     next_expected_snapshot = True
                 elif "ARCHIVE_START" in text_msg:
                     print(f"\n[SYS] {device_id} syncing stored offline incident from LittleFS.")
+                    # Clear accumulator before receiving offline archive to avoid mixing with previous audio
+                    audio_accumulator.clear()
                 elif "ARCHIVE_END" in text_msg:
-                    print(f"\n[SYS] {device_id} offline incident sync complete.")
+                    print(f"\n[SYS] {device_id} offline incident sync complete ({len(audio_accumulator)} bytes).")
+                    if len(audio_accumulator) >= 6400:
+                        final_pcm = bytes(audio_accumulator)
+                        audio_accumulator.clear()
+                        await handle_completed_audio(device_id, final_pcm, websocket)
+                    else:
+                        audio_accumulator.clear()
 
             elif "bytes" in message:
                 binary_data = message["bytes"]
@@ -1152,6 +1303,16 @@ async def pin_websocket_endpoint(websocket: WebSocket):
                     })
                     continue
 
+                # Rate limit protection against rogue flooding
+                now = time.time()
+                if now - rate_window_start >= 1.0:
+                    rate_window_start = now
+                    bytes_in_window = 0
+                bytes_in_window += len(binary_data)
+                if bytes_in_window > MAX_BYTES_PER_SECOND:
+                    print(f"[WARN] {device_id} exceeded audio rate limit ({bytes_in_window} B/s > {MAX_BYTES_PER_SECOND} B/s). Dropping packet.")
+                    continue
+
                 # Normal 16kHz PCM audio stream
                 audio_accumulator.extend(binary_data)
                 last_audio_chunk_time = time.time()
@@ -1163,11 +1324,13 @@ async def pin_websocket_endpoint(websocket: WebSocket):
                     registered_devices[device_id]["lastSeen"] = "Streaming voice..."
                     await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
 
-                # Fallback safeguard: Process if buffer hits 30 seconds (960,000 bytes)
-                if len(audio_accumulator) >= 960000:
-                    pcm_chunk = bytes(audio_accumulator)
-                    audio_accumulator.clear()
-                    await handle_completed_audio(device_id, pcm_chunk, websocket)
+                # Continuous speech chunking: Process in 15-second blocks with 1-second overlap
+                if len(audio_accumulator) >= CHUNK_LIMIT_BYTES:
+                    pcm_chunk = bytes(audio_accumulator[:CHUNK_LIMIT_BYTES])
+                    # Retain 1-second overlap for boundary continuity
+                    audio_accumulator = bytearray(audio_accumulator[CHUNK_LIMIT_BYTES - OVERLAP_BYTES:])
+                    # Dispatch inference asynchronously so live socket reading never blocks
+                    asyncio.create_task(handle_completed_audio(device_id, pcm_chunk, websocket))
 
     except (WebSocketDisconnect, RuntimeError, OSError):
         print(f"\n[WS] {device_id} Disconnected.")

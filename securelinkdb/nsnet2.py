@@ -20,7 +20,7 @@ class NSNet2Denoiser:
     Processes 16kHz audio in 20ms frames with 50% overlap.
     """
 
-    def __init__(self, model_path: str = MODEL_PATH, mingain_db: float = -18.0):
+    def __init__(self, model_path: str = MODEL_PATH, mingain_db: float = -12.0):
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"NSNet2 model not found at {model_path}")
 
@@ -28,14 +28,14 @@ class NSNet2Denoiser:
             "winlen": 0.02,        # 20ms window
             "hopfrac": 0.5,        # 10ms frame shift (50% overlap)
             "fs": 16000,           # 16kHz sample rate
-            "mingain": mingain_db, # -18dB floor: eliminates fan rumble while preserving soft syllables
+            "mingain": mingain_db, # -12dB floor: suppresses fan drone while eliminating spectral bubbling on word decays
             "feattype": "LogPow"
         }
         self.fs = int(self.cfg["fs"])
         self.win_len_samples = int(float(self.cfg["winlen"]) * self.fs) # 320 samples
         self.hop_samples = int(self.win_len_samples * float(self.cfg["hopfrac"])) # 160 samples
         self.mingain = 10 ** (self.cfg["mingain"] / 20.0)
-        self.default_strength = 0.65 # Sweet spot: 65% neural isolation leaves speech 100% intact
+        self.default_strength = 0.50 # Gentle neural isolation leaves trailing syllables natural and crumb-free
 
         # Initialize ONNX Runtime with CUDA if available, fallback to CPU
         providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
