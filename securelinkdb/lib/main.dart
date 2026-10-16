@@ -342,21 +342,51 @@ class _BackdropState extends State<_Backdrop> with SingleTickerProviderStateMixi
   Widget build(BuildContext context) {
     final base = widget.status.baseColor;
     final accent = widget.status.accent;
-    final isAlert = widget.status == DashboardStatus.danger || widget.status == DashboardStatus.threat;
+    final isAlert = widget.status != DashboardStatus.safe;
+
+    final List<Color> gradientColors = switch (widget.status) {
+      DashboardStatus.safe => [
+        const Color(0xFF030708),
+        const Color(0xFF041712),
+        const Color(0xFF06291E),
+        const Color(0xFF020907),
+      ],
+      DashboardStatus.warning => [
+        const Color(0xFF140D01),
+        const Color(0xFF331F02),
+        const Color(0xFF5A3804),
+        const Color(0xFF180E02),
+      ],
+      DashboardStatus.threat => [
+        const Color(0xFF1C0802),
+        const Color(0xFF421503),
+        const Color(0xFF6B2404),
+        const Color(0xFF1F0802),
+      ],
+      DashboardStatus.danger => [
+        const Color(0xFF220308),
+        const Color(0xFF4A0612),
+        const Color(0xFF740A1D),
+        const Color(0xFF220308),
+      ],
+    };
+
+    final double orbIntensity = switch (widget.status) {
+      DashboardStatus.safe => 0.08,
+      DashboardStatus.warning => 0.28,
+      DashboardStatus.threat => 0.38,
+      DashboardStatus.danger => 0.48,
+    };
 
     return IgnorePointer(
       child: AnimatedContainer(
-        duration: const Duration(milliseconds: 400),
+        duration: const Duration(milliseconds: 500),
+        curve: Curves.easeInOut,
         decoration: BoxDecoration(
           gradient: LinearGradient(
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
-            colors: [
-              const Color(0xFF04070B),
-              Color.lerp(const Color(0xFF071015), base, .25)!,
-              Color.lerp(const Color(0xFF050A0F), base, .16)!,
-              const Color(0xFF030508),
-            ],
+            colors: gradientColors,
             stops: const [0.0, 0.35, 0.75, 1.0],
           ),
         ),
@@ -384,15 +414,17 @@ class _BackdropState extends State<_Backdrop> with SingleTickerProviderStateMixi
                   painter: _SplashParticlesPainter(
                     particles: _particles,
                     elapsedSeconds: elapsedSeconds,
-                    color: const Color(0xFF55E2C0),
+                    color: accent.withOpacity(0.65),
                   ),
                 );
               },
             ),
 
-            Positioned(left: -190, top: -220, child: _GlowOrb(size: 540, color: accent.withOpacity(.08))),
-            Positioned(right: -210, top: 50, child: _GlowOrb(size: 470, color: base.withOpacity(.07))),
-            Positioned(left: 240, bottom: -280, child: _GlowOrb(size: 580, color: accent.withOpacity(.04))),
+            Positioned(left: -190, top: -220, child: _GlowOrb(size: 640, color: accent.withOpacity(orbIntensity * 1.1))),
+            Positioned(right: -210, top: 50, child: _GlowOrb(size: 580, color: base.withOpacity(orbIntensity * 1.3))),
+            Positioned(left: 240, bottom: -280, child: _GlowOrb(size: 680, color: accent.withOpacity(orbIntensity * 0.9))),
+            if (isAlert)
+              Positioned(right: 280, bottom: -180, child: _GlowOrb(size: 560, color: accent.withOpacity(orbIntensity * 1.2))),
           ],
         ),
       ),
@@ -441,15 +473,23 @@ class _TacticalGridPainter extends CustomPainter {
       final borderGlow = Paint()
         ..shader = RadialGradient(
           center: Alignment.center,
-          radius: 1.15,
+          radius: 1.0,
           colors: [
             Colors.transparent,
-            accent.withOpacity(0.03 + pulse * 0.08),
+            accent.withOpacity(0.04),
+            accent.withOpacity(0.18 + pulse * 0.16),
           ],
-          stops: const [0.72, 1.0],
+          stops: const [0.55, 0.82, 1.0],
         ).createShader(Rect.fromLTWH(0, 0, size.width, size.height));
 
       canvas.drawRect(Rect.fromLTWH(0, 0, size.width, size.height), borderGlow);
+
+      // High-contrast pulsing emergency border stroke around viewport
+      final borderStroke = Paint()
+        ..color = accent.withOpacity(0.35 + pulse * 0.35)
+        ..strokeWidth = 2.5
+        ..style = PaintingStyle.stroke;
+      canvas.drawRect(Rect.fromLTWH(1, 1, size.width - 2, size.height - 2), borderStroke);
     }
   }
 
@@ -507,8 +547,8 @@ class _Glass extends StatelessWidget {
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
           colors: [
-            tint?.withOpacity(0.92) ?? const Color(0xEE0E141B),
-            tint ?? const Color(0xEE090D13),
+            tint?.withOpacity(0.85) ?? const Color(0xD60E141B),
+            tint ?? const Color(0xD6090D13),
           ],
         ),
         border: border ??
@@ -552,15 +592,15 @@ extension DashboardStatusX on DashboardStatus {
       };
   Color get baseColor => switch (this) {
         DashboardStatus.safe => const Color(0xFF06352A),
-        DashboardStatus.warning => const Color(0xFF463800),
-        DashboardStatus.threat => const Color(0xFF4A2109),
-        DashboardStatus.danger => const Color(0xFF42101F)
+        DashboardStatus.warning => const Color(0xFF5A3C03),
+        DashboardStatus.threat => const Color(0xFF702504),
+        DashboardStatus.danger => const Color(0xFF730A1F)
       };
   Color get accent => switch (this) {
-        DashboardStatus.safe => const Color(0xFF109C6D),
-        DashboardStatus.warning => const Color(0xFFB48E15),
-        DashboardStatus.threat => const Color(0xFFC95A17),
-        DashboardStatus.danger => const Color(0xFFA52A4B)
+        DashboardStatus.safe => const Color(0xFF10B981),
+        DashboardStatus.warning => const Color(0xFFFFB800),
+        DashboardStatus.threat => const Color(0xFFFF6A1A),
+        DashboardStatus.danger => const Color(0xFFFF2E56)
       };
   IconData get icon => switch (this) {
         DashboardStatus.safe => Icons.verified_rounded,
@@ -754,6 +794,7 @@ class _DashboardShellState extends State<DashboardShell> with WindowListener {
   bool harmfulWordsOnly = false;
   Timer? _reconnectTimer;
   Timer? _pingTimer;
+  Timer? _statusAlertTimer;
 
   void toggleHarmfulWordsOnly() {
     final next = !harmfulWordsOnly;
@@ -876,14 +917,30 @@ class _DashboardShellState extends State<DashboardShell> with WindowListener {
 
                 if (newIncident.level == IncidentLevel.danger) {
                   currentStatus = DashboardStatus.danger;
+                  _statusAlertTimer?.cancel();
+                  _statusAlertTimer = Timer(const Duration(seconds: 35), () {
+                    if (mounted) setState(() => currentStatus = DashboardStatus.safe);
+                  });
                   // Dispatch DANGER trigger to tell the ESP32 pin to capture an evidence snapshot
                   _uiChannel?.sink.add('TRIGGER:DANGER');
                 } else if (newIncident.level == IncidentLevel.threat) {
                   currentStatus = DashboardStatus.threat;
+                  _statusAlertTimer?.cancel();
+                  _statusAlertTimer = Timer(const Duration(seconds: 25), () {
+                    if (mounted) setState(() => currentStatus = DashboardStatus.safe);
+                  });
                 } else if (newIncident.level == IncidentLevel.warning) {
-                  currentStatus = DashboardStatus.warning;
+                  if (currentStatus != DashboardStatus.danger && currentStatus != DashboardStatus.threat) {
+                    currentStatus = DashboardStatus.warning;
+                    _statusAlertTimer?.cancel();
+                    _statusAlertTimer = Timer(const Duration(seconds: 15), () {
+                      if (mounted) setState(() => currentStatus = DashboardStatus.safe);
+                    });
+                  }
                 } else if (newIncident.level == IncidentLevel.normal) {
-                  currentStatus = DashboardStatus.safe;
+                  if (_statusAlertTimer == null || !_statusAlertTimer!.isActive) {
+                    currentStatus = DashboardStatus.safe;
+                  }
                 }
               });
             } else if (eventType == 'checkpoints_updated') {
@@ -1219,6 +1276,7 @@ class _DashboardShellState extends State<DashboardShell> with WindowListener {
     _uiChannel?.sink.close();
     _pingTimer?.cancel();
     _reconnectTimer?.cancel();
+    _statusAlertTimer?.cancel();
     ServerManager.stopServer();
     super.dispose();
   }
@@ -1391,6 +1449,38 @@ class _DashboardShellState extends State<DashboardShell> with WindowListener {
   }
 }
 
+class SecureLinkLogo extends StatelessWidget {
+  final double size;
+  final BoxFit fit;
+
+  const SecureLinkLogo({
+    super.key,
+    this.size = 24,
+    this.fit = BoxFit.contain,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Image.asset(
+      'Securelinklogo.png',
+      width: size,
+      height: size,
+      fit: fit,
+      errorBuilder: (context, error, stackTrace) {
+        final fallback1 = File('assets/Securelinklogo.png');
+        if (fallback1.existsSync()) {
+          return Image.file(fallback1, width: size, height: size, fit: fit);
+        }
+        final fallback2 = File('Securelinklogo.png');
+        if (fallback2.existsSync()) {
+          return Image.file(fallback2, width: size, height: size, fit: fit);
+        }
+        return Icon(Icons.shield_rounded, size: size, color: Colors.white);
+      },
+    );
+  }
+}
+
 // Clean draggable title bar without duplicate logo or redundant branding
 class _DesktopTitleBar extends StatelessWidget {
   final VoidCallback onMinimize;
@@ -1406,7 +1496,9 @@ class _DesktopTitleBar extends StatelessWidget {
       height: 40,
       child: Row(
         children: [
-          const SizedBox(width: 16),
+          const SizedBox(width: 14),
+          const SecureLinkLogo(size: 18),
+          const SizedBox(width: 8),
           Expanded(
             child: GestureDetector(
               behavior: HitTestBehavior.translucent,
@@ -1416,7 +1508,7 @@ class _DesktopTitleBar extends StatelessWidget {
                 alignment: Alignment.centerLeft,
                 child: Text(
                   'SECURELINK',
-                  style: TextStyle(fontSize: 11, color: Colors.white.withOpacity(.48), fontWeight: FontWeight.w700, letterSpacing: 1.5),
+                  style: TextStyle(fontSize: 11, color: Colors.white.withOpacity(.55), fontWeight: FontWeight.w700, letterSpacing: 1.5),
                 ),
               ),
             ),
@@ -1510,13 +1602,26 @@ class _LogoBrand extends StatelessWidget {
     return Row(
       children: [
         Container(
-          width: 36,
-          height: 36,
+          width: 38,
+          height: 38,
+          padding: const EdgeInsets.all(4),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(11),
-            gradient: const LinearGradient(colors: [Color(0xFF8D77FF), Color(0xFF4FE2C0)]),
+            gradient: const LinearGradient(
+              colors: [Color(0xFF0C2B22), Color(0xFF135540)],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            border: Border.all(color: const Color(0xFF55E2C0).withOpacity(0.35), width: 1.2),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFF109C6D).withOpacity(0.35),
+                blurRadius: 10,
+                spreadRadius: 1,
+              ),
+            ],
           ),
-          child: const Icon(Icons.shield_rounded, size: 20, color: Colors.white),
+          child: const SecureLinkLogo(size: 28),
         ),
         const SizedBox(width: 10),
         const Expanded(
@@ -2567,14 +2672,41 @@ Widget _buildThreatTranscript(
   int? maxLines,
 }) {
   const hardThreats = {
-    'papatayin', 'patayin', 'bugbugin', 'sasapakin', 'suntukin', 'tadyakan',
-    'upakan', 'abangan', 'tumba', 'hiwain', 'masaktan', 'resbak', 'yari'
+    'papatayin', 'patayin', 'ipapatay', 'pinatay', 'katayin', 'kakatayin',
+    'bugbugin', 'bubugbugin', 'binugbog', 'bugbugan',
+    'sasapakin', 'sapakin', 'sinapak', 'sapakan',
+    'suntukin', 'susuntukin', 'sinuntok', 'suntukan',
+    'tadyakan', 'tatadyakan', 'tinadyakan',
+    'upakan', 'uupakan', 'inupakan',
+    'saksakin', 'sasaksakin', 'sinaksak',
+    'barilin', 'babarilin', 'binaril',
+    'gulpihin', 'gugulpihin', 'ginulpi',
+    'abangan', 'aabangan', 'tumba', 'tumbahin', 'hiwain', 'masaktan', 'resbak', 'resbakan', 'yari',
+    'kill', 'punch', 'attack', 'stab', 'murder', 'hurt', 'shoot'
   };
   const hardExtort = {
-    'pera', 'bayad', 'ambag', 'ilabas', 'akin na', 'bigyan', 'palamunin'
+    'pera', 'bayad', 'ambag', 'ilabas', 'akin na', 'bigyan', 'palamunin', 'baon', 'holdap', 'snatch'
   };
   const hardHarass = {
-    'bobo', 'tanga', 'kwenta', 'kuwenta', 'kupal', 'bwisit', 'inutil', 'kadiri', 'pangit'
+    // Bullying & ableist/psychological slurs
+    'mongoloid', 'mongol', 'abnoy', 'autistic', 'retard', 'retarded',
+    'sintosinto', 'sayad', 'baliw', 'lukaluka', 'buang', 'timang', 'kulangkulang',
+    'siraulo', 'unggoy', 'aswang',
+    // Body-shaming & appearance bullying
+    'tabatoy', 'baboy', 'balyena', 'tingting', 'kalansay', 'ngongo', 'ngiwi',
+    'panget', 'pangit', 'chaka', 'dugyot', 'mabaho', 'baho',
+    // Social degradation & poverty insults
+    'squatter', 'skwater', 'isquatter', 'pulubi', 'hampaslupa', 'pataygutom',
+    'alipin', 'palamunin', 'pabigat', 'salot', 'patapon', 'basura', 'walangkwenta', 'ampaw',
+    // Slut-shaming & gender/homophobic insults
+    'bakla', 'bading', 'bayot', 'tibo', 'pokpok', 'malandi', 'kiri', 'higad', 'hitad', 'puday', 'bastos',
+    // Profanities & verbal abuse
+    'gago', 'gaga', 'tarantado', 'tarantada', 'ulol', 'tangina', 'tanginamo', 'putangina', 'putanginamoka', 'puta',
+    'pakshet', 'pakyu', 'kupal', 'leche', 'letse', 'bwisit', 'bwiset',
+    'hayop', 'hayup', 'walanghiya', 'taragis', 'hudas', 'inutil', 'bobo', 'tanga',
+    'ungas', 'punyeta', 'lintik', 'demonyo', 'kingina', 'pota', 'yawa', 'kuwenta', 'kwenta',
+    // English slurs & abuse
+    'fuck', 'shit', 'bitch', 'asshole', 'bastard', 'cunt', 'idiot', 'stupid', 'loser', 'trash'
   };
 
   final words = text.split(' ');
@@ -6463,6 +6595,7 @@ class _ServerLoadingSplashScreenState extends State<_ServerLoadingSplashScreen>
                               child: Container(
                                 width: 68,
                                 height: 68,
+                                padding: const EdgeInsets.all(10),
                                 decoration: BoxDecoration(
                                   borderRadius: BorderRadius.circular(20),
                                   gradient: const LinearGradient(
@@ -6478,7 +6611,7 @@ class _ServerLoadingSplashScreenState extends State<_ServerLoadingSplashScreen>
                                     ),
                                   ],
                                 ),
-                                child: const Icon(Icons.shield_rounded, size: 36, color: Colors.white),
+                                child: const SecureLinkLogo(size: 44),
                               ),
                             ),
                           ),

@@ -150,21 +150,78 @@ class ContextEngine:
         self.history = []
         self.target_pronouns = {"ikaw", "ka", "mo", "sayo", "sa'yo", "kita", "niyo", "ninyo", "you", "your", "u"}
         self.hard_threats = [
-            "patayin", "suntukin", "bugbugin", "tumba", "sasapakin", "tadyakan", "upakan", "hiwain", "basagin", "resbakan",
-            "kill", "punch", "beat you", "hurt you", "threat", "stab", "die", "attack", "murder"
+            # Tagalog violence verbs & conjugations (patay, suntok, sapak, bugbog, tadyak, etc.)
+            "patayin", "papatayin", "ipapatay", "ipapapatay", "pinatay", "katayin", "kakatayin",
+            "pupugutan", "pugutan", "mamatay", "mamatay ka", "patay ka", "patay ka sakin", "patay ka sa akin",
+            "suntukin", "susuntukin", "sinuntok", "suntukan", "masuntok",
+            "sasapakin", "sapakin", "sinapak", "sapakan", "masapak",
+            "bugbugin", "bubugbugin", "binugbog", "bugbugan", "mabugbog",
+            "tadyakan", "tatadyakan", "tinadyakan",
+            "upakan", "uupakan", "inupakan", "upakan kita",
+            "saksakin", "sasaksakin", "sinaksak", "saksakan",
+            "hiwain", "hihiwain", "hiniwa",
+            "tumbahin", "tutumbahin", "tinumba", "itumba", "itatumba", "tumba",
+            "barilin", "babarilin", "binaril", "ipabaril",
+            "gulpihin", "gugulpihin", "ginulpi", "gulpihan",
+            "laslasin", "lalaslasin", "laslas",
+            "basagin", "babasagin", "binasag",
+            "resbakan", "reresbakan", "niresbakan",
+            "sasaktan", "saktan", "sinaktan", "masaktan",
+            "abangan", "aabangan", "inabangan", "abangan kita",
+            "yari ka", "yari ka sakin", "yari ka sa akin",
+            # English physical threats
+            "kill", "murder", "stab", "shoot", "beat you up", "i will kill you",
+            "threat", "attack", "die", "hurt you", "punch"
         ]
         self.hard_extort = [
             "pera", "bayad", "ambag", "ilabas", "bigyan", "baon", "tax", "allowance",
-            "give me money", "pay up", "hand it over", "give your money", "extort"
+            "akin na", "ibigay mo", "labas mo pera", "holdap", "snatch", "nakaw",
+            "give me money", "pay up", "hand it over", "give your money", "extort", "rob"
         ]
         self.hard_harass = [
-            "pangit", "bobo", "kuwenta", "kwenta", "tanga", "ewan", "inutil", "kadiri", "baho", "palamunin", "pabigat",
-            "idiot", "stupid", "ugly", "loser", "shut up", "worthless", "freak", "fool"
+            # Filipino bullying, ableist slurs, & psychological harassment
+            "mongoloid", "mong guloid", "mongol", "abnoy", "autistic", "retard", "retarded",
+            "sinto-sinto", "sintosinto", "may sayad", "sayad", "baliw", "luka-luka", "lukaluka",
+            "buang", "amaw", "timang", "kulang-kulang", "kulangkulang", "may tama", "may sira",
+            "siraulo", "sira ulo", "unggoy", "aswang",
+            # Appearance, body-shaming, & social bullying
+            "tabatoy", "baboy", "balyena", "tingting", "kalansay", "ngongo", "ngiwi",
+            "panget", "pangit", "chaka", "mukhang paa", "dugyot", "mabaho", "baho",
+            "amoy lupa", "amoy araw", "uling",
+            # Social degradation & poverty insults
+            "squatter", "skwater", "isquatter", "pulubi", "hampaslupa", "hampas lupa",
+            "patay gutom", "patay-gutom", "alipin", "palamunin", "pabigat", "salot",
+            "patapon", "basura", "walang kwenta", "walang silbi", "ampaw", "inutil",
+            # Homophobic / gender insults & sexual harassment
+            "bakla", "bading", "bayot", "tibo", "pokpok", "malandi", "kiri", "higad", "hitad", "puday", "bastos",
+            # Tagalog profanities, vulgarities, & verbal abuse
+            "gago", "gaga", "tarantado", "tarantada", "ulol", "tangina", "tang ina", "tanginamo", "tang ina mo",
+            "putangina", "putang ina", "putanginamoka", "puta", "pakshet", "pakyu", "kupal",
+            "leche", "letse", "bwisit", "bwiset", "hayop", "hayup", "walanghiya", "walang hiya",
+            "taragis", "hudas", "bobo", "tanga", "ungas", "punyeta", "lintik", "demonyo",
+            "kingina", "king ina", "pota", "yawa", "kuwenta", "kwenta",
+            # English profanities, bullying & hate speech
+            "fuck", "fucking", "fucked", "shit", "bitch", "asshole", "bastard", "dick", "cunt",
+            "idiot", "stupid", "ugly", "loser", "shut up", "worthless", "freak", "fool",
+            "pig", "gross", "trash", "drop dead"
         ]
+
+    def _matches_any(self, text_lower: str, keywords: list) -> bool:
+        for k in keywords:
+            if " " in k or "-" in k:
+                if k in text_lower:
+                    return True
+            else:
+                if re.search(r'\b' + re.escape(k) + r'\b', text_lower):
+                    return True
+        return False
 
     def evaluate(self, text: str):
         if not text or len(text.strip()) < 3:
             return 0.0, "Conversational"
+
+        text_lower = text.lower()
+        words = text_lower.split()
 
         # 1. Base Deep Learning Inference
         if bert_model and tokenizer:
@@ -187,20 +244,20 @@ class ContextEngine:
                 base_score = 1.0
                 category = "Conversational"
             elif predicted_class == 1:
-                base_score = 2.0 + (confidence * 1.9)
+                base_score = 4.5 + (confidence * 2.0)
                 category = "Verbal Harassment"
             elif predicted_class == 2:
                 # Extortion requires confidence >= 0.70 or presence of hard extortion keywords
-                has_extort_check = any(re.search(r'\b' + re.escape(e) + r'\b', text.lower()) for e in self.hard_extort)
+                has_extort_check = self._matches_any(text_lower, self.hard_extort)
                 if confidence >= 0.70 or has_extort_check:
-                    base_score = 4.0 + (confidence * 2.0)
+                    base_score = 5.0 + (confidence * 2.0)
                     category = "Extortion / Demand"
                 else:
                     base_score = 1.0
                     category = "Conversational"
             elif predicted_class == 3:
                 # Physical threat requires confidence >= 0.70 or presence of hard threat keywords
-                has_threat_check = any(re.search(r'\b' + re.escape(t) + r'\b', text.lower()) for t in self.hard_threats)
+                has_threat_check = self._matches_any(text_lower, self.hard_threats)
                 if confidence >= 0.70 or has_threat_check:
                     base_score = 7.0 + (confidence * 2.0)
                     category = "Physical Threat"
@@ -214,25 +271,25 @@ class ContextEngine:
             base_score = 1.0
             category = "Conversational"
 
-        # 2. Targetedness & Heuristic Safety Net (Exact word boundary matching to eliminate false positives)
-        text_lower = text.lower()
-        words = text_lower.split()
-        
+        # 2. Targetedness & Heuristic Safety Net
         is_targeted = any(p in words for p in self.target_pronouns)
         targetedness_multiplier = 1.3 if is_targeted else 1.0
 
-        has_threat = any(re.search(r'\b' + re.escape(t) + r'\b', text_lower) for t in self.hard_threats)
-        has_extort = any(re.search(r'\b' + re.escape(e) + r'\b', text_lower) for e in self.hard_extort)
-        has_harass = any(re.search(r'\b' + re.escape(h) + r'\b', text_lower) for h in self.hard_harass)
+        has_threat = self._matches_any(text_lower, self.hard_threats)
+        has_extort = self._matches_any(text_lower, self.hard_extort)
+        has_harass = self._matches_any(text_lower, self.hard_harass)
 
         if has_threat:
             base_score = max(base_score, 8.5)
             category = "Physical Threat"
-        elif has_extort and is_targeted and base_score < 4.0:
-            base_score = max(base_score, 4.5)
+        elif has_extort:
+            base_score = max(base_score, 6.0 if is_targeted else 4.5)
             category = "Extortion / Demand"
-        elif has_harass and is_targeted and base_score < 2.0:
-            base_score = max(base_score, 2.5)
+        elif has_harass:
+            # Bullying words, hate speech, & profanities are serious violations:
+            # Untargeted: 4.8 (triggers THREAT level and visual alert)
+            # Targeted (e.g. "mongoloid ka", "gago ka", "tangina mo"): 6.5 (severe THREAT)
+            base_score = max(base_score, 6.5 if is_targeted else 4.8)
             category = "Verbal Harassment"
 
         current_score = base_score * targetedness_multiplier if category != "Conversational" else base_score
