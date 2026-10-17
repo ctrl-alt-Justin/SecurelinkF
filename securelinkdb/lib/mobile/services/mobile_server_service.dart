@@ -37,10 +37,12 @@ class IncidentReport {
 
   factory IncidentReport.fromJson(Map<String, dynamic> json, {String? host, int? port}) {
     final af = json['audio_file'] as String?;
-    final h = host ?? '10.28.20.11';
-    final p = port ?? 8080;
     final explicitUrl = json['audio_url'] as String?;
-    final computedUrl = af != null && af.isNotEmpty ? 'http://$h:$p/recordings/audio/$af' : explicitUrl;
+    String? computedUrl = explicitUrl;
+    if (computedUrl == null && af != null && af.isNotEmpty) {
+      final s = MobileServerService();
+      computedUrl = '${s.baseHttpUrl}/recordings/audio/$af';
+    }
 
     return IncidentReport(
       id: json['id'] as String? ?? 'INC-${DateTime.now().millisecondsSinceEpoch}',
@@ -68,6 +70,10 @@ class MobileServerService extends ChangeNotifier {
   int _port = 8080;
   String _csId = 'CS-CAMPUS-01';
   String _csName = 'SecureLink Campus Central System';
+
+  // --- Cloudflare Tunnel (Global Routing for Cellular 4G/5G & AP Isolation) ---
+  String? _cloudTunnelUrl = 'https://rings-diploma-evaluated-mls.trycloudflare.com';
+  bool _useCloudTunnel = false;
 
   // --- Mobile Device Profile (Teacher / Student) ---
   String _mobileId = 'MOBILE-USER-01';
@@ -99,6 +105,8 @@ class MobileServerService extends ChangeNotifier {
   int get port => _port;
   String get csId => _csId;
   String get csName => _csName;
+  String get cloudTunnelUrl => _cloudTunnelUrl ?? '';
+  bool get useCloudTunnel => _useCloudTunnel;
   String get mobileId => _mobileId;
   String get userName => _userName;
   String get userRole => _userRole;
@@ -109,6 +117,61 @@ class MobileServerService extends ChangeNotifier {
   bool get isAutoDiscoveringCS => _isAutoDiscoveringCS;
   String get statusMessage => _statusMessage;
   bool get harmfulWordsOnly => _harmfulWordsOnly;
+
+  /// Whether current connection routes through Cloudflare Tunnel
+  bool get isDirectCloudTunnel =>
+      _host.contains('trycloudflare.com') ||
+      (_useCloudTunnel && _cloudTunnelUrl != null && _cloudTunnelUrl!.isNotEmpty);
+
+  String get activeTunnelHost {
+    String raw = (_useCloudTunnel && _cloudTunnelUrl != null && _cloudTunnelUrl!.isNotEmpty)
+        ? _cloudTunnelUrl!
+        : _host;
+    raw = raw.trim();
+    if (raw.startsWith('https://')) raw = raw.substring(8);
+    if (raw.startsWith('http://')) raw = raw.substring(7);
+    if (raw.startsWith('wss://')) raw = raw.substring(6);
+    if (raw.startsWith('ws://')) raw = raw.substring(5);
+    if (raw.contains('/')) raw = raw.substring(0, raw.indexOf('/'));
+    return raw;
+  }
+
+  String get baseHttpUrl {
+    if (isDirectCloudTunnel) {
+      final th = activeTunnelHost;
+      return 'https://$th';
+    }
+    return 'http://$_host:$_port';
+  }
+
+  String get baseWsUrl {
+    if (isDirectCloudTunnel) {
+      final th = activeTunnelHost;
+      return 'wss://$th';
+    }
+    return 'ws://$_host:$_port';
+  }
+
+  Uri getUiWsUri() => Uri.parse('$baseWsUrl/ui');
+  Uri getPinWsUri([String deviceId = 'PIN-001']) => Uri.parse('$baseWsUrl/?device_id=$deviceId');
+  Uri getApiUri(String path) => Uri.parse('$baseHttpUrl/api$path');
+
+  void setCloudTunnelUrl(String? url, {bool enable = true}) {
+    _cloudTunnelUrl = url?.trim();
+    _useCloudTunnel = enable && _cloudTunnelUrl != null && _cloudTunnelUrl!.isNotEmpty;
+    _savePreferences();
+    notifyListeners();
+    reconnect();
+  }
+
+  void toggleCloudTunnel(bool enabled) {
+    _useCloudTunnel = enabled;
+    _savePreferences();
+    notifyListeners();
+    reconnect();
+  }
+
+  void setCloudTunnelEnabled(bool enable) => toggleCloudTunnel(enable);
 
   /// Connection Priority Architecture string
   String get prioritySummary =>
@@ -168,10 +231,12 @@ class MobileServerService extends ChangeNotifier {
   Future<void> _loadPreferences() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      _host = prefs.getString('cs_host') ?? (kIsWeb || (!Platform.isAndroid && !Platform.isIOS) ? '127.0.0.1' : '10.28.20.11');
+      _host = prefs.getString('cs_host') ?? (kIsWeb || (!Platform.isAndroid && !Platform.isIOS) ? '127.0.0.1' : '10.28.20.30');
       _port = prefs.getInt('cs_port') ?? 8080;
       _csId = prefs.getString('cs_id') ?? 'CS-CAMPUS-01';
       _csName = prefs.getString('cs_name') ?? 'SecureLink Campus Central System';
+      _cloudTunnelUrl = prefs.getString('cloud_tunnel_url') ?? 'https://rings-diploma-evaluated-mls.trycloudflare.com';
+      _useCloudTunnel = prefs.getBool('use_cloud_tunnel') ?? false;
       _mobileId = prefs.getString('mobile_id') ?? 'MOBILE-${DateTime.now().millisecondsSinceEpoch % 10000}';
       _userName = prefs.getString('user_name') ?? 'Teacher / Student';
       _userRole = prefs.getString('user_role') ?? 'Teacher';
@@ -230,6 +295,10 @@ class MobileServerService extends ChangeNotifier {
       await prefs.setInt('cs_port', _port);
       await prefs.setString('cs_id', _csId);
       await prefs.setString('cs_name', _csName);
+      if (_cloudTunnelUrl != null) {
+        await prefs.setString('cloud_tunnel_url', _cloudTunnelUrl!);
+      }
+      await prefs.setBool('use_cloud_tunnel', _useCloudTunnel);
       await prefs.setString('mobile_id', _mobileId);
       await prefs.setString('user_name', _userName);
       await prefs.setString('user_role', _userRole);
@@ -282,6 +351,7 @@ class MobileServerService extends ChangeNotifier {
     // 1. First probe candidate IPs over fast HTTP (1.2s timeout)
     final candidates = [
       _host,
+      '10.28.20.30', // Laptop current active Wi-Fi IP
       '10.28.20.11', // Laptop primary active Wi-Fi IP
       '10.28.20.28',
       '127.0.0.1',
@@ -375,12 +445,72 @@ class MobileServerService extends ChangeNotifier {
         final json = jsonDecode(body);
         _csId = json['cs_id'] ?? _csId;
         _csName = json['name'] ?? _csName;
+        if (json['cloud_tunnel_url'] != null) {
+          final t = (json['cloud_tunnel_url'] as String).trim();
+          if (t.isNotEmpty) {
+            _cloudTunnelUrl = t;
+            _savePreferences();
+          }
+        }
         client.close();
         return true;
       }
       client.close();
     } catch (_) {}
     return false;
+  }
+
+  /// Explicitly queries Central System for active Cloudflare Tunnel URL across candidate hosts
+  Future<String?> fetchCloudTunnel() async {
+    final candidateHosts = [_host, '10.28.20.30', '10.28.20.11', '10.28.20.28', '127.0.0.1'];
+    for (final h in candidateHosts) {
+      try {
+        final client = HttpClient()..connectionTimeout = const Duration(milliseconds: 1500);
+        final req = await client.getUrl(Uri.parse('http://$h:$_port/api/cloud-tunnel'));
+        final res = await req.close();
+        if (res.statusCode == 200) {
+          final body = await res.transform(utf8.decoder).join();
+          final json = jsonDecode(body);
+          if (json['cloud_tunnel_url'] != null) {
+            final tunnel = (json['cloud_tunnel_url'] as String).trim();
+            if (tunnel.isNotEmpty) {
+              _cloudTunnelUrl = tunnel;
+              _savePreferences();
+              notifyListeners();
+              client.close();
+              return tunnel;
+            }
+          }
+        }
+        client.close();
+      } catch (_) {}
+    }
+
+    // Fallback: try /api/cs-info
+    for (final h in candidateHosts) {
+      try {
+        final client = HttpClient()..connectionTimeout = const Duration(milliseconds: 1500);
+        final req = await client.getUrl(Uri.parse('http://$h:$_port/api/cs-info'));
+        final res = await req.close();
+        if (res.statusCode == 200) {
+          final body = await res.transform(utf8.decoder).join();
+          final json = jsonDecode(body);
+          if (json['cloud_tunnel_url'] != null) {
+            final tunnel = (json['cloud_tunnel_url'] as String).trim();
+            if (tunnel.isNotEmpty) {
+              _cloudTunnelUrl = tunnel;
+              _savePreferences();
+              notifyListeners();
+              client.close();
+              return tunnel;
+            }
+          }
+        }
+        client.close();
+      } catch (_) {}
+    }
+
+    return _cloudTunnelUrl;
   }
 
   // --------------------------------------------------------------------------
@@ -398,27 +528,29 @@ class MobileServerService extends ChangeNotifier {
   Future<void> connect() async {
     if (_isConnecting) return;
     _isConnecting = true;
-    _statusMessage = 'Connecting to Central System (ws://$_host:$_port/ui)...';
+    final wsUri = getUiWsUri();
+    _statusMessage = 'Connecting to Central System ($wsUri)...';
     notifyListeners();
 
     _fetchDevicesRest();
     _fetchCheckpointsRest();
+    _fetchCloudTunnelRest();
 
     try {
-      final wsUri = Uri.parse('ws://$_host:$_port/ui');
       _channel = WebSocketChannel.connect(wsUri);
 
       _channel!.ready.then((_) {
         _isConnected = true;
         _isConnecting = false;
-        _statusMessage = 'Synced with Central System ($csId @ $_host:$_port)';
+        _statusMessage = 'Synced with Central System ($csId @ ${isDirectCloudTunnel ? activeTunnelHost : "$_host:$_port"})';
         notifyListeners();
         _fetchDevicesRest();
         _fetchCheckpointsRest();
+        _fetchCloudTunnelRest();
         _startHeartbeat();
         _syncWithCentralSystem();
       }).catchError((err) {
-        _handleDisconnect('Connection refused by CS at $_host:$_port ($err)');
+        _handleDisconnect('Connection refused by CS ($err)');
       });
 
       _channel!.stream.listen(
@@ -488,6 +620,13 @@ class MobileServerService extends ChangeNotifier {
           _savePreferences();
         }
         notifyListeners();
+      } else if (eventType == 'cloud_tunnel_update' && json['cloud_tunnel_url'] != null) {
+        final newUrl = json['cloud_tunnel_url'] as String?;
+        if (newUrl != null && newUrl.isNotEmpty && newUrl != _cloudTunnelUrl) {
+          _cloudTunnelUrl = newUrl;
+          _savePreferences();
+          notifyListeners();
+        }
       } else if (eventType == 'checkpoints_updated' && json['checkpoints'] != null) {
         final list = (json['checkpoints'] as List)
             .map((c) => WifiCheckpoint.fromJson(c as Map<String, dynamic>))
@@ -502,6 +641,13 @@ class MobileServerService extends ChangeNotifier {
         _statusMessage = 'Synced with $csId (${json['status'] ?? 'Ready'})';
         if (json.containsKey('harmful_words_only')) {
           _harmfulWordsOnly = json['harmful_words_only'] == true;
+        }
+        if (json['cloud_tunnel_url'] != null) {
+          final newUrl = json['cloud_tunnel_url'] as String?;
+          if (newUrl != null && newUrl.isNotEmpty && newUrl != _cloudTunnelUrl) {
+            _cloudTunnelUrl = newUrl;
+            _savePreferences();
+          }
         }
         notifyListeners();
       } else if (eventType == 'incident' || (eventType == 'incident_detected' && json['incident'] != null)) {
@@ -521,10 +667,31 @@ class MobileServerService extends ChangeNotifier {
     }
   }
 
+  Future<void> _fetchCloudTunnelRest() async {
+    try {
+      final client = HttpClient()..connectionTimeout = const Duration(seconds: 2);
+      final req = await client.getUrl(getApiUri('/cloud-tunnel'));
+      final res = await req.close();
+      if (res.statusCode == 200) {
+        final body = await res.transform(utf8.decoder).join();
+        final json = jsonDecode(body);
+        if (json['cloud_tunnel_url'] != null) {
+          final tunnel = json['cloud_tunnel_url'] as String;
+          if (tunnel.isNotEmpty && tunnel != _cloudTunnelUrl) {
+            _cloudTunnelUrl = tunnel;
+            _savePreferences();
+            notifyListeners();
+          }
+        }
+      }
+      client.close();
+    } catch (_) {}
+  }
+
   Future<void> _fetchCheckpointsRest() async {
     try {
       final client = HttpClient()..connectionTimeout = const Duration(seconds: 3);
-      final req = await client.getUrl(Uri.parse('http://$_host:$_port/api/checkpoints'));
+      final req = await client.getUrl(getApiUri('/checkpoints'));
       final res = await req.close();
       if (res.statusCode == 200) {
         final body = await res.transform(utf8.decoder).join();
@@ -546,7 +713,7 @@ class MobileServerService extends ChangeNotifier {
   Future<void> _fetchDevicesRest() async {
     try {
       final client = HttpClient()..connectionTimeout = const Duration(seconds: 2);
-      final req = await client.getUrl(Uri.parse('http://$_host:$_port/api/devices'));
+      final req = await client.getUrl(getApiUri('/devices'));
       final res = await req.close();
       if (res.statusCode == 200) {
         final body = await res.transform(utf8.decoder).join();
@@ -671,18 +838,18 @@ class MobileServerService extends ChangeNotifier {
       _pinAliases[cleanId] = alias.trim();
     }
 
-    // If device doesn't exist yet in cache, create initial registered entry
+    // If device doesn't exist yet in cache, create registered entry awaiting real telemetry
     if (!_devices.containsKey(cleanId)) {
       _devices[cleanId] = DeviceStatus(
         id: cleanId,
-        online: true,
-        battery: 100,
-        state: 'VAD ARMED (STANDBY)',
-        network: _checkpoints.isNotEmpty ? _checkpoints.first.ssid : 'Campus Wi-Fi',
+        online: false,
+        battery: 0,
+        state: 'STANDBY',
+        network: method.contains('Bluetooth') ? 'BLE Audio Bridge' : (_checkpoints.isNotEmpty ? _checkpoints.first.ssid : 'Campus Wi-Fi'),
         lastSeen: 'Paired just now ($method)',
         cpuMhz: 160,
-        rssi: -58,
-        estRuntime: '7h 15m',
+        rssi: 0,
+        estRuntime: '--',
       );
     }
 
@@ -690,6 +857,35 @@ class MobileServerService extends ChangeNotifier {
     _syncWithCentralSystem();
     notifyListeners();
     return true;
+  }
+
+  void updatePinTelemetryFromBle({
+    required String pinId,
+    required int rssi,
+    int? battery,
+    int? batteryMv,
+  }) {
+    final cleanId = pinId.trim().toUpperCase();
+    if (cleanId.isEmpty) return;
+
+    final existing = _devices[cleanId];
+    final bat = battery ?? existing?.battery ?? 0;
+    final remMins = (bat / 100.0) * 315;
+    final hours = remMins ~/ 60;
+    final mins = (remMins % 60).toInt();
+
+    _devices[cleanId] = DeviceStatus(
+      id: cleanId,
+      online: true,
+      battery: bat,
+      state: 'VAD ARMED',
+      network: 'BLE Audio Bridge',
+      lastSeen: 'Active over BLE just now',
+      cpuMhz: 160,
+      rssi: rssi,
+      estRuntime: bat > 0 ? '${hours}h ${mins.toString().padLeft(2, '0')}m' : '--',
+    );
+    notifyListeners();
   }
 
   /// Unpairs a pin from this mobile device
@@ -757,13 +953,12 @@ class MobileServerService extends ChangeNotifier {
     };
   }
 
-  /// Simulates BLE handshake & pairs a pin over Bluetooth
+  /// Connects & pairs a pin over Bluetooth
   Future<bool> pairPinViaBluetooth({
     required String pinId,
     String? alias,
   }) async {
     final cleanId = pinId.trim().toUpperCase();
-    await Future.delayed(const Duration(milliseconds: 900)); // BLE discovery handshake latency
     return pairPin(cleanId, alias: alias, method: 'Bluetooth Low Energy');
   }
 
@@ -791,7 +986,7 @@ class MobileServerService extends ChangeNotifier {
 
     try {
       final client = HttpClient()..connectionTimeout = const Duration(seconds: 3);
-      final req = await client.postUrl(Uri.parse('http://$_host:$_port/api/checkpoints/deploy'));
+      final req = await client.postUrl(getApiUri('/checkpoints/deploy'));
       req.headers.contentType = ContentType.json;
       req.write(jsonEncode(payload));
       final res = await req.close();
@@ -843,7 +1038,7 @@ class MobileServerService extends ChangeNotifier {
   Future<void> saveCheckpoint(WifiCheckpoint chk) async {
     try {
       final client = HttpClient()..connectionTimeout = const Duration(seconds: 3);
-      final req = await client.postUrl(Uri.parse('http://$_host:$_port/api/checkpoints'));
+      final req = await client.postUrl(getApiUri('/checkpoints'));
       req.headers.contentType = ContentType.json;
       req.write(jsonEncode(chk.toJson()));
       await req.close();
@@ -862,7 +1057,7 @@ class MobileServerService extends ChangeNotifier {
   Future<void> deleteCheckpoint(String chkId) async {
     try {
       final client = HttpClient()..connectionTimeout = const Duration(seconds: 3);
-      final req = await client.deleteUrl(Uri.parse('http://$_host:$_port/api/checkpoints/$chkId'));
+      final req = await client.deleteUrl(getApiUri('/checkpoints/$chkId'));
       await req.close();
       client.close();
     } catch (_) {}
@@ -908,7 +1103,7 @@ class MobileServerService extends ChangeNotifier {
     }
     try {
       final client = HttpClient()..connectionTimeout = const Duration(seconds: 2);
-      client.postUrl(Uri.parse('http://$_host:$_port/api/toggle-harmful-only')).then((req) {
+      client.postUrl(getApiUri('/toggle-harmful-only')).then((req) {
         req.headers.contentType = ContentType.json;
         req.write(jsonEncode({'enabled': nextState}));
         return req.close();

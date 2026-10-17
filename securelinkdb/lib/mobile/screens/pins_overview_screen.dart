@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/device_model.dart';
+import '../services/ble_pin_relay_service.dart';
 import '../services/mobile_server_service.dart';
 import '../widgets/mobile_components.dart';
 
@@ -25,12 +26,23 @@ class _PinsOverviewScreenState extends State<PinsOverviewScreen> {
   @override
   void initState() {
     super.initState();
+    BlePinRelayService().addListener(_onBleRelayStateChanged);
     // At first open, actively look for smart pins
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (widget.service.pairedDevices.isEmpty) {
         widget.service.searchForSmartPins();
       }
     });
+  }
+
+  @override
+  void dispose() {
+    BlePinRelayService().removeListener(_onBleRelayStateChanged);
+    super.dispose();
+  }
+
+  void _onBleRelayStateChanged() {
+    if (mounted) setState(() {});
   }
 
   List<DeviceStatus> get _targetDevicePool {
@@ -586,6 +598,251 @@ class _PinsOverviewScreenState extends State<PinsOverviewScreen> {
     );
   }
 
+  Widget _buildBleRelayCard() {
+    final ble = BlePinRelayService();
+    final isConn = ble.isConnected;
+    final isStreaming = ble.state == BleRelayState.streaming;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+      decoration: BoxDecoration(
+        gradient: isConn
+            ? const LinearGradient(
+                colors: [Color(0xFF0D2847), Color(0xFF071424)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              )
+            : LinearGradient(
+                colors: [const Color(0xFF141923), const Color(0xFF0D1017)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: isConn
+              ? (isStreaming ? const Color(0xFF00E5FF) : const Color(0xFF3898FF).withValues(alpha: 0.6))
+              : Colors.white.withValues(alpha: 0.08),
+          width: isConn ? 1.2 : 1.0,
+        ),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 36,
+            height: 36,
+            decoration: BoxDecoration(
+              color: isConn
+                  ? const Color(0xFF007AFF).withValues(alpha: 0.22)
+                  : Colors.white.withValues(alpha: 0.05),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                color: isConn
+                    ? const Color(0xFF00A2FF).withValues(alpha: 0.5)
+                    : Colors.white.withValues(alpha: 0.1),
+              ),
+            ),
+            child: Icon(
+              isStreaming ? Icons.graphic_eq_rounded : Icons.bluetooth_audio_rounded,
+              color: isConn ? const Color(0xFF00C6FF) : Colors.white60,
+              size: 20,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Text(
+                      'BLE AUDIO RELAY',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 0.3,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                      decoration: BoxDecoration(
+                        color: isConn
+                            ? (isStreaming ? const Color(0xFF00E5FF) : const Color(0xFF007AFF))
+                            : Colors.white.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(
+                        isStreaming
+                            ? 'STREAMING'
+                            : (isConn ? 'BRIDGED' : 'IDLE'),
+                        style: TextStyle(
+                          color: isStreaming ? Colors.black : Colors.white,
+                          fontSize: 8.5,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  isConn
+                      ? 'Relaying pin audio over mobile data • ${ble.formattedRelayedData}'
+                      : 'Bridge pin audio to cellular when enterprise Wi-Fi blocks P2P',
+                  style: TextStyle(
+                    color: isConn ? const Color(0xFF81D4FA) : Colors.white.withValues(alpha: 0.5),
+                    fontSize: 10.5,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (isConn)
+            IconButton(
+              onPressed: () => ble.disconnect(),
+              icon: const Icon(Icons.link_off_rounded, color: Colors.white60, size: 20),
+              tooltip: 'Disconnect BLE Relay',
+            )
+          else
+            TextButton.icon(
+              onPressed: () => _openBleScanModal(),
+              icon: ble.isScanning
+                  ? const SizedBox(
+                      width: 12,
+                      height: 12,
+                      child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF00C6FF)),
+                    )
+                  : const Icon(Icons.radar_rounded, size: 14, color: Color(0xFF00C6FF)),
+              label: Text(
+                ble.isScanning ? 'Scanning' : 'Bridge',
+                style: const TextStyle(
+                  color: Color(0xFF00C6FF),
+                  fontWeight: FontWeight.w800,
+                  fontSize: 11,
+                ),
+              ),
+              style: TextButton.styleFrom(
+                backgroundColor: const Color(0xFF007AFF).withValues(alpha: 0.15),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  void _openBleScanModal() {
+    final ble = BlePinRelayService();
+    ble.startScan();
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF0E151A),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setModalState) {
+          return Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Row(
+                      children: [
+                        Icon(Icons.bluetooth_searching_rounded, color: Color(0xFF00C6FF)),
+                        SizedBox(width: 10),
+                        Text(
+                          'Connect Pin BLE Bridge',
+                          style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w800),
+                        ),
+                      ],
+                    ),
+                    IconButton(
+                      onPressed: () => Navigator.pop(ctx),
+                      icon: const Icon(Icons.close_rounded, color: Colors.white60),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  'Select your SecureLink Pin to bridge 16kHz PCM voice packets via cellular data when Wi-Fi is isolated.',
+                  style: TextStyle(color: Colors.white.withValues(alpha: 0.6), fontSize: 11.5),
+                ),
+                const SizedBox(height: 16),
+                if (ble.scanResults.isEmpty)
+                  Container(
+                    padding: const EdgeInsets.symmetric(vertical: 28),
+                    alignment: Alignment.center,
+                    child: Column(
+                      children: [
+                        const CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF00C6FF)),
+                        const SizedBox(height: 14),
+                        Text(
+                          ble.statusMessage,
+                          style: TextStyle(color: Colors.white.withValues(alpha: 0.6), fontSize: 12),
+                        ),
+                      ],
+                    ),
+                  )
+                else
+                  ...ble.scanResults.map((r) {
+                    final name = r.advertisementData.advName.isNotEmpty
+                        ? r.advertisementData.advName
+                        : (r.device.platformName.isNotEmpty ? r.device.platformName : 'SecureLink Pin');
+                    return ListTile(
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      tileColor: Colors.white.withValues(alpha: 0.04),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      leading: const Icon(Icons.badge_rounded, color: Color(0xFF00C6FF)),
+                      title: Text(name, style: const TextStyle(color: Colors.white, fontSize: 13.5, fontWeight: FontWeight.w700)),
+                      subtitle: Text('RSSI: ${r.rssi} dBm • Nordic UART Service Ready', style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 10.5)),
+                      trailing: ElevatedButton(
+                        onPressed: () async {
+                          Navigator.pop(ctx);
+                          final success = await ble.connectToDevice(r.device, widget.service);
+                          if (mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                backgroundColor: const Color(0xFF0E151A),
+                                content: Text(
+                                  success
+                                      ? 'Connected BLE Audio Relay to $name!'
+                                      : 'Failed to connect BLE to $name',
+                                  style: TextStyle(
+                                    color: success ? const Color(0xFF00C6FF) : MobileDesignSystem.statusWarning,
+                                  ),
+                                ),
+                              ),
+                            );
+                          }
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF007AFF),
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                        ),
+                        child: const Text('Bridge', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800)),
+                      ),
+                    );
+                  }),
+                const SizedBox(height: 12),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
   Widget _specRow(String title, String value, Color valColor) {
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -789,6 +1046,9 @@ class _PinsOverviewScreenState extends State<PinsOverviewScreen> {
             ),
           ),
           const SizedBox(height: 12),
+
+          // BLE Audio Relay Bridge (Cellular Piggyback)
+          _buildBleRelayCard(),
 
           // Live Safety Alert Banner (if incidents detected by CS for paired pins)
           if (incidents.isNotEmpty) ...[

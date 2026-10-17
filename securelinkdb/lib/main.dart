@@ -792,9 +792,56 @@ class _DashboardShellState extends State<DashboardShell> with WindowListener {
   WebSocketChannel? _uiChannel;
   bool isServerConnected = false;
   bool harmfulWordsOnly = false;
+  String? cloudTunnelUrl = 'https://rings-diploma-evaluated-mls.trycloudflare.com';
+  String primaryIp = '10.28.20.30';
   Timer? _reconnectTimer;
   Timer? _pingTimer;
   Timer? _statusAlertTimer;
+  Timer? _tunnelRefreshTimer;
+
+  Future<void> fetchNetworkAndTunnelInfo() async {
+    try {
+      final client = HttpClient()..connectionTimeout = const Duration(seconds: 2);
+      final req = await client.getUrl(Uri.parse('http://127.0.0.1:8080/api/cloud-tunnel'));
+      final res = await req.close();
+      if (res.statusCode == 200) {
+        final body = await res.transform(utf8.decoder).join();
+        final json = jsonDecode(body);
+        if (json['cloud_tunnel_url'] != null) {
+          final t = (json['cloud_tunnel_url'] as String).trim();
+          if (t.isNotEmpty && mounted) {
+            setState(() => cloudTunnelUrl = t);
+          }
+        }
+      }
+    } catch (_) {}
+
+    try {
+      final client = HttpClient()..connectionTimeout = const Duration(seconds: 2);
+      final req = await client.getUrl(Uri.parse('http://127.0.0.1:8080/api/network-info'));
+      final res = await req.close();
+      if (res.statusCode == 200) {
+        final body = await res.transform(utf8.decoder).join();
+        final json = jsonDecode(body);
+        if (json['server_ip'] != null && mounted) {
+          setState(() => primaryIp = json['server_ip'] as String);
+        }
+      }
+    } catch (_) {}
+  }
+
+  void _openCloudTunnelDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) => _CloudflareTunnelDialog(
+        initialTunnelUrl: cloudTunnelUrl ?? 'https://rings-diploma-evaluated-mls.trycloudflare.com',
+        primaryIp: primaryIp,
+        onTunnelUpdated: (newUrl) {
+          if (mounted) setState(() => cloudTunnelUrl = newUrl);
+        },
+      ),
+    );
+  }
 
   void toggleHarmfulWordsOnly() {
     final next = !harmfulWordsOnly;
@@ -832,6 +879,11 @@ class _DashboardShellState extends State<DashboardShell> with WindowListener {
     }
     Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) setState(() => now = DateTime.now());
+    });
+
+    fetchNetworkAndTunnelInfo();
+    _tunnelRefreshTimer = Timer.periodic(const Duration(seconds: 20), (_) {
+      if (isServerConnected) fetchNetworkAndTunnelInfo();
     });
 
     _initServerAndConnect();
@@ -967,6 +1019,19 @@ class _DashboardShellState extends State<DashboardShell> with WindowListener {
             } else if (eventType == 'server_status') {
               if (data.containsKey('harmful_words_only') && mounted) {
                 setState(() => harmfulWordsOnly = data['harmful_words_only'] == true);
+              }
+              if (data['cloud_tunnel_url'] != null && mounted) {
+                final t = (data['cloud_tunnel_url'] as String).trim();
+                if (t.isNotEmpty) {
+                  setState(() => cloudTunnelUrl = t);
+                }
+              }
+            } else if (eventType == 'cloud_tunnel_update') {
+              if (data['cloud_tunnel_url'] != null && mounted) {
+                final t = (data['cloud_tunnel_url'] as String).trim();
+                if (t.isNotEmpty) {
+                  setState(() => cloudTunnelUrl = t);
+                }
               }
             }
           } catch (e) {
@@ -1277,6 +1342,7 @@ class _DashboardShellState extends State<DashboardShell> with WindowListener {
     _pingTimer?.cancel();
     _reconnectTimer?.cancel();
     _statusAlertTimer?.cancel();
+    _tunnelRefreshTimer?.cancel();
     ServerManager.stopServer();
     super.dispose();
   }
@@ -1307,6 +1373,7 @@ class _DashboardShellState extends State<DashboardShell> with WindowListener {
     _uiChannel?.sink.close();
     if (mounted) setState(() => isServerConnected = false);
     _connectToServer();
+    fetchNetworkAndTunnelInfo();
     await Future<void>.delayed(const Duration(milliseconds: 350));
     if (mounted) setState(() => refreshing = false);
   }
@@ -1334,6 +1401,8 @@ class _DashboardShellState extends State<DashboardShell> with WindowListener {
                     _Sidebar(
                       tab: tab,
                       isServerConnected: isServerConnected,
+                      cloudTunnelUrl: cloudTunnelUrl,
+                      onOpenTunnelDialog: _openCloudTunnelDialog,
                       onTabChanged: (value) => setState(() => tab = value),
                     ),
                     Expanded(
@@ -1356,6 +1425,9 @@ class _DashboardShellState extends State<DashboardShell> with WindowListener {
                               hasOnlinePin: liveDevices.any((d) => d.online),
                               harmfulWordsOnly: harmfulWordsOnly,
                               onToggleHarmfulWordsOnly: toggleHarmfulWordsOnly,
+                              cloudTunnelUrl: cloudTunnelUrl,
+                              primaryIp: primaryIp,
+                              onOpenCloudTunnel: _openCloudTunnelDialog,
                             ),
                             const SizedBox(height: 14),
                             Expanded(
@@ -1433,6 +1505,8 @@ class _DashboardShellState extends State<DashboardShell> with WindowListener {
           wifiBatchMs: wifiBatchMs,
           devices: liveDevices,
           checkpoints: checkpoints,
+          cloudTunnelUrl: cloudTunnelUrl,
+          onOpenTunnelDialog: _openCloudTunnelDialog,
           onBufferChanged: (v) => setState(() => bufferDurationSeconds = v),
           onSilenceChanged: (v) => setState(() => silenceTimeoutSeconds = v),
           onVadStreakChanged: (v) => setState(() => vadStreakThreshold = v),
@@ -1560,9 +1634,17 @@ class _WindowButtonState extends State<_WindowButton> {
 class _Sidebar extends StatelessWidget {
   final AppTab tab;
   final bool isServerConnected;
+  final String? cloudTunnelUrl;
+  final VoidCallback? onOpenTunnelDialog;
   final ValueChanged<AppTab> onTabChanged;
 
-  const _Sidebar({required this.tab, required this.isServerConnected, required this.onTabChanged});
+  const _Sidebar({
+    required this.tab,
+    required this.isServerConnected,
+    this.cloudTunnelUrl,
+    this.onOpenTunnelDialog,
+    required this.onTabChanged,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1589,7 +1671,11 @@ class _Sidebar extends StatelessWidget {
           const _SideLabel('SYSTEM'),
           _SideItem(icon: Icons.tune_rounded, label: 'Configuration', active: tab == AppTab.configuration, onTap: () => onTabChanged(AppTab.configuration)),
           const Spacer(),
-          _ServerCard(isServerConnected: isServerConnected),
+          _ServerCard(
+            isServerConnected: isServerConnected,
+            cloudTunnelUrl: cloudTunnelUrl,
+            onOpenTunnelDialog: onOpenTunnelDialog,
+          ),
         ],
       ),
     );
@@ -1698,7 +1784,14 @@ class _SideItem extends StatelessWidget {
 
 class _ServerCard extends StatelessWidget {
   final bool isServerConnected;
-  const _ServerCard({required this.isServerConnected});
+  final String? cloudTunnelUrl;
+  final VoidCallback? onOpenTunnelDialog;
+
+  const _ServerCard({
+    required this.isServerConnected,
+    this.cloudTunnelUrl,
+    this.onOpenTunnelDialog,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1710,6 +1803,11 @@ class _ServerCard extends StatelessWidget {
         ? const Color(0xFF57DDA0)
         : (isStarting ? const Color(0xFF9B88FF) : const Color(0xFFFFC857));
 
+    final hasTunnel = cloudTunnelUrl != null && cloudTunnelUrl!.isNotEmpty;
+    final tunnelShort = hasTunnel
+        ? cloudTunnelUrl!.replaceFirst('https://', '').replaceFirst('http://', '')
+        : 'rings-diploma-evaluated-mls.trycloudflare.com';
+
     return Container(
       padding: const EdgeInsets.all(11),
       decoration: BoxDecoration(
@@ -1717,29 +1815,80 @@ class _ServerCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(15),
         border: Border.all(color: Colors.white.withOpacity(.05)),
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
         children: [
-          _StatusDot(
-            active: isServerConnected,
-            activeColor: const Color(0xFF57DDA0),
-            inactiveColor: isStarting ? const Color(0xFF9B88FF) : const Color(0xFFFFC857),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text('AI CHECKPOINT', style: TextStyle(fontSize: 9.5, fontWeight: FontWeight.w600)),
-                const SizedBox(height: 2),
-                Text(
-                  statusText,
-                  style: TextStyle(
-                    fontSize: 9,
-                    color: statusColor,
-                    fontWeight: isStarting ? FontWeight.w600 : FontWeight.w400,
-                  ),
+          Row(
+            children: [
+              _StatusDot(
+                active: isServerConnected,
+                activeColor: const Color(0xFF57DDA0),
+                inactiveColor: isStarting ? const Color(0xFF9B88FF) : const Color(0xFFFFC857),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('AI CHECKPOINT', style: TextStyle(fontSize: 9.5, fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 2),
+                    Text(
+                      statusText,
+                      style: TextStyle(
+                        fontSize: 9,
+                        color: statusColor,
+                        fontWeight: isStarting ? FontWeight.w600 : FontWeight.w400,
+                      ),
+                    ),
+                  ],
                 ),
-              ],
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          InkWell(
+            onTap: onOpenTunnelDialog,
+            borderRadius: BorderRadius.circular(8),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 5),
+              decoration: BoxDecoration(
+                color: const Color(0xFF109C6D).withOpacity(0.12),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: const Color(0xFF55E2C0).withOpacity(0.2)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.cloud_done_rounded, size: 12, color: Color(0xFF55E2C0)),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'CLOUDFLARE TUNNEL',
+                          style: TextStyle(
+                            fontSize: 7.5,
+                            fontWeight: FontWeight.w700,
+                            color: Color(0xFF55E2C0),
+                            letterSpacing: 0.5,
+                          ),
+                        ),
+                        Text(
+                          tunnelShort,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 8.5,
+                            color: Colors.white70,
+                            fontFamily: 'monospace',
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Icon(Icons.chevron_right_rounded, size: 14, color: Colors.white.withOpacity(0.4)),
+                ],
+              ),
             ),
           ),
         ],
@@ -1850,6 +1999,9 @@ class _Header extends StatelessWidget {
   final bool hasOnlinePin;
   final bool harmfulWordsOnly;
   final VoidCallback onToggleHarmfulWordsOnly;
+  final String? cloudTunnelUrl;
+  final String primaryIp;
+  final VoidCallback? onOpenCloudTunnel;
 
   const _Header({
     required this.tab,
@@ -1863,6 +2015,9 @@ class _Header extends StatelessWidget {
     required this.hasOnlinePin,
     required this.harmfulWordsOnly,
     required this.onToggleHarmfulWordsOnly,
+    this.cloudTunnelUrl,
+    this.primaryIp = '10.28.20.30',
+    this.onOpenCloudTunnel,
   });
 
   String get title => switch (tab) {
@@ -1930,6 +2085,17 @@ class _Header extends StatelessWidget {
             const SizedBox(width: 6),
             Text(isServerConnected ? 'SERVER ONLINE' : 'CHECKPOINT OFFLINE', style: const TextStyle(fontSize: 8.5, fontWeight: FontWeight.w700, letterSpacing: .6)),
           ]),
+        ),
+        const SizedBox(width: 8),
+        _CloudflareTunnelHeaderButton(
+          tunnelUrl: cloudTunnelUrl,
+          onTap: () {
+            if (onOpenCloudTunnel != null) {
+              onOpenCloudTunnel!();
+            } else {
+              _showCentralSystemSyncDialog(context);
+            }
+          },
         ),
         const SizedBox(width: 6),
         IconButton(
@@ -2041,7 +2207,7 @@ class _Header extends StatelessWidget {
           ],
         ),
         content: SizedBox(
-          width: 440,
+          width: 460,
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -2068,9 +2234,9 @@ class _Header extends StatelessWidget {
                   ],
                 ),
               ),
-              const SizedBox(height: 14),
+              const SizedBox(height: 12),
 
-              // Server host & port card
+              // Local Wi-Fi Station IP
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
                 decoration: BoxDecoration(
@@ -2080,25 +2246,72 @@ class _Header extends StatelessWidget {
                 ),
                 child: Row(
                   children: [
-                    const Icon(Icons.dns_rounded, color: Color(0xFF55E2C0), size: 22),
+                    const Icon(Icons.wifi_rounded, color: Color(0xFF55E2C0), size: 22),
                     const SizedBox(width: 12),
-                    const Expanded(
+                    Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text('Central System IP', style: TextStyle(color: Colors.white60, fontSize: 10)),
-                          Text('10.28.20.11:8080', style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w800)),
-                          Text('UDP Auto-Discovery Beacon: Port 8888 Active', style: TextStyle(color: Color(0xFF55E2C0), fontSize: 9.5)),
+                          const Text('Local Wi-Fi Station IP', style: TextStyle(color: Colors.white60, fontSize: 10)),
+                          Text('$primaryIp:8080', style: const TextStyle(color: Colors.white, fontSize: 13.5, fontWeight: FontWeight.w800, fontFamily: 'monospace')),
+                          const Text('UDP Auto-Discovery Beacon: Port 8888 Active', style: TextStyle(color: Color(0xFF55E2C0), fontSize: 9.5)),
                         ],
                       ),
                     ),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF109C6D),
-                        borderRadius: BorderRadius.circular(8),
+                    IconButton(
+                      tooltip: 'Copy Local IP:Port',
+                      icon: const Icon(Icons.copy_rounded, size: 16, color: Colors.white70),
+                      onPressed: () {
+                        Clipboard.setData(ClipboardData(text: '$primaryIp:8080'));
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Copied Local IP:Port to clipboard!'), duration: Duration(seconds: 1)),
+                        );
+                      },
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 10),
+
+              // Cloudflare Global Tunnel Card
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    colors: [Color(0xFF0F3B2E), Color(0xFF07211A)],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: const Color(0xFF55E2C0).withOpacity(0.45)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.cloud_done_rounded, color: Color(0xFF55E2C0), size: 22),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text('Cloudflare Global Tunnel (Cellular / Outside)', style: TextStyle(color: Color(0xFF55E2C0), fontSize: 10, fontWeight: FontWeight.w700)),
+                          SelectableText(
+                            cloudTunnelUrl ?? 'https://rings-diploma-evaluated-mls.trycloudflare.com',
+                            style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w800, fontFamily: 'monospace'),
+                          ),
+                          const Text('Bypasses Campus AP Isolation over TLS/WSS Port 443', style: TextStyle(color: Colors.white70, fontSize: 9)),
+                        ],
                       ),
-                      child: const Text('CS-1', style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w900)),
+                    ),
+                    IconButton(
+                      tooltip: 'Copy Cloudflare Tunnel URL',
+                      icon: const Icon(Icons.copy_rounded, size: 16, color: Color(0xFF55E2C0)),
+                      onPressed: () {
+                        final u = cloudTunnelUrl ?? 'https://rings-diploma-evaluated-mls.trycloudflare.com';
+                        Clipboard.setData(ClipboardData(text: u));
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Copied Cloudflare Tunnel URL!'), duration: Duration(seconds: 1)),
+                        );
+                      },
                     ),
                   ],
                 ),
@@ -2110,9 +2323,9 @@ class _Header extends StatelessWidget {
                 style: TextStyle(color: Colors.white, fontSize: 11.5, fontWeight: FontWeight.w700),
               ),
               const SizedBox(height: 4),
-              const Text(
-                '1. Open SecureLink Mobile on teacher or student phone.\n2. Tap "Auto-Discover Central System" or enter 10.28.20.11.\n3. The phone will link to CS-1 and immediately receive verified threat alerts.',
-                style: TextStyle(color: Colors.white60, fontSize: 10.5, height: 1.4),
+              Text(
+                '1. Open SecureLink Companion on teacher or student phone.\n2. Tap the Cloudflare/Hub icon in the app bar.\n3. The app will auto-fill "$primaryIp:8080" for campus Wi-Fi, or switch to Global Tunnel for cellular 4G/5G data.',
+                style: const TextStyle(color: Colors.white70, fontSize: 10.5, height: 1.4),
               ),
             ],
           ),
@@ -2124,6 +2337,482 @@ class _Header extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _CloudflareTunnelHeaderButton extends StatelessWidget {
+  final String? tunnelUrl;
+  final VoidCallback onTap;
+
+  const _CloudflareTunnelHeaderButton({super.key, required this.tunnelUrl, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final hasTunnel = tunnelUrl != null && tunnelUrl!.isNotEmpty;
+    final displayUrl = hasTunnel
+        ? tunnelUrl!.replaceFirst('https://', '').replaceFirst('http://', '')
+        : 'rings-diploma-evaluated-mls.trycloudflare.com';
+
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              colors: [Color(0xFF0F3B2E), Color(0xFF07211A)],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            borderRadius: BorderRadius.circular(11),
+            border: Border.all(
+              color: hasTunnel
+                  ? const Color(0xFF55E2C0).withOpacity(0.4)
+                  : Colors.white.withOpacity(0.12),
+            ),
+            boxShadow: hasTunnel
+                ? [
+                    BoxShadow(
+                      color: const Color(0xFF109C6D).withOpacity(0.25),
+                      blurRadius: 8,
+                      spreadRadius: 1,
+                    )
+                  ]
+                : null,
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                hasTunnel ? Icons.cloud_done_rounded : Icons.cloud_sync_rounded,
+                size: 14,
+                color: hasTunnel ? const Color(0xFF55E2C0) : Colors.white60,
+              ),
+              const SizedBox(width: 6),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        'CLOUDFLARE TUNNEL',
+                        style: TextStyle(
+                          fontSize: 7.5,
+                          fontWeight: FontWeight.w800,
+                          color: const Color(0xFF55E2C0).withOpacity(0.9),
+                          letterSpacing: 0.8,
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      Container(
+                        width: 5,
+                        height: 5,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: hasTunnel ? const Color(0xFF55E2C0) : const Color(0xFFFFB800),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 1),
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 160),
+                    child: Text(
+                      displayUrl,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 9,
+                        color: Colors.white,
+                        fontWeight: FontWeight.w600,
+                        fontFamily: 'monospace',
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(width: 4),
+              Icon(Icons.open_in_new_rounded, size: 11, color: Colors.white.withOpacity(0.5)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CloudflareTunnelDialog extends StatefulWidget {
+  final String initialTunnelUrl;
+  final String primaryIp;
+  final ValueChanged<String> onTunnelUpdated;
+
+  const _CloudflareTunnelDialog({
+    super.key,
+    required this.initialTunnelUrl,
+    required this.primaryIp,
+    required this.onTunnelUpdated,
+  });
+
+  @override
+  State<_CloudflareTunnelDialog> createState() => _CloudflareTunnelDialogState();
+}
+
+class _CloudflareTunnelDialogState extends State<_CloudflareTunnelDialog> {
+  late TextEditingController _urlCtrl;
+  bool _isSaving = false;
+  bool _isRefreshing = false;
+  String _statusMsg = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _urlCtrl = TextEditingController(text: widget.initialTunnelUrl);
+  }
+
+  @override
+  void dispose() {
+    _urlCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _refreshFromServer() async {
+    setState(() => _isRefreshing = true);
+    try {
+      final client = HttpClient()..connectionTimeout = const Duration(seconds: 2);
+      final req = await client.getUrl(Uri.parse('http://127.0.0.1:8080/api/cloud-tunnel'));
+      final res = await req.close();
+      if (res.statusCode == 200) {
+        final body = await res.transform(utf8.decoder).join();
+        final json = jsonDecode(body);
+        if (json['cloud_tunnel_url'] != null) {
+          final t = (json['cloud_tunnel_url'] as String).trim();
+          if (t.isNotEmpty && mounted) {
+            setState(() {
+              _urlCtrl.text = t;
+              _statusMsg = 'Synced live tunnel from Central System!';
+            });
+            widget.onTunnelUpdated(t);
+          }
+        }
+      }
+    } catch (e) {
+      if (mounted) setState(() => _statusMsg = 'Error reaching server: $e');
+    } finally {
+      if (mounted) setState(() => _isRefreshing = false);
+    }
+  }
+
+  Future<void> _saveTunnelUrl() async {
+    final text = _urlCtrl.text.trim();
+    if (text.isEmpty) return;
+    setState(() => _isSaving = true);
+    try {
+      final client = HttpClient()..connectionTimeout = const Duration(seconds: 3);
+      final req = await client.postUrl(Uri.parse('http://127.0.0.1:8080/api/cloud-tunnel'));
+      req.headers.contentType = ContentType.json;
+      req.write(jsonEncode({'cloud_tunnel_url': text}));
+      final res = await req.close();
+      if (res.statusCode == 200) {
+        widget.onTunnelUpdated(text);
+        if (mounted) {
+          setState(() => _statusMsg = 'Saved & broadcasted to fleet & mobile apps!');
+        }
+      }
+    } catch (e) {
+      if (mounted) setState(() => _statusMsg = 'Error saving tunnel: $e');
+    } finally {
+      if (mounted) setState(() => _isSaving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final currentText = _urlCtrl.text.trim().isNotEmpty
+        ? _urlCtrl.text.trim()
+        : 'https://rings-diploma-evaluated-mls.trycloudflare.com';
+    final hostOnly = currentText.replaceFirst('https://', '').replaceFirst('http://', '');
+    final wssUrl = 'wss://$hostOnly/ws';
+    final pinCmd = 'CMD:SET_SERVER:$hostOnly:443';
+
+    return AlertDialog(
+      backgroundColor: const Color(0xFF090D12),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(22),
+        side: const BorderSide(color: Color(0x33109C6D)),
+      ),
+      title: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 38,
+                height: 38,
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    colors: [Color(0xFF109C6D), Color(0xFF55E2C0)],
+                  ),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Icon(Icons.cloud_done_rounded, color: Colors.white, size: 20),
+              ),
+              const SizedBox(width: 12),
+              const Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Cloudflare Global Tunnel',
+                    style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w800),
+                  ),
+                  Text(
+                    'External WSS / HTTPS Gateway (Bypasses AP Isolation)',
+                    style: TextStyle(color: Color(0xFF55E2C0), fontSize: 10.5, fontWeight: FontWeight.w600),
+                  ),
+                ],
+              ),
+            ],
+          ),
+          IconButton(
+            onPressed: () => Navigator.pop(context),
+            icon: const Icon(Icons.close_rounded, color: Colors.white60, size: 18),
+          ),
+        ],
+      ),
+      content: SizedBox(
+        width: 540,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Live Active URL Display Card
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    colors: [Color(0xFF0C2B22), Color(0xFF071914)],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: const Color(0xFF55E2C0).withOpacity(0.35)),
+                  boxShadow: [
+                    BoxShadow(
+                      color: const Color(0xFF109C6D).withOpacity(0.18),
+                      blurRadius: 10,
+                      spreadRadius: 1,
+                    ),
+                  ],
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'GLOBAL TUNNEL URL (PUBLIC)',
+                          style: TextStyle(color: Color(0xFF55E2C0), fontSize: 9.5, fontWeight: FontWeight.w800, letterSpacing: 0.8),
+                        ),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF109C6D),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: const Text('PORT 8080 ROUTED', style: TextStyle(color: Colors.white, fontSize: 8.5, fontWeight: FontWeight.w800)),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    SelectableText(
+                      currentText,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w800,
+                        fontFamily: 'monospace',
+                        letterSpacing: 0.3,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        ElevatedButton.icon(
+                          onPressed: () {
+                            Clipboard.setData(ClipboardData(text: currentText));
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('Copied Full Tunnel URL to clipboard!'),
+                                duration: Duration(seconds: 1),
+                              ),
+                            );
+                          },
+                          icon: const Icon(Icons.copy_rounded, size: 13),
+                          label: const Text('Copy URL', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700)),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF109C6D),
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                          ),
+                        ),
+                        OutlinedButton.icon(
+                          onPressed: () {
+                            Clipboard.setData(ClipboardData(text: wssUrl));
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('Copied WSS address to clipboard!'),
+                                duration: Duration(seconds: 1),
+                              ),
+                            );
+                          },
+                          icon: const Icon(Icons.wifi_tethering_rounded, size: 13),
+                          label: const Text('Copy WSS URL', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700)),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: const Color(0xFF55E2C0),
+                            side: const BorderSide(color: Color(0x6655E2C0)),
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                          ),
+                        ),
+                        OutlinedButton.icon(
+                          onPressed: () {
+                            Clipboard.setData(ClipboardData(text: pinCmd));
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('Copied Pin Setup Command to clipboard!'),
+                                duration: Duration(seconds: 1),
+                              ),
+                            );
+                          },
+                          icon: const Icon(Icons.pin_rounded, size: 13),
+                          label: const Text('Copy Pin Command', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700)),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: Colors.white70,
+                            side: BorderSide(color: Colors.white.withOpacity(0.2)),
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 14),
+
+              // Architectural routing details
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.03),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.white.withOpacity(0.06)),
+                ),
+                child: Column(
+                  children: [
+                    _infoRow('Local Inference Server', 'http://${widget.primaryIp}:8080 (WS: /ui & /)'),
+                    const SizedBox(height: 6),
+                    _infoRow('Public Global Gateway', wssUrl),
+                    const SizedBox(height: 6),
+                    _infoRow('Encryption & Security', 'TLS / SSL Port 443 via Cloudflare Edge'),
+                    const SizedBox(height: 6),
+                    _infoRow('Campus AP Isolation', 'BYPASSED (Cellular & Outside Wi-Fi Enabled)'),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 14),
+
+              // Update URL Field
+              const Text(
+                'Update Active Tunnel Address (if cloudflared restarts):',
+                style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w700),
+              ),
+              const SizedBox(height: 6),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _urlCtrl,
+                      style: const TextStyle(color: Colors.white, fontSize: 12, fontFamily: 'monospace'),
+                      decoration: InputDecoration(
+                        hintText: 'https://<tunnel-id>.trycloudflare.com',
+                        hintStyle: TextStyle(color: Colors.white.withOpacity(0.3)),
+                        filled: true,
+                        fillColor: Colors.white.withOpacity(0.05),
+                        isDense: true,
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.white.withOpacity(0.1))),
+                        enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.white.withOpacity(0.1))),
+                        focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: Color(0xFF55E2C0))),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  ElevatedButton(
+                    onPressed: _isSaving ? null : _saveTunnelUrl,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF109C6D),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    ),
+                    child: _isSaving
+                        ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                        : const Text('Save & Broadcast', style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.w700)),
+                  ),
+                  const SizedBox(width: 6),
+                  IconButton(
+                    tooltip: 'Refresh from Server',
+                    onPressed: _isRefreshing ? null : _refreshFromServer,
+                    icon: _isRefreshing
+                        ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF55E2C0)))
+                        : const Icon(Icons.sync_rounded, size: 18, color: Color(0xFF55E2C0)),
+                  ),
+                ],
+              ),
+              if (_statusMsg.isNotEmpty) ...[
+                const SizedBox(height: 6),
+                Text(
+                  _statusMsg,
+                  style: const TextStyle(color: Color(0xFF55E2C0), fontSize: 10.5, fontWeight: FontWeight.w600),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Close', style: TextStyle(color: Colors.white70)),
+        ),
+      ],
+    );
+  }
+
+  Widget _infoRow(String label, String value) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 155,
+          child: Text(label, style: TextStyle(color: Colors.white.withOpacity(0.55), fontSize: 10)),
+        ),
+        Expanded(
+          child: Text(
+            value,
+            style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w700, fontFamily: 'monospace'),
+          ),
+        ),
+      ],
     );
   }
 }
@@ -4044,6 +4733,8 @@ class _ConfigurationPage extends StatefulWidget {
   final int wifiBatchMs;
   final List<DeviceStatus> devices;
   final List<WifiCheckpoint> checkpoints;
+  final String? cloudTunnelUrl;
+  final VoidCallback? onOpenTunnelDialog;
   final ValueChanged<int> onBufferChanged;
   final ValueChanged<int> onSilenceChanged;
   final ValueChanged<int> onVadStreakChanged;
@@ -4070,6 +4761,8 @@ class _ConfigurationPage extends StatefulWidget {
     required this.wifiBatchMs,
     required this.devices,
     required this.checkpoints,
+    this.cloudTunnelUrl,
+    this.onOpenTunnelDialog,
     required this.onBufferChanged,
     required this.onSilenceChanged,
     required this.onVadStreakChanged,
@@ -4742,6 +5435,63 @@ class _ConfigurationPageState extends State<_ConfigurationPage> {
                   style: OutlinedButton.styleFrom(
                     side: BorderSide(color: const Color(0xFFEF4444).withOpacity(0.4)),
                     backgroundColor: const Color(0xFFEF4444).withOpacity(0.12),
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // =========================================================================
+          // 5. CLOUDFLARE GLOBAL TUNNEL & EXTERNAL ROUTING
+          // =========================================================================
+          _ConfigCard(
+            title: 'CLOUDFLARE GLOBAL TUNNEL (EXTERNAL & CELLULAR ROUTING)',
+            subtitle: 'Bypasses campus AP client isolation by tunneling port 8080 over global WSS/HTTPS',
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF55E2C0).withOpacity(0.12),
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(color: const Color(0xFF55E2C0).withOpacity(0.3)),
+                            ),
+                            child: const Text('STATUS: ACTIVE & ROUTED', style: TextStyle(fontSize: 8.5, fontWeight: FontWeight.w700, color: Color(0xFF55E2C0))),
+                          ),
+                          const SizedBox(width: 8),
+                          Text('WSS / TLS Port 443 → Local 8080', style: TextStyle(fontSize: 9.5, color: Colors.white.withOpacity(0.6))),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      SelectableText(
+                        widget.cloudTunnelUrl ?? 'https://rings-diploma-evaluated-mls.trycloudflare.com',
+                        style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700, color: Colors.white, fontFamily: 'monospace'),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Mobile companions and wearable pins connect over cellular or outside Wi-Fi via this URL.',
+                        style: TextStyle(fontSize: 9.5, color: Colors.white.withOpacity(0.5)),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 16),
+                ElevatedButton.icon(
+                  onPressed: widget.onOpenTunnelDialog,
+                  icon: const Icon(Icons.cloud_rounded, size: 15),
+                  label: const Text('Manage Global Tunnel', style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.w700)),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF109C6D),
+                    foregroundColor: Colors.white,
                     padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                   ),

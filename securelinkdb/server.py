@@ -273,6 +273,18 @@ registered_devices = {}
 active_pins = {} # Map of websocket -> device_id
 harmful_words_only = False # Default False so all speech during testing is visible on the dashboard!
 
+TUNNEL_CONFIG_FILE = os.path.join(BASE_DIR, "tunnel_config.json")
+current_cloud_tunnel_url = None
+if os.path.exists(TUNNEL_CONFIG_FILE):
+    try:
+        with open(TUNNEL_CONFIG_FILE, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+            current_cloud_tunnel_url = cfg.get("cloud_tunnel_url")
+            if current_cloud_tunnel_url:
+                print(f"[TUNNEL] Loaded active Cloudflare Tunnel: {current_cloud_tunnel_url}")
+    except Exception:
+        pass
+
 async def broadcast_to_ui(payload: dict):
     if not ui_clients:
         return
@@ -293,7 +305,33 @@ async def health_check():
         "app": "SecureLink AI Server",
         "whisper": has_whisper,
         "classifier": bert_model is not None,
+        "cloud_tunnel_url": current_cloud_tunnel_url,
     }
+
+@app.get("/api/cloud-tunnel")
+async def get_cloud_tunnel():
+    return {
+        "status": "success",
+        "cloud_tunnel_url": current_cloud_tunnel_url
+    }
+
+@app.post("/api/cloud-tunnel")
+async def set_cloud_tunnel(payload: dict):
+    global current_cloud_tunnel_url
+    url = payload.get("cloud_tunnel_url")
+    if url:
+        current_cloud_tunnel_url = str(url).strip()
+        try:
+            with open(TUNNEL_CONFIG_FILE, "w", encoding="utf-8") as f:
+                json.dump({"cloud_tunnel_url": current_cloud_tunnel_url, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}, f, indent=2)
+        except Exception:
+            pass
+        print(f"[TUNNEL] Cloudflare Tunnel URL updated: {current_cloud_tunnel_url}")
+        await broadcast_to_ui({
+            "event_type": "cloud_tunnel_update",
+            "cloud_tunnel_url": current_cloud_tunnel_url
+        })
+    return {"status": "success", "cloud_tunnel_url": current_cloud_tunnel_url}
 
 @app.get("/api/network-info")
 async def get_network_info():
@@ -692,6 +730,7 @@ async def ui_websocket_endpoint(websocket: WebSocket):
         "whisper": has_whisper,
         "classifier": bert_model is not None,
         "harmful_words_only": harmful_words_only,
+        "cloud_tunnel_url": current_cloud_tunnel_url,
         "timestamp": datetime.now().strftime("%H:%M:%S")
     }))
 
@@ -819,6 +858,7 @@ async def get_cs_info():
         "status": "online",
         "cs_id": "CS-CAMPUS-01",
         "name": "SecureLink Campus Central System",
+        "cloud_tunnel_url": current_cloud_tunnel_url,
         "server_ip": true_ip,
         "server_port": 8080,
         "priority_level": "PRIMARY (Priority 1: Central System, Priority 2: Mobile App)",
@@ -1206,10 +1246,20 @@ async def handle_completed_audio(device_id: str, pcm_bytes: bytes, websocket: We
 async def pin_websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     
-    # Consistent device ID based on client IP so reconnects do not create duplicate phantom pins
-    client_host = websocket.client.host if (websocket.client and websocket.client.host) else "001"
-    pin_suffix = client_host.split(".")[-1].zfill(3) if "." in client_host else "001"
-    device_id = f"PIN-{pin_suffix}"
+    # Consistent device ID: prioritize explicit query param (?device_id=PIN-001) or header (for BLE relay & Cloudflare Tunnel)
+    explicit_dev_id = websocket.query_params.get("device_id") or websocket.headers.get("x-device-id")
+    if explicit_dev_id:
+        device_id = explicit_dev_id.strip().upper()
+    else:
+        cf_ip = websocket.headers.get("cf-connecting-ip") or websocket.headers.get("x-forwarded-for")
+        if cf_ip:
+            ip_clean = cf_ip.split(",")[0].strip()
+            pin_suffix = ip_clean.split(".")[-1].zfill(3) if "." in ip_clean else "001"
+            device_id = f"PIN-{pin_suffix}"
+        else:
+            client_host = websocket.client.host if (websocket.client and websocket.client.host) else "001"
+            pin_suffix = client_host.split(".")[-1].zfill(3) if "." in client_host else "001"
+            device_id = f"PIN-{pin_suffix}"
     active_pins[websocket] = device_id
     
     # Check if there is a pending Wi-Fi config queued for this pin or fleet-wide

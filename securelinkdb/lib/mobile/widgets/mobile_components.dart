@@ -1,7 +1,10 @@
 import 'dart:io';
 import 'dart:ui';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import '../services/mobile_server_service.dart';
+import '../services/ble_pin_relay_service.dart';
 
 class MobileDesignSystem {
   // Desktop scaffold & surface colors
@@ -524,18 +527,67 @@ class ServerHostModal extends StatefulWidget {
 class _ServerHostModalState extends State<ServerHostModal> {
   late TextEditingController _hostCtrl;
   late TextEditingController _portCtrl;
+  late TextEditingController _tunnelCtrl;
+  late bool _useTunnel;
+  bool _isFetchingTunnel = false;
 
   @override
   void initState() {
     super.initState();
     _hostCtrl = TextEditingController(text: widget.service.host);
     _portCtrl = TextEditingController(text: widget.service.port.toString());
+    final initialTunnel = widget.service.cloudTunnelUrl.isNotEmpty
+        ? widget.service.cloudTunnelUrl
+        : 'https://rings-diploma-evaluated-mls.trycloudflare.com';
+    _tunnelCtrl = TextEditingController(text: initialTunnel);
+    _useTunnel = widget.service.useCloudTunnel;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _autoFetchTunnel(notify: false);
+    });
+  }
+
+  Future<void> _autoFetchTunnel({bool notify = true}) async {
+    if (_isFetchingTunnel) return;
+    setState(() => _isFetchingTunnel = true);
+    try {
+      final fetched = await widget.service.fetchCloudTunnel();
+      if (mounted) {
+        if (fetched != null && fetched.isNotEmpty) {
+          setState(() {
+            _tunnelCtrl.text = fetched;
+          });
+          if (notify) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                backgroundColor: const Color(0xFF0E151A),
+                content: Text(
+                  'Auto-detected active tunnel: $fetched',
+                  style: const TextStyle(color: MobileDesignSystem.primaryGreenMint),
+                ),
+                duration: const Duration(seconds: 2),
+              ),
+            );
+          }
+        } else if (_tunnelCtrl.text.isEmpty && widget.service.cloudTunnelUrl.isNotEmpty) {
+          setState(() {
+            _tunnelCtrl.text = widget.service.cloudTunnelUrl;
+          });
+        }
+      }
+    } catch (_) {
+    } finally {
+      if (mounted) {
+        setState(() => _isFetchingTunnel = false);
+      }
+    }
   }
 
   @override
   void dispose() {
     _hostCtrl.dispose();
     _portCtrl.dispose();
+    _tunnelCtrl.dispose();
     super.dispose();
   }
 
@@ -548,236 +600,431 @@ class _ServerHostModalState extends State<ServerHostModal> {
         left: 20,
         right: 20,
       ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Row(
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(9),
+                      decoration: BoxDecoration(
+                        color: MobileDesignSystem.primaryGreen.withValues(alpha: 0.18),
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(
+                        Icons.hub_rounded,
+                        color: MobileDesignSystem.primaryGreenMint,
+                        size: 20,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    const Text(
+                      'AI Server Connection',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w800,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ],
+                ),
+                IconButton(
+                  onPressed: () => Navigator.pop(context),
+                  icon: const Icon(Icons.close_rounded, color: Colors.white60),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Central System is the primary station running AI inference. Mobile companions sync to receive real-time telemetry and safety alerts.',
+              style: TextStyle(
+                color: Colors.white.withValues(alpha: 0.6),
+                fontSize: 12.5,
+              ),
+            ),
+            const SizedBox(height: 14),
+
+            // Cloudflare Tunnel Mode Toggle
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                gradient: _useTunnel
+                    ? const LinearGradient(
+                        colors: [Color(0xFF0F3B2E), Color(0xFF07211A)],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                      )
+                    : LinearGradient(
+                        colors: [const Color(0xFF131B26), const Color(0xFF0B1017)],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                      ),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: _useTunnel
+                      ? MobileDesignSystem.primaryGreenMint.withValues(alpha: 0.5)
+                      : Colors.white.withValues(alpha: 0.1),
+                ),
+              ),
+              child: Row(
                 children: [
                   Container(
-                    padding: const EdgeInsets.all(9),
+                    width: 36,
+                    height: 36,
                     decoration: BoxDecoration(
-                      color: MobileDesignSystem.primaryGreen.withValues(alpha: 0.18),
-                      shape: BoxShape.circle,
+                      color: _useTunnel
+                          ? MobileDesignSystem.primaryGreen.withValues(alpha: 0.25)
+                          : Colors.white.withValues(alpha: 0.05),
+                      borderRadius: BorderRadius.circular(10),
                     ),
-                    child: const Icon(
-                      Icons.hub_rounded,
-                      color: MobileDesignSystem.primaryGreenMint,
+                    child: Icon(
+                      Icons.cloud_sync_rounded,
+                      color: _useTunnel ? MobileDesignSystem.primaryGreenMint : Colors.white60,
                       size: 20,
                     ),
                   ),
                   const SizedBox(width: 12),
-                  const Text(
-                    'AI Server Connection',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w800,
-                      color: Colors.white,
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Cloudflare Global Tunnel',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        Text(
+                          'Bypasses Campus AP Isolation over WSS/TLS',
+                          style: TextStyle(
+                            color: Colors.white.withValues(alpha: 0.6),
+                            fontSize: 11,
+                          ),
+                        ),
+                      ],
                     ),
+                  ),
+                  Switch.adaptive(
+                    value: _useTunnel,
+                    activeThumbColor: MobileDesignSystem.primaryGreenMint,
+                    activeTrackColor: MobileDesignSystem.primaryGreen.withValues(alpha: 0.5),
+                    onChanged: (val) {
+                      setState(() {
+                        _useTunnel = val;
+                      });
+                      if (val && _tunnelCtrl.text.trim().isEmpty) {
+                        _autoFetchTunnel(notify: true);
+                      }
+                    },
                   ),
                 ],
               ),
-              IconButton(
-                onPressed: () => Navigator.pop(context),
-                icon: const Icon(Icons.close_rounded, color: Colors.white60),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Central System is the primary station running AI inference. Mobile companions sync to receive real-time telemetry and safety alerts.',
-            style: TextStyle(
-              color: Colors.white.withValues(alpha: 0.6),
-              fontSize: 12.5,
             ),
-          ),
-          const SizedBox(height: 14),
+            const SizedBox(height: 14),
 
-          // Priority Architecture Card
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-            decoration: BoxDecoration(
-              color: MobileDesignSystem.primaryGreen.withValues(alpha: 0.08),
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: MobileDesignSystem.primaryGreen.withValues(alpha: 0.25)),
-            ),
-            child: Row(
-              children: [
-                const Icon(Icons.hub_rounded, color: MobileDesignSystem.primaryGreenMint, size: 20),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Central Station: ${widget.service.csId}',
-                        style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w700),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        'Priority 1: Central System • Priority 2: Mobile Companion',
-                        style: TextStyle(color: Colors.white.withValues(alpha: 0.65), fontSize: 10.5),
-                      ),
-                    ],
+            if (_useTunnel) ...[
+              // Cloudflare Tunnel URL Input
+              TextField(
+                controller: _tunnelCtrl,
+                style: const TextStyle(color: Colors.white, fontSize: 14),
+                decoration: InputDecoration(
+                  labelText: 'Cloudflare Tunnel WebSocket/HTTP URL',
+                  labelStyle: TextStyle(color: Colors.white.withValues(alpha: 0.7)),
+                  hintText: 'https://<tunnel-id>.trycloudflare.com',
+                  prefixIcon: const Icon(Icons.cloud_rounded, color: MobileDesignSystem.primaryGreenMint),
+                  filled: true,
+                  fillColor: Colors.white.withValues(alpha: 0.05),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(14),
+                    borderSide: BorderSide(color: MobileDesignSystem.primaryGreen.withValues(alpha: 0.25)),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(14),
+                    borderSide: BorderSide(color: MobileDesignSystem.primaryGreen.withValues(alpha: 0.25)),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(14),
+                    borderSide: const BorderSide(color: MobileDesignSystem.primaryGreenMint),
                   ),
                 ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 14),
+              ),
+              const SizedBox(height: 10),
 
-          // Auto-Discovery Button
-          SizedBox(
-            width: double.infinity,
-            child: OutlinedButton.icon(
-              onPressed: widget.service.isAutoDiscoveringCS
-                  ? null
-                  : () async {
-                      final found = await widget.service.autoDiscoverCentralSystem();
-                      if (context.mounted) {
+              // Auto-Fetch Button from Central System
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: _isFetchingTunnel ? null : () => _autoFetchTunnel(notify: true),
+                  icon: _isFetchingTunnel
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: MobileDesignSystem.primaryGreenMint),
+                        )
+                      : const Icon(Icons.sync_rounded, size: 16),
+                  label: Text(
+                    _isFetchingTunnel ? 'Fetching tunnel from Laptop Central System...' : 'Auto-Fetch Active Tunnel from Laptop',
+                    style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12),
+                  ),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: MobileDesignSystem.primaryGreenMint,
+                    side: BorderSide(color: MobileDesignSystem.primaryGreenMint.withValues(alpha: 0.5)),
+                    padding: const EdgeInsets.symmetric(vertical: 11),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+
+              // Quick Action Chips: Paste & Active Preset
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  ActionChip(
+                    avatar: const Icon(Icons.content_paste_rounded, size: 14, color: Colors.white70),
+                    label: const Text('Paste from Clipboard', style: TextStyle(fontSize: 11, color: Colors.white)),
+                    backgroundColor: Colors.white.withValues(alpha: 0.08),
+                    side: BorderSide(color: Colors.white.withValues(alpha: 0.15)),
+                    onPressed: () async {
+                      final data = await Clipboard.getData(Clipboard.kTextPlain);
+                      if (data?.text != null && data!.text!.trim().isNotEmpty) {
                         setState(() {
-                          _hostCtrl.text = widget.service.host;
-                          _portCtrl.text = widget.service.port.toString();
+                          _tunnelCtrl.text = data.text!.trim();
                         });
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            backgroundColor: const Color(0xFF0E151A),
-                            content: Text(
-                              found
-                                  ? 'Discovered Central System at ${widget.service.host}:${widget.service.port}!'
-                                  : 'Could not auto-discover. Please check laptop Wi-Fi.',
-                              style: TextStyle(
-                                color: found ? MobileDesignSystem.primaryGreenMint : MobileDesignSystem.statusWarning,
-                              ),
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              backgroundColor: Color(0xFF0E151A),
+                              content: Text('Pasted Cloudflare Tunnel URL from clipboard!', style: TextStyle(color: MobileDesignSystem.primaryGreenMint)),
+                              duration: Duration(seconds: 1),
                             ),
-                          ),
-                        );
+                          );
+                        }
                       }
                     },
-              icon: widget.service.isAutoDiscoveringCS
-                  ? const SizedBox(
-                      width: 14,
-                      height: 14,
-                      child: CircularProgressIndicator(strokeWidth: 2, color: MobileDesignSystem.primaryGreenMint),
-                    )
-                  : const Icon(Icons.radar_rounded, size: 16),
-              label: Text(
-                widget.service.isAutoDiscoveringCS ? 'Scanning Wi-Fi & UDP 8888...' : 'Auto-Discover Central System (UDP 8888)',
-                style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12),
+                  ),
+                  ActionChip(
+                    avatar: const Icon(Icons.bolt_rounded, size: 14, color: MobileDesignSystem.primaryGreenMint),
+                    label: Text(
+                      'Active: ${(widget.service.cloudTunnelUrl.isNotEmpty ? widget.service.cloudTunnelUrl : "https://rings-diploma-evaluated-mls.trycloudflare.com").replaceAll("https://", "")}',
+                      style: const TextStyle(fontSize: 10.5, color: Colors.white70),
+                    ),
+                    backgroundColor: MobileDesignSystem.primaryGreen.withValues(alpha: 0.12),
+                    side: BorderSide(color: MobileDesignSystem.primaryGreen.withValues(alpha: 0.3)),
+                    onPressed: () {
+                      setState(() {
+                        _tunnelCtrl.text = widget.service.cloudTunnelUrl.isNotEmpty
+                            ? widget.service.cloudTunnelUrl
+                            : 'https://rings-diploma-evaluated-mls.trycloudflare.com';
+                      });
+                    },
+                  ),
+                ],
               ),
-              style: OutlinedButton.styleFrom(
-                foregroundColor: MobileDesignSystem.primaryGreenMint,
-                side: BorderSide(color: MobileDesignSystem.primaryGreenMint.withValues(alpha: 0.5)),
-                padding: const EdgeInsets.symmetric(vertical: 11),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-              ),
-            ),
-          ),
-          const SizedBox(height: 14),
-
-          // Preset Quick Buttons
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              _presetChip('Laptop Host (10.28.20.11)', '10.28.20.11'),
-              _presetChip('Campus Wi-Fi (10.28.20.28)', '10.28.20.28'),
-              _presetChip('Localhost (127.0.0.1)', '127.0.0.1'),
-              _presetChip('Local Subnet (192.168.1.100)', '192.168.1.100'),
-            ],
-          ),
-
-          const SizedBox(height: 18),
-          TextField(
-            controller: _hostCtrl,
-            style: const TextStyle(color: Colors.white, fontSize: 14.5),
-            decoration: InputDecoration(
-              labelText: 'Central System IP / Hostname',
-              labelStyle: TextStyle(color: Colors.white.withValues(alpha: 0.7)),
-              hintText: 'e.g. 10.28.20.11',
-              prefixIcon: const Icon(Icons.dns_rounded,
-                  color: MobileDesignSystem.primaryGreenMint),
-              filled: true,
-              fillColor: Colors.white.withValues(alpha: 0.05),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(14),
-                borderSide: BorderSide(
-                    color: MobileDesignSystem.primaryGreen.withValues(alpha: 0.25)),
-              ),
-              enabledBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(14),
-                borderSide: BorderSide(
-                    color: MobileDesignSystem.primaryGreen.withValues(alpha: 0.25)),
-              ),
-              focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(14),
-                borderSide:
-                    const BorderSide(color: MobileDesignSystem.primaryGreenMint),
-              ),
-            ),
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _portCtrl,
-            keyboardType: TextInputType.number,
-            style: const TextStyle(color: Colors.white, fontSize: 14.5),
-            decoration: InputDecoration(
-              labelText: 'Central System Port',
-              labelStyle: TextStyle(color: Colors.white.withValues(alpha: 0.7)),
-              hintText: '8080',
-              prefixIcon: const Icon(Icons.numbers_rounded,
-                  color: MobileDesignSystem.primaryGreenMint),
-              filled: true,
-              fillColor: Colors.white.withValues(alpha: 0.05),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(14),
-                borderSide: BorderSide(
-                    color: MobileDesignSystem.primaryGreen.withValues(alpha: 0.25)),
-              ),
-              enabledBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(14),
-                borderSide: BorderSide(
-                    color: MobileDesignSystem.primaryGreen.withValues(alpha: 0.25)),
-              ),
-              focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(14),
-                borderSide:
-                    const BorderSide(color: MobileDesignSystem.primaryGreenMint),
-              ),
-            ),
-          ),
-          const SizedBox(height: 20),
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton.icon(
-              onPressed: () {
-                final h = _hostCtrl.text.trim();
-                final p = int.tryParse(_portCtrl.text.trim()) ?? 8080;
-                if (h.isNotEmpty) {
-                  widget.service.updateHost(h, p);
-                }
-                Navigator.pop(context);
-              },
-              icon: const Icon(Icons.sync_rounded),
-              label: const Text(
-                'Sync with Central System',
-                style: TextStyle(fontWeight: FontWeight.w800),
-              ),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: MobileDesignSystem.primaryGreen,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                shape: RoundedRectangleBorder(
+            ] else ...[
+              // Priority Architecture Card
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                decoration: BoxDecoration(
+                  color: MobileDesignSystem.primaryGreen.withValues(alpha: 0.08),
                   borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: MobileDesignSystem.primaryGreen.withValues(alpha: 0.25)),
                 ),
-                elevation: 4,
+                child: Row(
+                  children: [
+                    const Icon(Icons.hub_rounded, color: MobileDesignSystem.primaryGreenMint, size: 20),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Central Station: ${widget.service.csId}',
+                            style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w700),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            'Priority 1: Central System • Priority 2: Mobile Companion',
+                            style: TextStyle(color: Colors.white.withValues(alpha: 0.65), fontSize: 10.5),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 14),
+
+              // Auto-Discovery Button
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: widget.service.isAutoDiscoveringCS
+                      ? null
+                      : () async {
+                          final found = await widget.service.autoDiscoverCentralSystem();
+                          if (context.mounted) {
+                            setState(() {
+                              _hostCtrl.text = widget.service.host;
+                              _portCtrl.text = widget.service.port.toString();
+                            });
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                backgroundColor: const Color(0xFF0E151A),
+                                content: Text(
+                                  found
+                                      ? 'Discovered Central System at ${widget.service.host}:${widget.service.port}!'
+                                      : 'Could not auto-discover. Please check laptop Wi-Fi.',
+                                  style: TextStyle(
+                                    color: found ? MobileDesignSystem.primaryGreenMint : MobileDesignSystem.statusWarning,
+                                  ),
+                                ),
+                              ),
+                            );
+                          }
+                        },
+                  icon: widget.service.isAutoDiscoveringCS
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: MobileDesignSystem.primaryGreenMint),
+                        )
+                      : const Icon(Icons.radar_rounded, size: 16),
+                  label: Text(
+                    widget.service.isAutoDiscoveringCS ? 'Scanning Wi-Fi & UDP 8888...' : 'Auto-Discover Central System (UDP 8888)',
+                    style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12),
+                  ),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: MobileDesignSystem.primaryGreenMint,
+                    side: BorderSide(color: MobileDesignSystem.primaryGreenMint.withValues(alpha: 0.5)),
+                    padding: const EdgeInsets.symmetric(vertical: 11),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 14),
+
+              // Preset Quick Buttons
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _presetChip('Laptop Host (10.28.20.11)', '10.28.20.11'),
+                  _presetChip('Campus Wi-Fi (10.28.20.28)', '10.28.20.28'),
+                  _presetChip('Localhost (127.0.0.1)', '127.0.0.1'),
+                  _presetChip('Local Subnet (192.168.1.100)', '192.168.1.100'),
+                ],
+              ),
+
+              const SizedBox(height: 18),
+              TextField(
+                controller: _hostCtrl,
+                style: const TextStyle(color: Colors.white, fontSize: 14.5),
+                decoration: InputDecoration(
+                  labelText: 'Central System IP / Hostname',
+                  labelStyle: TextStyle(color: Colors.white.withValues(alpha: 0.7)),
+                  hintText: 'e.g. 10.28.20.11',
+                  prefixIcon: const Icon(Icons.dns_rounded,
+                      color: MobileDesignSystem.primaryGreenMint),
+                  filled: true,
+                  fillColor: Colors.white.withValues(alpha: 0.05),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(14),
+                    borderSide: BorderSide(
+                        color: MobileDesignSystem.primaryGreen.withValues(alpha: 0.25)),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(14),
+                    borderSide: BorderSide(
+                        color: MobileDesignSystem.primaryGreen.withValues(alpha: 0.25)),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(14),
+                    borderSide:
+                        const BorderSide(color: MobileDesignSystem.primaryGreenMint),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _portCtrl,
+                keyboardType: TextInputType.number,
+                style: const TextStyle(color: Colors.white, fontSize: 14.5),
+                decoration: InputDecoration(
+                  labelText: 'Central System Port',
+                  labelStyle: TextStyle(color: Colors.white.withValues(alpha: 0.7)),
+                  hintText: '8080',
+                  prefixIcon: const Icon(Icons.numbers_rounded,
+                      color: MobileDesignSystem.primaryGreenMint),
+                  filled: true,
+                  fillColor: Colors.white.withValues(alpha: 0.05),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(14),
+                    borderSide: BorderSide(
+                        color: MobileDesignSystem.primaryGreen.withValues(alpha: 0.25)),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(14),
+                    borderSide: BorderSide(
+                        color: MobileDesignSystem.primaryGreen.withValues(alpha: 0.25)),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(14),
+                    borderSide:
+                        const BorderSide(color: MobileDesignSystem.primaryGreenMint),
+                  ),
+                ),
+              ),
+            ],
+
+            const SizedBox(height: 20),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: () {
+                  if (_useTunnel) {
+                    final t = _tunnelCtrl.text.trim();
+                    if (t.isNotEmpty) {
+                      widget.service.setCloudTunnelUrl(t, enable: true);
+                    } else {
+                      widget.service.setCloudTunnelEnabled(true);
+                    }
+                  } else {
+                    final h = _hostCtrl.text.trim();
+                    final p = int.tryParse(_portCtrl.text.trim()) ?? 8080;
+                    if (h.isNotEmpty) {
+                      widget.service.setCloudTunnelEnabled(false);
+                      widget.service.updateHost(h, p);
+                    }
+                  }
+                  Navigator.pop(context);
+                },
+                icon: const Icon(Icons.sync_rounded),
+                label: Text(
+                  _useTunnel ? 'Connect via Cloudflare Tunnel' : 'Sync with Central System',
+                  style: const TextStyle(fontWeight: FontWeight.w800),
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: MobileDesignSystem.primaryGreen,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  elevation: 4,
+                ),
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -885,29 +1132,45 @@ class PairPinModal extends StatefulWidget {
 
 class _PairPinModalState extends State<PairPinModal> with SingleTickerProviderStateMixin {
   late TabController _tabController;
-  final TextEditingController _pinIdCtrl = TextEditingController(text: 'PIN-001');
-  final TextEditingController _aliasCtrl = TextEditingController(text: 'Student: Juan Dela Cruz');
-  final TextEditingController _ssidCtrl = TextEditingController(text: 'SLTYMTBLLS');
-  final TextEditingController _passCtrl = TextEditingController(text: '9945SUmaxx!');
+  final TextEditingController _pinIdCtrl = TextEditingController();
+  final TextEditingController _aliasCtrl = TextEditingController();
+  final TextEditingController _ssidCtrl = TextEditingController();
+  final TextEditingController _passCtrl = TextEditingController();
   bool _isPairing = false;
-  String _selectedBlePin = 'SECURELINK-PIN-001';
+  ScanResult? _selectedBleScanResult;
+  String? _selectedBlePin;
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
+    _tabController.addListener(_handleTabChange);
     if (widget.service.checkpoints.isNotEmpty) {
       _ssidCtrl.text = widget.service.checkpoints.first.ssid;
       _passCtrl.text = widget.service.checkpoints.first.pass;
     }
-    // Auto-scan on modal open
+    BlePinRelayService().addListener(_onBleRelayChanged);
+    BlePinRelayService().startScan();
+    // Auto-scan Wi-Fi on modal open
     WidgetsBinding.instance.addPostFrameCallback((_) {
       widget.service.searchForSmartPins();
     });
   }
 
+  void _onBleRelayChanged() {
+    if (mounted) setState(() {});
+  }
+
+  void _handleTabChange() {
+    if (_tabController.index == 1) {
+      BlePinRelayService().startScan();
+    }
+  }
+
   @override
   void dispose() {
+    BlePinRelayService().removeListener(_onBleRelayChanged);
+    _tabController.removeListener(_handleTabChange);
     _tabController.dispose();
     _pinIdCtrl.dispose();
     _aliasCtrl.dispose();
@@ -1322,7 +1585,8 @@ class _PairPinModalState extends State<PairPinModal> with SingleTickerProviderSt
   }
 
   Widget _buildBluetoothPairingTab() {
-    final nearbyDevices = widget.service.allDevices;
+    final ble = BlePinRelayService();
+    final scanResults = ble.scanResults;
 
     return ListView(
       children: [
@@ -1332,31 +1596,113 @@ class _PairPinModalState extends State<PairPinModal> with SingleTickerProviderSt
             height: 68,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              color: MobileDesignSystem.primaryGreen.withValues(alpha: 0.12),
-              border: Border.all(color: MobileDesignSystem.primaryGreenMint.withValues(alpha: 0.35)),
+              color: const Color(0xFF007AFF).withValues(alpha: 0.12),
+              border: Border.all(color: const Color(0xFF00C6FF).withValues(alpha: 0.35)),
             ),
-            child: const Icon(Icons.bluetooth_searching_rounded, color: MobileDesignSystem.primaryGreenMint, size: 34),
+            child: Icon(
+              ble.isScanning ? Icons.bluetooth_searching_rounded : Icons.bluetooth_audio_rounded,
+              color: const Color(0xFF00C6FF),
+              size: 34,
+            ),
           ),
         ),
         const SizedBox(height: 10),
         Center(
           child: Text(
-            widget.service.isSearchingPins
-                ? 'Scanning for Nearby Smart Pins...'
-                : 'Nearby Smart Pins in Signal Range',
+            ble.isScanning
+                ? 'Scanning for Nearby Smart Pins (BLE)...'
+                : 'Real Bluetooth Low Energy (BLE) Scan',
             style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w700),
           ),
         ),
-        const SizedBox(height: 16),
+        const SizedBox(height: 6),
+        Center(
+          child: Text(
+            ble.isScanning
+                ? 'Searching 2.4GHz spectrum for Nordic UART Service...'
+                : (scanResults.isEmpty
+                    ? 'No Smart Pins found nearby yet'
+                    : '${scanResults.length} Pin(s) discovered in Bluetooth signal range'),
+            style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 11),
+          ),
+        ),
+        const SizedBox(height: 14),
 
-        // Discovered Devices list from actual network/BLE pool
-        if (nearbyDevices.isNotEmpty)
-          ...nearbyDevices.map((dev) => _bleDeviceTile(
-            dev.id,
-            dev.rssi,
-            '${dev.state} • Battery ${dev.battery}% (${dev.network})',
-          ))
-        else
+        // Discovered Devices list from REAL BlePinRelayService FlutterBluePlus scan
+        if (scanResults.isNotEmpty) ...[
+          ...scanResults.map((r) {
+            final adv = r.advertisementData.advName;
+            final devName = r.device.platformName;
+            final name = adv.isNotEmpty ? adv : (devName.isNotEmpty ? devName : 'SecureLink-PIN');
+            final isSelected = _selectedBleScanResult == r;
+
+            return GestureDetector(
+              onTap: () {
+                setState(() {
+                  _selectedBleScanResult = r;
+                  _selectedBlePin = name;
+                });
+              },
+              child: Container(
+                margin: const EdgeInsets.only(bottom: 8),
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                decoration: BoxDecoration(
+                  color: isSelected
+                      ? const Color(0xFF007AFF).withValues(alpha: 0.18)
+                      : Colors.white.withValues(alpha: 0.03),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(
+                    color: isSelected ? const Color(0xFF00C6FF) : Colors.white10,
+                    width: isSelected ? 1.5 : 1,
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      isSelected ? Icons.check_circle_rounded : Icons.bluetooth_rounded,
+                      color: isSelected ? const Color(0xFF00C6FF) : Colors.white60,
+                      size: 24,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(name, style: const TextStyle(color: Colors.white, fontSize: 13.5, fontWeight: FontWeight.w800)),
+                          const SizedBox(height: 2),
+                          Text(
+                            'MAC: ${r.device.remoteId.str} • Nordic UART Service Ready',
+                            style: TextStyle(color: Colors.white.withValues(alpha: 0.55), fontSize: 10.5),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: 0.08),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        '${r.rssi} dBm',
+                        style: const TextStyle(color: Color(0xFF00C6FF), fontSize: 10, fontWeight: FontWeight.w700),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }),
+          const SizedBox(height: 6),
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton.icon(
+              onPressed: ble.isScanning ? null : () => ble.startScan(),
+              icon: const Icon(Icons.refresh_rounded, size: 14, color: Color(0xFF00C6FF)),
+              label: const Text('Rescan BLE', style: TextStyle(color: Color(0xFF00C6FF), fontSize: 11)),
+            ),
+          ),
+        ] else
           Container(
             padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(
@@ -1366,25 +1712,34 @@ class _PairPinModalState extends State<PairPinModal> with SingleTickerProviderSt
             ),
             child: Column(
               children: [
-                const Icon(Icons.radar_rounded, color: MobileDesignSystem.primaryGreenMint, size: 32),
+                Icon(
+                  ble.isScanning ? Icons.sync_rounded : Icons.bluetooth_disabled_rounded,
+                  color: const Color(0xFF00C6FF),
+                  size: 32,
+                ),
                 const SizedBox(height: 10),
-                const Text(
-                  'No Smart Pins Discovered Nearby Yet',
-                  style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w800),
+                Text(
+                  ble.isScanning ? 'Scanning for Nearby Smart Pins...' : 'No Smart Pins Discovered Over Bluetooth',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w800),
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  'Ensure your pin is powered on and within Wi-Fi range or Setup AP mode.',
+                  ble.isScanning
+                      ? 'Listening for BLE advertisements...'
+                      : 'Ensure your XIAO ESP32-S3 Sense is powered on and within Bluetooth range (~10m).',
                   textAlign: TextAlign.center,
                   style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 11),
                 ),
                 const SizedBox(height: 14),
                 ElevatedButton.icon(
-                  onPressed: () => widget.service.searchForSmartPins(),
-                  icon: const Icon(Icons.search_rounded, size: 16),
-                  label: const Text('Probe Local Network'),
+                  onPressed: ble.isScanning ? null : () => ble.startScan(),
+                  icon: ble.isScanning
+                      ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                      : const Icon(Icons.search_rounded, size: 16),
+                  label: Text(ble.isScanning ? 'Scanning...' : 'Scan Bluetooth (BLE)'),
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: MobileDesignSystem.primaryGreen,
+                    backgroundColor: const Color(0xFF007AFF),
                     foregroundColor: Colors.white,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                   ),
@@ -1398,10 +1753,10 @@ class _PairPinModalState extends State<PairPinModal> with SingleTickerProviderSt
           controller: _aliasCtrl,
           style: const TextStyle(color: Colors.white, fontSize: 13.5),
           decoration: InputDecoration(
-            labelText: 'Assign to Student / Teacher',
+            labelText: 'Assign to Student / Teacher (Optional)',
             labelStyle: TextStyle(color: Colors.white.withValues(alpha: 0.7), fontSize: 12),
             hintText: 'e.g. Student: Maria Santos',
-            prefixIcon: const Icon(Icons.badge_rounded, color: MobileDesignSystem.primaryGreenMint, size: 18),
+            prefixIcon: const Icon(Icons.badge_rounded, color: Color(0xFF00C6FF), size: 18),
             filled: true,
             fillColor: Colors.white.withValues(alpha: 0.04),
             border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
@@ -1412,38 +1767,69 @@ class _PairPinModalState extends State<PairPinModal> with SingleTickerProviderSt
         SizedBox(
           width: double.infinity,
           child: ElevatedButton.icon(
-            onPressed: _isPairing || nearbyDevices.isEmpty
+            onPressed: _isPairing || _selectedBleScanResult == null
                 ? null
                 : () async {
                     setState(() => _isPairing = true);
-                    final pinId = _selectedBlePin.replaceAll('SECURELINK-', '').trim();
-                    await widget.service.pairPinViaBluetooth(
-                      pinId: pinId,
-                      alias: _aliasCtrl.text.trim(),
-                    );
-                    if (!mounted) return;
-                    setState(() => _isPairing = false);
-                    Navigator.pop(context);
-                    widget.onPaired?.call();
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        backgroundColor: const Color(0xFF0E151A),
-                        content: Text(
-                          'Pin $pinId paired to ${widget.service.userName}!',
-                          style: const TextStyle(color: MobileDesignSystem.primaryGreenMint),
+                    final sel = _selectedBleScanResult!;
+                    final advName = sel.advertisementData.advName;
+                    final devName = sel.device.platformName;
+                    String targetPinId = _selectedBlePin ?? (advName.isNotEmpty ? advName : (devName.isNotEmpty ? devName : 'SecureLink-PIN'));
+                    targetPinId = targetPinId.replaceAll('SECURELINK-', '').replaceAll('SecureLink-', '').trim();
+                    if (targetPinId.isEmpty) {
+                      final clean = sel.device.remoteId.str.replaceAll(':', '').toUpperCase();
+                      targetPinId = 'PIN-${clean.length > 4 ? clean.substring(clean.length - 4) : clean}';
+                    }
+                    if (!targetPinId.startsWith('PIN-') && !targetPinId.startsWith('PIN')) {
+                      targetPinId = 'PIN-$targetPinId';
+                    }
+
+                    // REAL BLE connection and bridge
+                    final connOk = await ble.connectToDevice(sel.device, widget.service, pinId: targetPinId);
+                    if (connOk) {
+                      await widget.service.pairPin(
+                        targetPinId,
+                        alias: _aliasCtrl.text.trim(),
+                        method: 'Bluetooth Low Energy',
+                      );
+                      if (!mounted) return;
+                      setState(() => _isPairing = false);
+                      Navigator.pop(context);
+                      widget.onPaired?.call();
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          backgroundColor: const Color(0xFF0E151A),
+                          content: Text(
+                            'Smart Pin $targetPinId bridged and paired via BLE!',
+                            style: const TextStyle(color: Color(0xFF00C6FF)),
+                          ),
                         ),
-                      ),
-                    );
+                      );
+                    } else {
+                      if (!mounted) return;
+                      setState(() => _isPairing = false);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          backgroundColor: const Color(0xFF0E151A),
+                          content: Text(
+                            'Failed to connect to ${sel.device.platformName}. Ensure pin is powered on.',
+                            style: const TextStyle(color: MobileDesignSystem.statusDanger),
+                          ),
+                        ),
+                      );
+                    }
                   },
             icon: _isPairing
                 ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
                 : const Icon(Icons.bluetooth_connected_rounded),
             label: Text(
-              _isPairing ? 'Pairing via BLE...' : 'Pair Selected Pin',
+              _isPairing
+                  ? 'Connecting Real BLE...'
+                  : (_selectedBleScanResult == null ? 'Select Discovered Pin Above' : 'Connect & Bridge Selected Pin'),
               style: const TextStyle(fontWeight: FontWeight.w800),
             ),
             style: ElevatedButton.styleFrom(
-              backgroundColor: MobileDesignSystem.primaryGreen,
+              backgroundColor: const Color(0xFF007AFF),
               foregroundColor: Colors.white,
               padding: const EdgeInsets.symmetric(vertical: 14),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
@@ -1451,47 +1837,6 @@ class _PairPinModalState extends State<PairPinModal> with SingleTickerProviderSt
           ),
         ),
       ],
-    );
-  }
-
-  Widget _bleDeviceTile(String name, int rssi, String subtitle) {
-    final isSelected = _selectedBlePin == name;
-    return GestureDetector(
-      onTap: () => setState(() => _selectedBlePin = name),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-        decoration: BoxDecoration(
-          color: isSelected ? MobileDesignSystem.primaryGreen.withValues(alpha: 0.16) : Colors.white.withValues(alpha: 0.03),
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(
-            color: isSelected ? MobileDesignSystem.primaryGreenMint : Colors.white10,
-            width: isSelected ? 1.5 : 1,
-          ),
-        ),
-        child: Row(
-          children: [
-            Icon(Icons.memory_rounded, color: isSelected ? MobileDesignSystem.primaryGreenMint : Colors.white60, size: 24),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(name, style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w800)),
-                  Text(subtitle, style: TextStyle(color: Colors.white.withValues(alpha: 0.55), fontSize: 10.5)),
-                ],
-              ),
-            ),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-              decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.08),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Text('$rssi dBm', style: const TextStyle(color: MobileDesignSystem.primaryGreenMint, fontSize: 10, fontWeight: FontWeight.w700)),
-            ),
-          ],
-        ),
-      ),
     );
   }
 }
