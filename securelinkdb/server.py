@@ -802,8 +802,8 @@ async def relay_stream_api(payload: dict):
     category = "NORMAL"
 
     if transcript:
-        score, category = classify_intent(transcript)
-        is_danger = (score >= 0.70) or any(hw in transcript.lower() for hw in ["tulong", "saklolo", "papatayin", "baril", "saksak", "holdap", "bobo", "gago", "pangit", "tanga"])
+        score, category = context_engine.evaluate(transcript)
+        is_danger = (score >= 8.0) or any(hw in transcript.lower() for hw in ["tulong", "saklolo", "papatayin", "baril", "saksak", "holdap", "bobo", "gago", "pangit", "tanga"])
         incident_id = f"EVT-{int(time.time() * 1000) % 1000000}"
         active_incident_for_device[dev_id] = incident_id
         if incident_id not in incident_snapshots:
