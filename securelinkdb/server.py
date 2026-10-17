@@ -149,62 +149,16 @@ class ContextEngine:
     def __init__(self):
         self.history = []
         self.target_pronouns = {"ikaw", "ka", "mo", "sayo", "sa'yo", "kita", "niyo", "ninyo", "you", "your", "u"}
-        self.hard_threats = [
-            # Tagalog violence verbs & conjugations (patay, suntok, sapak, bugbog, tadyak, etc.)
-            "patayin", "papatayin", "ipapatay", "ipapapatay", "pinatay", "katayin", "kakatayin",
-            "pupugutan", "pugutan", "mamatay", "mamatay ka", "patay ka", "patay ka sakin", "patay ka sa akin",
-            "suntukin", "susuntukin", "sinuntok", "suntukan", "masuntok",
-            "sasapakin", "sapakin", "sinapak", "sapakan", "masapak",
-            "bugbugin", "bubugbugin", "binugbog", "bugbugan", "mabugbog",
-            "tadyakan", "tatadyakan", "tinadyakan",
-            "upakan", "uupakan", "inupakan", "upakan kita",
-            "saksakin", "sasaksakin", "sinaksak", "saksakan",
-            "hiwain", "hihiwain", "hiniwa",
-            "tumbahin", "tutumbahin", "tinumba", "itumba", "itatumba", "tumba",
-            "barilin", "babarilin", "binaril", "ipabaril",
-            "gulpihin", "gugulpihin", "ginulpi", "gulpihan",
-            "laslasin", "lalaslasin", "laslas",
-            "basagin", "babasagin", "binasag",
-            "resbakan", "reresbakan", "niresbakan",
-            "sasaktan", "saktan", "sinaktan", "masaktan",
-            "abangan", "aabangan", "inabangan", "abangan kita",
-            "yari ka", "yari ka sakin", "yari ka sa akin",
-            # English physical threats
-            "kill", "murder", "stab", "shoot", "beat you up", "i will kill you",
-            "threat", "attack", "die", "hurt you", "punch"
-        ]
-        self.hard_extort = [
-            "pera", "bayad", "ambag", "ilabas", "bigyan", "baon", "tax", "allowance",
-            "akin na", "ibigay mo", "labas mo pera", "holdap", "snatch", "nakaw",
-            "give me money", "pay up", "hand it over", "give your money", "extort", "rob"
-        ]
-        self.hard_harass = [
-            # Filipino bullying, ableist slurs, & psychological harassment
-            "mongoloid", "mong guloid", "mongol", "abnoy", "autistic", "retard", "retarded",
-            "sinto-sinto", "sintosinto", "may sayad", "sayad", "baliw", "luka-luka", "lukaluka",
-            "buang", "amaw", "timang", "kulang-kulang", "kulangkulang", "may tama", "may sira",
-            "siraulo", "sira ulo", "unggoy", "aswang",
-            # Appearance, body-shaming, & social bullying
-            "tabatoy", "baboy", "balyena", "tingting", "kalansay", "ngongo", "ngiwi",
-            "panget", "pangit", "chaka", "mukhang paa", "dugyot", "mabaho", "baho",
-            "amoy lupa", "amoy araw", "uling",
-            # Social degradation & poverty insults
-            "squatter", "skwater", "isquatter", "pulubi", "hampaslupa", "hampas lupa",
-            "patay gutom", "patay-gutom", "alipin", "palamunin", "pabigat", "salot",
-            "patapon", "basura", "walang kwenta", "walang silbi", "ampaw", "inutil",
-            # Homophobic / gender insults & sexual harassment
-            "bakla", "bading", "bayot", "tibo", "pokpok", "malandi", "kiri", "higad", "hitad", "puday", "bastos",
-            # Tagalog profanities, vulgarities, & verbal abuse
-            "gago", "gaga", "tarantado", "tarantada", "ulol", "tangina", "tang ina", "tanginamo", "tang ina mo",
-            "putangina", "putang ina", "putanginamoka", "puta", "pakshet", "pakyu", "kupal",
-            "leche", "letse", "bwisit", "bwiset", "hayop", "hayup", "walanghiya", "walang hiya",
-            "taragis", "hudas", "bobo", "tanga", "ungas", "punyeta", "lintik", "demonyo",
-            "kingina", "king ina", "pota", "yawa", "kuwenta", "kwenta",
-            # English profanities, bullying & hate speech
-            "fuck", "fucking", "fucked", "shit", "bitch", "asshole", "bastard", "dick", "cunt",
-            "idiot", "stupid", "ugly", "loser", "shut up", "worthless", "freak", "fool",
-            "pig", "gross", "trash", "drop dead"
-        ]
+        
+        # Tagalog roots use substring matching; English words use strict boundaries
+        self.hard_threats_tagalog = ["patay", "suntok", "bugbog", "tumba", "sapak", "tadyak", "upak", "hiwa", "basag", "resbak", "kikilitin"]
+        self.hard_threats_english = [r"\bkill\b", r"\bpunch\b", r"\bbeat you\b", r"\bhurt you\b", r"\bthreat\b", r"\bstab\b", r"\bdie\b", r"\battack\b", r"\bmurder\b"]
+        
+        self.hard_extort_tagalog = ["pera", "bayad", "ambag", "ilabas", "bigyan", "baon", "allowance", "barya"]
+        self.hard_extort_english = [r"\btax\b", r"\bgive me money\b", r"\bpay up\b", r"\bhand it over\b", r"\bgive your money\b", r"\bextort\b"]
+        
+        self.hard_harass_tagalog = ["pangit", "bobo", "kuwenta", "kwenta", "tanga", "inutil", "kadiri", "baho", "palamunin", "pabigat", "monggoloid", "abnoy", "baliw", "siraulo", "gago", "tarantado", "gaga", "puta"]
+        self.hard_harass_english = [r"\bidiot\b", r"\bstupid\b", r"\bugly\b", r"\bloser\b", r"\bshut up\b", r"\bworthless\b", r"\bfreak\b", r"\bfool\b"]
 
     def _matches_any(self, text_lower: str, keywords: list) -> bool:
         for k in keywords:
@@ -248,7 +202,7 @@ class ContextEngine:
                 category = "Verbal Harassment"
             elif predicted_class == 2:
                 # Extortion requires confidence >= 0.70 or presence of hard extortion keywords
-                has_extort_check = self._matches_any(text_lower, self.hard_extort)
+                has_extort_check = any(e in text_lower for e in self.hard_extort_tagalog) or any(re.search(e, text_lower) for e in self.hard_extort_english)
                 if confidence >= 0.70 or has_extort_check:
                     base_score = 5.0 + (confidence * 2.0)
                     category = "Extortion / Demand"
@@ -257,7 +211,7 @@ class ContextEngine:
                     category = "Conversational"
             elif predicted_class == 3:
                 # Physical threat requires confidence >= 0.70 or presence of hard threat keywords
-                has_threat_check = self._matches_any(text_lower, self.hard_threats)
+                has_threat_check = any(t in text_lower for t in self.hard_threats_tagalog) or any(re.search(e, text_lower) for e in self.hard_threats_english)
                 if confidence >= 0.70 or has_threat_check:
                     base_score = 7.0 + (confidence * 2.0)
                     category = "Physical Threat"
@@ -275,9 +229,10 @@ class ContextEngine:
         is_targeted = any(p in words for p in self.target_pronouns)
         targetedness_multiplier = 1.3 if is_targeted else 1.0
 
-        has_threat = self._matches_any(text_lower, self.hard_threats)
-        has_extort = self._matches_any(text_lower, self.hard_extort)
-        has_harass = self._matches_any(text_lower, self.hard_harass)
+        # Check Tagalog roots (substring) OR English words (strict regex boundary)
+        has_threat = any(t in text_lower for t in self.hard_threats_tagalog) or any(re.search(e, text_lower) for e in self.hard_threats_english)
+        has_extort = any(e in text_lower for e in self.hard_extort_tagalog) or any(re.search(e, text_lower) for e in self.hard_extort_english)
+        has_harass = any(h in text_lower for h in self.hard_harass_tagalog) or any(re.search(e, text_lower) for e in self.hard_harass_english)
 
         if has_threat:
             base_score = max(base_score, 8.5)
@@ -1156,7 +1111,7 @@ ai_inference_lock = asyncio.Lock()
 
 async def handle_completed_audio(device_id: str, pcm_bytes: bytes, websocket: WebSocket):
     """Processes accumulated speech audio buffer, runs Faster-Whisper + BERT, and updates UI."""
-    if len(pcm_bytes) < 6400: # Less than 200ms
+    if len(pcm_bytes) < 4800: # Less than 150ms
         if device_id in registered_devices:
             now_str = datetime.now().strftime("%H:%M:%S")
             is_still_connected = any(d_id == device_id for d_id in active_pins.values())
@@ -1232,11 +1187,16 @@ async def handle_completed_audio(device_id: str, pcm_bytes: bytes, websocket: We
         now_str = datetime.now().strftime("%H:%M:%S")
         is_still_connected = any(d_id == device_id for d_id in active_pins.values())
         registered_devices[device_id]["online"] = is_still_connected
-        registered_devices[device_id]["state"] = "VAD ARMED" if is_still_connected else "OFFLINE"
+        
+        # FIX: Only reset to VAD ARMED if a new audio stream hasn't already started
+        if registered_devices[device_id]["state"] == "ANALYZING SPEECH":
+            registered_devices[device_id]["state"] = "VAD ARMED" if is_still_connected else "OFFLINE"
+            
         if is_still_connected:
             registered_devices[device_id]["lastSeen"] = f'Heard: "{transcript[:25]}..."' if transcript else f"Active at {now_str}"
         else:
             registered_devices[device_id]["lastSeen"] = f"Disconnected at {now_str}"
+            
         await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
 
 # =========================================================================
@@ -1298,9 +1258,9 @@ async def pin_websocket_endpoint(websocket: WebSocket):
     rate_window_start = time.time()
     bytes_in_window = 0
 
-    # Streaming audio chunking: Process 15-second blocks with 1-second overlap
+    # Streaming audio chunking: Process 6-second blocks with 1-second overlap
     # Prevents huge latency on continuous speech and avoids mid-word truncations
-    CHUNK_LIMIT_BYTES = 480000 # 15s @ 16kHz 16-bit mono
+    CHUNK_LIMIT_BYTES = 192000 # 6s @ 16kHz 16-bit mono
     OVERLAP_BYTES = 32000      # 1s overlap
 
     try:
@@ -1362,10 +1322,10 @@ async def pin_websocket_endpoint(websocket: WebSocket):
                     continue
                 elif text_msg in ("STREAM_END", "STREAM_STOP"):
                     print(f"\n[STREAM] {device_id} completed speech stream ({len(audio_accumulator)} bytes).")
-                    if len(audio_accumulator) >= 6400:
+                    if len(audio_accumulator) >= 4800:
                         final_pcm = bytes(audio_accumulator)
                         audio_accumulator.clear()
-                        await handle_completed_audio(device_id, final_pcm, websocket)
+                        asyncio.create_task(handle_completed_audio(device_id, final_pcm, websocket))
                     else:
                         audio_accumulator.clear()
                         if device_id in registered_devices:
@@ -1382,10 +1342,10 @@ async def pin_websocket_endpoint(websocket: WebSocket):
                     audio_accumulator.clear()
                 elif "ARCHIVE_END" in text_msg:
                     print(f"\n[SYS] {device_id} offline incident sync complete ({len(audio_accumulator)} bytes).")
-                    if len(audio_accumulator) >= 6400:
+                    if len(audio_accumulator) >= 4800:
                         final_pcm = bytes(audio_accumulator)
                         audio_accumulator.clear()
-                        await handle_completed_audio(device_id, final_pcm, websocket)
+                        asyncio.create_task(handle_completed_audio(device_id, final_pcm, websocket))
                     else:
                         audio_accumulator.clear()
                         if device_id in registered_devices:
@@ -1435,7 +1395,7 @@ async def pin_websocket_endpoint(websocket: WebSocket):
                     registered_devices[device_id]["lastSeen"] = "Streaming voice..."
                     await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
 
-                # Continuous speech chunking: Process in 15-second blocks with 1-second overlap
+                # Continuous speech chunking: Process in 6-second blocks with 1-second overlap
                 if len(audio_accumulator) >= CHUNK_LIMIT_BYTES:
                     pcm_chunk = bytes(audio_accumulator[:CHUNK_LIMIT_BYTES])
                     # Retain 1-second overlap for boundary continuity
@@ -1447,10 +1407,10 @@ async def pin_websocket_endpoint(websocket: WebSocket):
         print(f"\n[WS] {device_id} Disconnected.")
     finally:
         # Process any remaining audio in accumulator before closing
-        if len(audio_accumulator) >= 6400:
+        if len(audio_accumulator) >= 4800:
             final_pcm = bytes(audio_accumulator)
             audio_accumulator.clear()
-            await handle_completed_audio(device_id, final_pcm, websocket)
+            asyncio.create_task(handle_completed_audio(device_id, final_pcm, websocket))
 
         if websocket in active_pins:
             del active_pins[websocket]
