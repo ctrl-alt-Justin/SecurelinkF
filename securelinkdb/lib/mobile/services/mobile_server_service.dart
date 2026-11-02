@@ -17,6 +17,7 @@ class IncidentReport {
   final String? audioFile;
   final String? audioUrl;
   final String? snapshotFile;
+  final String? snapshotUrl;
 
   IncidentReport({
     required this.id,
@@ -28,6 +29,7 @@ class IncidentReport {
     this.audioFile,
     this.audioUrl,
     this.snapshotFile,
+    this.snapshotUrl,
   });
 
   bool get isFlagged => threatScore >= 2.0 || threatLabel.toLowerCase() != 'conversational';
@@ -35,13 +37,64 @@ class IncidentReport {
   bool get isDanger => threatScore >= 8.0;
   String get flagType => threatLabel;
 
+  IncidentReport copyWith({
+    String? id,
+    String? deviceId,
+    String? timestamp,
+    String? transcript,
+    double? threatScore,
+    String? threatLabel,
+    String? audioFile,
+    String? audioUrl,
+    String? snapshotFile,
+    String? snapshotUrl,
+  }) {
+    return IncidentReport(
+      id: id ?? this.id,
+      deviceId: deviceId ?? this.deviceId,
+      timestamp: timestamp ?? this.timestamp,
+      transcript: transcript ?? this.transcript,
+      threatScore: threatScore ?? this.threatScore,
+      threatLabel: threatLabel ?? this.threatLabel,
+      audioFile: audioFile ?? this.audioFile,
+      audioUrl: audioUrl ?? this.audioUrl,
+      snapshotFile: snapshotFile ?? this.snapshotFile,
+      snapshotUrl: snapshotUrl ?? this.snapshotUrl,
+    );
+  }
+
   factory IncidentReport.fromJson(Map<String, dynamic> json, {String? host, int? port}) {
     final af = json['audio_file'] as String?;
     final explicitUrl = json['audio_url'] as String?;
-    String? computedUrl = explicitUrl;
-    if (computedUrl == null && af != null && af.isNotEmpty) {
-      final s = MobileServerService();
+    final sf = json['snapshot_file'] as String?;
+    final explicitSnapUrl = json['snapshot_url'] as String?;
+    final s = MobileServerService();
+    String? computedUrl;
+    if (af != null && af.isNotEmpty) {
       computedUrl = '${s.baseHttpUrl}/recordings/audio/$af';
+    } else if (explicitUrl != null && explicitUrl.isNotEmpty) {
+      if (explicitUrl.contains('127.0.0.1') || explicitUrl.contains('localhost')) {
+        final path = explicitUrl.replaceFirst(RegExp(r'https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?'), '');
+        computedUrl = '${s.baseHttpUrl}$path';
+      } else if (explicitUrl.startsWith('/')) {
+        computedUrl = '${s.baseHttpUrl}$explicitUrl';
+      } else {
+        computedUrl = explicitUrl;
+      }
+    }
+
+    String? computedSnapUrl;
+    if (explicitSnapUrl != null && explicitSnapUrl.isNotEmpty) {
+      if (explicitSnapUrl.contains('127.0.0.1') || explicitSnapUrl.contains('localhost')) {
+        final path = explicitSnapUrl.replaceFirst(RegExp(r'https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?'), '');
+        computedSnapUrl = '${s.baseHttpUrl}$path';
+      } else if (explicitSnapUrl.startsWith('/')) {
+        computedSnapUrl = '${s.baseHttpUrl}$explicitSnapUrl';
+      } else {
+        computedSnapUrl = explicitSnapUrl;
+      }
+    } else if (sf != null && sf.isNotEmpty) {
+      computedSnapUrl = '${s.baseHttpUrl}/recordings/snapshots/$sf';
     }
 
     return IncidentReport(
@@ -53,7 +106,8 @@ class IncidentReport {
       threatLabel: json['threat_label'] as String? ?? (json['category'] as String? ?? 'Conversational'),
       audioFile: af,
       audioUrl: computedUrl,
-      snapshotFile: json['snapshot_file'] as String?,
+      snapshotFile: sf,
+      snapshotUrl: computedSnapUrl,
     );
   }
 }
@@ -658,6 +712,29 @@ class MobileServerService extends ChangeNotifier {
           if (_recentIncidents.length > 50) _recentIncidents.removeLast();
           if (inc.isFlagged) {
             _latestAlert = inc;
+          }
+          notifyListeners();
+        }
+      } else if (eventType == 'snapshot_ready') {
+        final targetIncId = json['incident_id'] as String?;
+        final devId = json['device_id'] as String?;
+        final rawSnapUrl = json['snapshot_url'] as String?;
+        final sf = json['snapshot_file'] as String?;
+        String? finalSnapUrl = (sf != null && sf.isNotEmpty)
+            ? '$baseHttpUrl/recordings/snapshots/$sf'
+            : rawSnapUrl;
+
+        final idx = _recentIncidents.indexWhere((i) =>
+          (targetIncId != null && targetIncId.isNotEmpty && i.id == targetIncId) ||
+          (devId != null && i.deviceId.toUpperCase() == devId.toUpperCase() && (i.snapshotUrl == null || i.snapshotUrl!.isEmpty))
+        );
+        if (idx >= 0) {
+          _recentIncidents[idx] = _recentIncidents[idx].copyWith(
+            snapshotUrl: finalSnapUrl,
+            snapshotFile: sf,
+          );
+          if (_latestAlert?.id == _recentIncidents[idx].id) {
+            _latestAlert = _recentIncidents[idx];
           }
           notifyListeners();
         }

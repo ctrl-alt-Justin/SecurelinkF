@@ -711,6 +711,8 @@ class Incident {
   final String audioDuration;
   final String? audioUrl;
   final String? audioFile;
+  final String? snapshotUrl;
+  final String? snapshotFile;
 
   const Incident({
     required this.id,
@@ -725,7 +727,43 @@ class Incident {
     this.audioDuration = '00:08',
     this.audioUrl,
     this.audioFile,
+    this.snapshotUrl,
+    this.snapshotFile,
   });
+
+  Incident copyWith({
+    String? id,
+    String? deviceId,
+    String? time,
+    IncidentLevel? level,
+    double? score,
+    String? category,
+    String? transcript,
+    bool? audio,
+    bool? video,
+    String? audioDuration,
+    String? audioUrl,
+    String? audioFile,
+    String? snapshotUrl,
+    String? snapshotFile,
+  }) {
+    return Incident(
+      id: id ?? this.id,
+      deviceId: deviceId ?? this.deviceId,
+      time: time ?? this.time,
+      level: level ?? this.level,
+      score: score ?? this.score,
+      category: category ?? this.category,
+      transcript: transcript ?? this.transcript,
+      audio: audio ?? this.audio,
+      video: video ?? this.video,
+      audioDuration: audioDuration ?? this.audioDuration,
+      audioUrl: audioUrl ?? this.audioUrl,
+      audioFile: audioFile ?? this.audioFile,
+      snapshotUrl: snapshotUrl ?? this.snapshotUrl,
+      snapshotFile: snapshotFile ?? this.snapshotFile,
+    );
+  }
 
   factory Incident.fromJson(Map<String, dynamic> json) {
     double parsedScore = (json['score'] as num).toDouble();
@@ -755,6 +793,8 @@ class Incident {
       audioDuration: json['duration'] ?? '00:08',
       audioUrl: json['audio_url'] ?? 'http://127.0.0.1:8080/recordings/audio/$evtId.wav',
       audioFile: json['audio_file'] ?? '$evtId.wav',
+      snapshotUrl: json['snapshot_url'] as String?,
+      snapshotFile: json['snapshot_file'] as String?,
     );
   }
 
@@ -995,6 +1035,53 @@ class _DashboardShellState extends State<DashboardShell> with WindowListener {
                   }
                 }
               });
+            } else if (eventType == 'snapshot_ready') {
+              final targetIncidentId = data['incident_id'] as String?;
+              final rawSnapshotUrl = data['snapshot_url'] as String?;
+              final localUrl = data['local_url'] as String?;
+              final devId = data['device_id'] as String?;
+              final snapFile = data['snapshot_file'] as String?;
+
+              // On desktop dashboard, prefer local direct connection or disk
+              final snapshotUrl = (Platform.isWindows || Platform.isLinux || Platform.isMacOS)
+                  ? (localUrl ?? rawSnapshotUrl ?? (snapFile != null ? 'http://127.0.0.1:8080/recordings/snapshots/$snapFile' : null))
+                  : (rawSnapshotUrl ?? localUrl);
+
+              debugPrint('[WS-UI] snapshot_ready received: incId=$targetIncidentId dev=$devId url=$snapshotUrl file=$snapFile');
+              if (mounted) {
+                setState(() {
+                  // 1. Try to match exact incident ID
+                  int idx = -1;
+                  if (targetIncidentId != null && targetIncidentId.isNotEmpty) {
+                    idx = liveIncidents.indexWhere((inc) => inc.id.trim() == targetIncidentId.trim());
+                  }
+                  // 2. Fallback: match latest incident for device needing snapshot
+                  if (idx < 0 && devId != null) {
+                    idx = liveIncidents.indexWhere((inc) =>
+                      inc.deviceId.trim().toUpperCase() == devId.trim().toUpperCase() &&
+                      (inc.snapshotUrl == null || inc.snapshotUrl!.isEmpty)
+                    );
+                  }
+                  // 3. Fallback: match latest danger incident
+                  if (idx < 0) {
+                    idx = liveIncidents.indexWhere((inc) =>
+                      inc.level == IncidentLevel.danger && (inc.snapshotUrl == null || inc.snapshotUrl!.isEmpty)
+                    );
+                  }
+
+                  if (idx >= 0) {
+                    debugPrint('[WS-UI] Linking snapshot to incident ${liveIncidents[idx].id}');
+                    liveIncidents[idx] = liveIncidents[idx].copyWith(
+                      snapshotUrl: snapshotUrl,
+                      snapshotFile: snapFile,
+                      video: true,
+                    );
+                    liveIncidents = List.from(liveIncidents);
+                  } else {
+                    debugPrint('[WS-UI] Could not match incident for snapshot. Active: ${liveIncidents.length}');
+                  }
+                });
+              }
             } else if (eventType == 'checkpoints_updated') {
               final raw = data['checkpoints'] as List? ?? [];
               setState(() {
@@ -3042,7 +3129,7 @@ class _MetricStrip extends StatelessWidget {
         const SizedBox(width: 10),
         Expanded(child: _MetricCard(label: 'THREAT ALERTS', value: '$nonNormal', caption: 'verbal & extortion events', icon: Icons.warning_amber_rounded, color: const Color(0xFFFFC45D))),
         const SizedBox(width: 10),
-        Expanded(child: _MetricCard(label: 'DANGER ESCALATIONS', value: '$danger', caption: 'OV2640 snapshot triggered', icon: Icons.emergency_rounded, color: const Color(0xFFFF5E72))),
+        Expanded(child: _MetricCard(label: 'DANGER ESCALATIONS', value: '$danger', caption: 'OV3660 snapshot triggered', icon: Icons.emergency_rounded, color: const Color(0xFFFF5E72))),
         const SizedBox(width: 10),
         const Expanded(child: _MetricCard(label: 'VAD ENGINE', value: 'ACTIVE', caption: '16kHz Speex + RoBERTa', icon: Icons.multitrack_audio_rounded, color: Color(0xFF9B84FF))),
       ],
@@ -4338,6 +4425,90 @@ class _IncidentDetailCardState extends State<_IncidentDetailCard> {
     }
   }
 
+  Widget _buildSnapshotWidget(Incident incident) {
+    // 1. Direct local file check (Instant 0ms, zero network latency, 100% offline reliable on desktop)
+    final snap = incident.snapshotFile;
+    if (snap != null && snap.isNotEmpty) {
+      final candidatePaths = [
+        'recordings/snapshots/$snap',
+        './recordings/snapshots/$snap',
+        'securelinkdb/recordings/snapshots/$snap',
+        'd:/Flutter Securelink Dashboard/securelinkdb/recordings/snapshots/$snap',
+        'd:\\Flutter Securelink Dashboard\\securelinkdb\\recordings\\snapshots\\$snap',
+      ];
+      for (final p in candidatePaths) {
+        try {
+          final f = File(p);
+          if (f.existsSync()) {
+            return Image.file(
+              f,
+              fit: BoxFit.cover,
+              errorBuilder: (_, __, ___) => _buildSnapshotNetworkImage(incident),
+            );
+          }
+        } catch (_) {}
+      }
+    }
+
+    // 2. Network image loading with localhost fallback
+    return _buildSnapshotNetworkImage(incident);
+  }
+
+  Widget _buildSnapshotNetworkImage(Incident incident) {
+    final snap = incident.snapshotFile;
+    String? url = incident.snapshotUrl;
+    if (url == null || url.isEmpty) {
+      if (snap != null && snap.isNotEmpty) {
+        url = 'http://127.0.0.1:8080/recordings/snapshots/$snap';
+      }
+    }
+
+    if (url == null || url.isEmpty) {
+      return _buildSnapshotStandbyCard();
+    }
+
+    return Image.network(
+      url,
+      fit: BoxFit.cover,
+      loadingBuilder: (context, child, loadingProgress) {
+        if (loadingProgress == null) return child;
+        return const Center(
+          child: CircularProgressIndicator(
+            color: Color(0xFFFF4D67),
+            strokeWidth: 2,
+          ),
+        );
+      },
+      errorBuilder: (context, error, stackTrace) {
+        // If external URL or tunnel failed, retry with direct localhost HTTP server endpoint
+        if (snap != null && snap.isNotEmpty && !url!.contains('127.0.0.1')) {
+          final fallbackUrl = 'http://127.0.0.1:8080/recordings/snapshots/$snap';
+          return Image.network(
+            fallbackUrl,
+            fit: BoxFit.cover,
+            errorBuilder: (_, __, ___) => _buildSnapshotStandbyCard(),
+          );
+        }
+        return _buildSnapshotStandbyCard();
+      },
+    );
+  }
+
+  Widget _buildSnapshotStandbyCard() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.videocam_rounded, size: 32, color: const Color(0xFFFF4D67).withOpacity(0.7)),
+          const SizedBox(height: 5),
+          const Text('OV3660 DANGER SNAPSHOT CAPTURED', style: TextStyle(color: Colors.white70, fontSize: 9.5, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 2),
+          Text('Waiting for image sync...', style: TextStyle(color: Colors.white.withOpacity(0.3), fontSize: 7.5)),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final incident = widget.incident;
@@ -4370,7 +4541,7 @@ class _IncidentDetailCardState extends State<_IncidentDetailCard> {
             const SizedBox(height: 14),
             _DetailLine(label: 'CATEGORY', value: incident.category),
             _DetailLine(label: 'THREAT SCORE', value: '${incident.score.toStringAsFixed(1)} / 10.0'),
-            _DetailLine(label: 'EVIDENCE TYPE', value: '${incident.audio ? 'AUDIO (16kHz PCM)' : 'NO AUDIO'}${incident.video ? ' + OV2640 CAMERA SNAPSHOT' : ' (CAMERA STANDBY)'}'),
+            _DetailLine(label: 'EVIDENCE TYPE', value: '${incident.audio ? 'AUDIO (16kHz PCM)' : 'NO AUDIO'}${incident.video ? ' + OV3660 CAMERA SNAPSHOT' : ' (CAMERA STANDBY)'}'),
             const Divider(height: 22, color: Colors.white10),
 
             // SPEECH TRANSCRIPT BOX
@@ -4602,7 +4773,9 @@ class _IncidentDetailCardState extends State<_IncidentDetailCard> {
             ],
 
             // CAMERA SNAPSHOT EVIDENCE (DANGER ONLY)
-            if (incident.video && incident.level == IncidentLevel.danger) ...[
+            if ((incident.video && incident.level == IncidentLevel.danger) ||
+                (incident.snapshotUrl != null && incident.snapshotUrl!.isNotEmpty) ||
+                (incident.snapshotFile != null && incident.snapshotFile!.isNotEmpty)) ...[
               Text('CAMERA FRAME CAPTURE (DANGER EVENT)', style: TextStyle(color: Colors.white.withOpacity(.32), fontSize: 8, fontWeight: FontWeight.w600, letterSpacing: 1.0)),
               const SizedBox(height: 6),
               Container(
@@ -4615,16 +4788,10 @@ class _IncidentDetailCardState extends State<_IncidentDetailCard> {
                 ),
                 child: Stack(
                   children: [
-                    Center(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(Icons.videocam_rounded, size: 32, color: const Color(0xFFFF4D67).withOpacity(0.7)),
-                          const SizedBox(height: 5),
-                          const Text('OV2640 DANGER SNAPSHOT CAPTURED', style: TextStyle(color: Colors.white70, fontSize: 9.5, fontWeight: FontWeight.w600)),
-                          const SizedBox(height: 2),
-                          Text('320x240 QVGA • Triggered automatically by DANGER grade speech', style: TextStyle(color: Colors.white.withOpacity(0.3), fontSize: 7.5)),
-                        ],
+                    Positioned.fill(
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(13),
+                        child: _buildSnapshotWidget(incident),
                       ),
                     ),
                     Positioned(
@@ -4633,7 +4800,12 @@ class _IncidentDetailCardState extends State<_IncidentDetailCard> {
                       child: Container(
                         padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2.5),
                         decoration: BoxDecoration(color: const Color(0xFFFF4D67).withOpacity(0.2), borderRadius: BorderRadius.circular(5), border: Border.all(color: const Color(0xFFFF4D67).withOpacity(0.4))),
-                        child: Text('REC • ${incident.deviceId}', style: const TextStyle(fontSize: 7.5, color: Color(0xFFFF4D67), fontWeight: FontWeight.w700)),
+                        child: Text(
+                          (incident.snapshotUrl != null && incident.snapshotUrl!.isNotEmpty) || (incident.snapshotFile != null && incident.snapshotFile!.isNotEmpty)
+                              ? 'SNAPSHOT • ${incident.deviceId}'
+                              : 'REC • ${incident.deviceId}',
+                          style: const TextStyle(fontSize: 7.5, color: Color(0xFFFF4D67), fontWeight: FontWeight.w700),
+                        ),
                       ),
                     ),
                     Positioned(

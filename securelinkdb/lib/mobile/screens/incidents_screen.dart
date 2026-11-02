@@ -45,15 +45,28 @@ class _IncidentsScreenState extends State<IncidentsScreen> {
       return;
     }
 
+    // Resolve URL to current live server endpoint (Cloudflare tunnel or LAN host)
+    String resolvedUrl = audioUrl;
+    final baseHttp = widget.service.baseHttpUrl;
+    if (resolvedUrl.contains('127.0.0.1') || resolvedUrl.contains('localhost')) {
+      final path = resolvedUrl.replaceFirst(RegExp(r'https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?'), '');
+      resolvedUrl = '$baseHttp$path';
+    } else if (resolvedUrl.startsWith('/')) {
+      resolvedUrl = '$baseHttp$resolvedUrl';
+    } else if (!resolvedUrl.startsWith('http://') && !resolvedUrl.startsWith('https://')) {
+      resolvedUrl = '$baseHttp/recordings/audio/$resolvedUrl';
+    }
+
     if (_currentlyPlayingId == incidentId && _playerState == PlayerState.playing) {
       await _audioPlayer.pause();
     } else {
       setState(() => _currentlyPlayingId = incidentId);
       try {
         await _audioPlayer.stop();
-        await _audioPlayer.play(UrlSource(audioUrl));
+        await _audioPlayer.play(UrlSource(resolvedUrl));
       } catch (e) {
         if (mounted) {
+          setState(() => _currentlyPlayingId = null);
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('Error playing audio: $e')),
           );
@@ -455,6 +468,84 @@ class _IncidentsScreenState extends State<IncidentsScreen> {
             fontWeight: FontWeight.w600,
           ),
           const SizedBox(height: 12),
+
+          // Camera Snapshot for DANGER Incidents
+          if (inc.isDanger) ...[
+            Container(
+              height: 120,
+              width: double.infinity,
+              margin: const EdgeInsets.only(bottom: 12),
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.35),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFFFF4D67).withValues(alpha: 0.3)),
+              ),
+              child: Stack(
+                children: [
+                  if (inc.snapshotUrl != null && inc.snapshotUrl!.isNotEmpty)
+                    Positioned.fill(
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(11),
+                        child: Image.network(
+                          inc.snapshotUrl!,
+                          fit: BoxFit.cover,
+                          loadingBuilder: (context, child, loadingProgress) {
+                            if (loadingProgress == null) return child;
+                            return const Center(
+                              child: CircularProgressIndicator(
+                                color: Color(0xFFFF4D67),
+                                strokeWidth: 2,
+                              ),
+                            );
+                          },
+                          errorBuilder: (context, error, stackTrace) {
+                            return Center(
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(Icons.videocam_rounded, size: 28, color: const Color(0xFFFF4D67).withValues(alpha: 0.7)),
+                                  const SizedBox(height: 4),
+                                  const Text('DANGER SNAPSHOT PENDING', style: TextStyle(color: Colors.white70, fontSize: 9.5, fontWeight: FontWeight.w600)),
+                                ],
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    )
+                  else
+                    Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.videocam_rounded, size: 28, color: const Color(0xFFFF4D67).withValues(alpha: 0.7)),
+                          const SizedBox(height: 4),
+                          const Text('OV2640 DANGER SNAPSHOT CAPTURED', style: TextStyle(color: Colors.white70, fontSize: 9.5, fontWeight: FontWeight.w600)),
+                          const SizedBox(height: 2),
+                          Text('Triggered automatically by DANGER grade speech', style: TextStyle(color: Colors.white.withValues(alpha: 0.3), fontSize: 7.5)),
+                        ],
+                      ),
+                    ),
+                  Positioned(
+                    top: 6,
+                    left: 8,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFF4D67).withValues(alpha: 0.2),
+                        borderRadius: BorderRadius.circular(4),
+                        border: Border.all(color: const Color(0xFFFF4D67).withValues(alpha: 0.4)),
+                      ),
+                      child: Text(
+                        inc.snapshotUrl != null && inc.snapshotUrl!.isNotEmpty ? 'SNAPSHOT • ${inc.deviceId}' : 'REC • ${inc.deviceId}',
+                        style: const TextStyle(fontSize: 7.5, color: Color(0xFFFF4D67), fontWeight: FontWeight.w700),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
 
           // Audio & Forensic Footer
           Row(

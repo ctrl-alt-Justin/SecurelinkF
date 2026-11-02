@@ -1,5 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
@@ -45,6 +47,12 @@ class BlePinRelayService extends ChangeNotifier {
   int _relayedBytesTotal = 0;
   int _relayedPacketsTotal = 0;
 
+  // Snapshot assembly state over BLE
+  bool _isReceivingSnapshot = false;
+  int _expectedSnapshotBytes = 0;
+  final BytesBuilder _snapshotBuilder = BytesBuilder();
+  Timer? _snapshotTimeoutTimer;
+
   List<ScanResult> _scanResults = [];
   bool _isScanning = false;
 
@@ -52,6 +60,7 @@ class BlePinRelayService extends ChangeNotifier {
   BleRelayState get state => _state;
   bool get isConnected => _connectedDevice != null && _state != BleRelayState.disconnected;
   bool get isScanning => _isScanning;
+  bool get isReceivingSnapshot => _isReceivingSnapshot;
   String get statusMessage => _statusMessage;
   String get pinnedDeviceId => _pinnedDeviceId;
   int get relayedBytesTotal => _relayedBytesTotal;
@@ -87,6 +96,15 @@ class BlePinRelayService extends ChangeNotifier {
         return;
       }
 
+      // Check if Bluetooth adapter is turned on (Android can auto-prompt to turn on)
+      if (Platform.isAndroid) {
+        try {
+          if (await FlutterBluePlus.adapterState.first != BluetoothAdapterState.on) {
+            await FlutterBluePlus.turnOn();
+          }
+        } catch (_) {}
+      }
+
       final scanSub = FlutterBluePlus.scanResults.listen((results) {
         _scanResults = results.where((r) {
           final advName = r.advertisementData.advName.toLowerCase();
@@ -103,10 +121,11 @@ class BlePinRelayService extends ChangeNotifier {
         notifyListeners();
       });
 
-      // Scan broadly without restrictive UUID filters so all Android/iOS OEM stacks discover the device
+      // androidUsesFineLocation: false honors Android 12+ neverForLocation in manifest,
+      // preventing "need location permission" errors!
       await FlutterBluePlus.startScan(
         timeout: timeout,
-        androidUsesFineLocation: true,
+        androidUsesFineLocation: false,
       );
 
       await Future.delayed(timeout);
@@ -114,7 +133,12 @@ class BlePinRelayService extends ChangeNotifier {
       scanSub.cancel();
     } catch (e) {
       debugPrint('[BLE] Scan error: $e');
-      _statusMessage = 'Scan error: $e';
+      final errStr = e.toString().toLowerCase();
+      if (errStr.contains('permission') || errStr.contains('location')) {
+        _statusMessage = 'Permission notice: Please allow Nearby Devices / Location in Settings.';
+      } else {
+        _statusMessage = 'Scan notice: $e';
+      }
     } finally {
       _isScanning = false;
       if (_connectedDevice == null) {
@@ -257,7 +281,48 @@ class BlePinRelayService extends ChangeNotifier {
   void _handleIncomingBleData(List<int> bytes) {
     if (bytes.isEmpty) return;
 
-    // Check if packet is a text command (e.g. STREAM_END or PING:...)
+    _ensureRelayWebSocket();
+
+    // 1. If currently in Snapshot Assembly mode, treat incoming packets as binary JPEG slices
+    if (_isReceivingSnapshot) {
+      _snapshotTimeoutTimer?.cancel();
+      _snapshotBuilder.add(bytes);
+      final currentLen = _snapshotBuilder.length;
+      debugPrint('[BLE-SNAP] Receiving image chunk: ${bytes.length} bytes ($currentLen/$_expectedSnapshotBytes)');
+
+      _statusMessage = 'Receiving BLE Snapshot ($currentLen/$_expectedSnapshotBytes B)';
+      notifyListeners();
+
+      if (currentLen >= _expectedSnapshotBytes) {
+        final completedJpeg = _snapshotBuilder.takeBytes();
+        _isReceivingSnapshot = false;
+        _expectedSnapshotBytes = 0;
+        debugPrint('[BLE-SNAP] Snapshot fully assembled (${completedJpeg.length} bytes). Transmitting to Cloudflare Tunnel...');
+
+        try {
+          _relayWsChannel?.sink.add(completedJpeg);
+          debugPrint('[BLE-SNAP] Completed JPEG forwarded over active WebSocket!');
+          _statusMessage = 'Relayed Incident Snapshot (${(completedJpeg.length / 1024).toStringAsFixed(1)} KB)';
+          notifyListeners();
+        } catch (e) {
+          debugPrint('[BLE-SNAP] Error sending JPEG to server: $e');
+        }
+      } else {
+        // Set safety timeout in case BLE packets drop mid-transfer
+        _snapshotTimeoutTimer = Timer(const Duration(seconds: 8), () {
+          if (_isReceivingSnapshot) {
+            debugPrint('[BLE-SNAP] Snapshot timeout reached. Resetting snapshot buffer.');
+            _isReceivingSnapshot = false;
+            _expectedSnapshotBytes = 0;
+            _snapshotBuilder.clear();
+            notifyListeners();
+          }
+        });
+      }
+      return;
+    }
+
+    // 2. Check if packet is a text command (e.g. SNAP:<len>, STREAM_END, PING:...)
     bool isAsciiText = false;
     String textMsg = '';
     try {
@@ -270,11 +335,38 @@ class BlePinRelayService extends ChangeNotifier {
       }
     } catch (_) {}
 
-    _ensureRelayWebSocket();
-
     if (isAsciiText) {
       debugPrint('[BLE-RELAY] Forwarding Command: $textMsg');
-      if (textMsg.startsWith('STREAM_END') || textMsg.startsWith('STREAM_STOP')) {
+      if (textMsg.startsWith('SNAP:')) {
+        // Enter Snapshot Receiving Mode
+        final declaredLen = int.tryParse(textMsg.substring(5).trim()) ?? 0;
+        _isReceivingSnapshot = true;
+        _expectedSnapshotBytes = declaredLen;
+        _snapshotBuilder.clear();
+        debugPrint('[BLE-SNAP] Switched to Snapshot Mode! Expected: $declaredLen bytes');
+        _statusMessage = 'Receiving Camera Snapshot ($declaredLen B)...';
+        notifyListeners();
+
+        // Forward the SNAP:<len> header to Central System / Cloudflare Tunnel
+        try {
+          _relayWsChannel?.sink.add(textMsg);
+        } catch (e) {
+          debugPrint('[BLE-RELAY] Error sending SNAP header to CS: $e');
+        }
+
+        // Set safety timeout (8 seconds)
+        _snapshotTimeoutTimer?.cancel();
+        _snapshotTimeoutTimer = Timer(const Duration(seconds: 8), () {
+          if (_isReceivingSnapshot) {
+            debugPrint('[BLE-SNAP] Timeout waiting for snapshot bytes.');
+            _isReceivingSnapshot = false;
+            _expectedSnapshotBytes = 0;
+            _snapshotBuilder.clear();
+            notifyListeners();
+          }
+        });
+        return;
+      } else if (textMsg.startsWith('STREAM_END') || textMsg.startsWith('STREAM_STOP')) {
         _state = BleRelayState.connected;
         _statusMessage = 'Relayed Incident Audio Stream Complete';
         notifyListeners();
@@ -319,6 +411,10 @@ class BlePinRelayService extends ChangeNotifier {
   void _handleBleDisconnect() {
     _txSubscription?.cancel();
     _connectionStateSub?.cancel();
+    _snapshotTimeoutTimer?.cancel();
+    _isReceivingSnapshot = false;
+    _expectedSnapshotBytes = 0;
+    _snapshotBuilder.clear();
     _connectedDevice = null;
     _txCharacteristic = null;
     _rxCharacteristic = null;

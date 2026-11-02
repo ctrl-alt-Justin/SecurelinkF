@@ -6,6 +6,7 @@ import os
 import re
 import socket
 import struct
+import subprocess
 import time
 import wave
 from datetime import datetime
@@ -20,6 +21,14 @@ from transformers import AutoModelForSequenceClassification, AutoTokenizer
 import uvicorn
 
 import sys
+
+# Prevent Windows CP1252 UnicodeEncodeError crashes on emojis/special characters
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 if BASE_DIR not in sys.path:
@@ -43,8 +52,10 @@ app = FastAPI(title="SecureLink AI Inference Server")
 
 # Ensure required storage directories exist
 RECORDINGS_DIR = os.path.join(BASE_DIR, "recordings")
-os.makedirs(os.path.join(RECORDINGS_DIR, "audio"), exist_ok=True)
-os.makedirs(os.path.join(RECORDINGS_DIR, "snapshots"), exist_ok=True)
+AUDIO_RECORDINGS_DIR = os.path.join(RECORDINGS_DIR, "audio")
+SNAPSHOTS_RECORDINGS_DIR = os.path.join(RECORDINGS_DIR, "snapshots")
+os.makedirs(AUDIO_RECORDINGS_DIR, exist_ok=True)
+os.makedirs(SNAPSHOTS_RECORDINGS_DIR, exist_ok=True)
 
 # Mount recordings directory so dashboard and client devices can fetch/replay audio and snapshots
 app.mount("/recordings", StaticFiles(directory=RECORDINGS_DIR), name="recordings")
@@ -251,13 +262,21 @@ class ContextEngine:
 
         # 3. Rolling Window Aggregation (Threat Escalation)
         self.history.append(current_score)
-        if len(self.history) > 4:
+        if len(self.history) > 5:
             self.history.pop(0)
 
-        consecutive_friction = sum(1 for s in self.history if s >= 2.0)
-        
-        if consecutive_friction >= 2 and current_score >= 2.0:
-            final_score = min(current_score * 1.25, 10.0)
+        # Count hostile statements (scoring 4.5 or higher) in the last 5 statements
+        hostile_count = sum(1 for s in self.history if s >= 4.5)
+
+        if hostile_count >= 3:
+            # Severe Escalation: 3+ hostile statements force score >= 8.5 (DANGER)
+            final_score = max(current_score, 8.5)
+            final_score = min(final_score, 10.0)
+            category = "Escalated Harassment / Danger"
+        elif hostile_count == 2:
+            # Rising Warning: exactly 2 hostile statements apply 1.5x multiplier (capped at 7.9)
+            final_score = min(current_score * 1.5, 7.9)
+            category = "Hostile Escalation"
         else:
             final_score = min(current_score, 10.0)
 
@@ -273,17 +292,50 @@ registered_devices = {}
 active_pins = {} # Map of websocket -> device_id
 harmful_words_only = False # Default False so all speech during testing is visible on the dashboard!
 
+def is_cloudflared_running() -> bool:
+    """Checks if a cloudflared process is currently running on the host."""
+    try:
+        if sys.platform == "win32":
+            res = subprocess.run(["tasklist", "/FI", "IMAGENAME eq cloudflared*"], capture_output=True, text=True, timeout=1.0)
+            return "cloudflared" in res.stdout.lower()
+        else:
+            res = subprocess.run(["pgrep", "-f", "cloudflared"], capture_output=True, text=True, timeout=1.0)
+            return bool(res.stdout.strip())
+    except Exception:
+        return False
+
 TUNNEL_CONFIG_FILE = os.path.join(BASE_DIR, "tunnel_config.json")
 current_cloud_tunnel_url = None
+
+def get_active_tunnel_url():
+    global current_cloud_tunnel_url
+    if current_cloud_tunnel_url:
+        if not is_cloudflared_running():
+            print("[TUNNEL] cloudflared is not running. Clearing stale Cloudflare Tunnel URL.")
+            current_cloud_tunnel_url = None
+            if os.path.exists(TUNNEL_CONFIG_FILE):
+                try:
+                    os.remove(TUNNEL_CONFIG_FILE)
+                except Exception:
+                    pass
+    return current_cloud_tunnel_url
+
 if os.path.exists(TUNNEL_CONFIG_FILE):
-    try:
-        with open(TUNNEL_CONFIG_FILE, "r", encoding="utf-8") as f:
-            cfg = json.load(f)
-            current_cloud_tunnel_url = cfg.get("cloud_tunnel_url")
-            if current_cloud_tunnel_url:
-                print(f"[TUNNEL] Loaded active Cloudflare Tunnel: {current_cloud_tunnel_url}")
-    except Exception:
-        pass
+    if not is_cloudflared_running():
+        try:
+            os.remove(TUNNEL_CONFIG_FILE)
+            print("[TUNNEL] Removed stale tunnel_config.json (cloudflared is not running)")
+        except Exception:
+            pass
+    else:
+        try:
+            with open(TUNNEL_CONFIG_FILE, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+                current_cloud_tunnel_url = cfg.get("cloud_tunnel_url")
+                if current_cloud_tunnel_url:
+                    print(f"[TUNNEL] Loaded active Cloudflare Tunnel: {current_cloud_tunnel_url}")
+        except Exception:
+            pass
 
 async def broadcast_to_ui(payload: dict):
     if not ui_clients:
@@ -305,14 +357,14 @@ async def health_check():
         "app": "SecureLink AI Server",
         "whisper": has_whisper,
         "classifier": bert_model is not None,
-        "cloud_tunnel_url": current_cloud_tunnel_url,
+        "cloud_tunnel_url": get_active_tunnel_url(),
     }
 
 @app.get("/api/cloud-tunnel")
 async def get_cloud_tunnel():
     return {
         "status": "success",
-        "cloud_tunnel_url": current_cloud_tunnel_url
+        "cloud_tunnel_url": get_active_tunnel_url()
     }
 
 @app.post("/api/cloud-tunnel")
@@ -754,6 +806,14 @@ async def ui_websocket_endpoint(websocket: WebSocket):
             if data == "ping":
                 await websocket.send_text(json.dumps({"event_type": "pong"}))
                 continue
+            if data in ("TRIGGER:DANGER", "CMD:CAPTURE_SNAPSHOT"):
+                print(f"[UI] Relay camera snapshot command to all active pins: {data}")
+                for pin_ws in list(active_pins.keys()):
+                    try:
+                        await pin_ws.send_text(data)
+                    except Exception:
+                        pass
+                continue
             
             # Handle fleet configuration deployed from Flutter Configuration Tab
             try:
@@ -916,7 +976,7 @@ async def periodic_recordings_cleanup():
             now = time.time()
             cutoff_sec = now - (RECORDINGS_RETENTION_DAYS * 86400)
             deleted_count = 0
-            for folder in ["recordings/audio", "recordings/snapshots"]:
+            for folder in [AUDIO_RECORDINGS_DIR, SNAPSHOTS_RECORDINGS_DIR]:
                 if os.path.exists(folder):
                     for fname in os.listdir(folder):
                         fpath = os.path.join(folder, fname)
@@ -1196,16 +1256,32 @@ async def handle_completed_audio(device_id: str, pcm_bytes: bytes, websocket: We
                 return
 
             if is_danger:
+                print(f"[THREAT] DANGER grade detected! Dispatching TRIGGER:DANGER to {device_id}...")
                 try:
                     await websocket.send_text("TRIGGER:DANGER")
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[THREAT] Error sending TRIGGER:DANGER: {e}")
+                for pin_ws, p_id in list(active_pins.items()):
+                    if p_id == device_id and pin_ws != websocket:
+                        try:
+                            await pin_ws.send_text("TRIGGER:DANGER")
+                        except Exception:
+                            pass
 
             incident_id = f"EVT-{int(time.time() * 1000) % 1000000}"
+            if device_id in registered_devices:
+                registered_devices[device_id]["latest_incident_id"] = incident_id
+            else:
+                registered_devices[device_id] = {"latest_incident_id": incident_id}
+
             wav_filename = f"{incident_id}.wav"
-            wav_path = os.path.join("recordings/audio", wav_filename)
+            wav_path = os.path.join(AUDIO_RECORDINGS_DIR, wav_filename)
             # Save the clean, denoised audio to WAV so playback is crystal-clear and fan-free
             await asyncio.to_thread(save_wav, clean_pcm, wav_path)
+
+            primary_ip = get_primary_ip()
+            active_tunnel = get_active_tunnel_url()
+            base_audio = active_tunnel if active_tunnel else f"http://{primary_ip}:8080"
 
             await broadcast_to_ui({
                 "event_type": "incident",
@@ -1215,7 +1291,9 @@ async def handle_completed_audio(device_id: str, pcm_bytes: bytes, websocket: We
                 "category": category,
                 "transcript": transcript,
                 "audio": True,
-                "audio_url": f"http://127.0.0.1:8080/recordings/audio/{wav_filename}",
+                "audio_url": f"{base_audio}/recordings/audio/{wav_filename}",
+                "local_audio_url": f"http://127.0.0.1:8080/recordings/audio/{wav_filename}",
+                "lan_audio_url": f"http://{primary_ip}:8080/recordings/audio/{wav_filename}",
                 "audio_file": wav_filename,
                 "video": is_danger,
                 "duration": f"00:{max(1, int(dur_sec)):02d}"
@@ -1410,18 +1488,34 @@ async def pin_websocket_endpoint(websocket: WebSocket):
                 # If this payload is a JPEG camera snapshot
                 if next_expected_snapshot:
                     next_expected_snapshot = False
-                    snap_id = f"snap_{device_id}_{int(time.time())}.jpg"
-                    snap_path = os.path.join("recordings/snapshots", snap_id)
-                    with open(snap_path, "wb") as snap_file:
-                        snap_file.write(binary_data)
-                    print(f"📸 [CAM] DANGER Snapshot saved to {snap_path} ({len(binary_data)} bytes)")
-                    
-                    await broadcast_to_ui({
-                        "event_type": "snapshot_ready",
-                        "device_id": device_id,
-                        "snapshot_file": snap_id,
-                        "timestamp": datetime.now().strftime("%H:%M:%S")
-                    })
+                    try:
+                        snap_id = f"snap_{device_id}_{int(time.time())}.jpg"
+                        snap_path = os.path.join(SNAPSHOTS_RECORDINGS_DIR, snap_id)
+                        with open(snap_path, "wb") as snap_file:
+                            snap_file.write(binary_data)
+                        print(f"[CAM] DANGER Snapshot saved to {snap_path} ({len(binary_data)} bytes)")
+                        
+                        latest_incident_id = registered_devices.get(device_id, {}).get("latest_incident_id", "")
+                        primary_ip = get_primary_ip()
+                        active_tunnel = get_active_tunnel_url()
+                        base_url = active_tunnel if active_tunnel else f"http://{primary_ip}:8080"
+                        snapshot_url = f"{base_url}/recordings/snapshots/{snap_id}"
+                        local_url = f"http://127.0.0.1:8080/recordings/snapshots/{snap_id}"
+                        lan_url = f"http://{primary_ip}:8080/recordings/snapshots/{snap_id}"
+
+                        await broadcast_to_ui({
+                            "event_type": "snapshot_ready",
+                            "device_id": device_id,
+                            "incident_id": latest_incident_id,
+                            "snapshot_file": snap_id,
+                            "snapshot_url": snapshot_url,
+                            "local_url": local_url,
+                            "lan_url": lan_url,
+                            "timestamp": datetime.now().strftime("%H:%M:%S")
+                        })
+                        print(f"[CAM] Successfully broadcast snapshot_ready to UI: {snapshot_url} (local: {local_url})")
+                    except Exception as snap_err:
+                        print(f"[CAM] Error processing camera snapshot: {snap_err}")
                     continue
 
                 # Rate limit protection against rogue flooding
