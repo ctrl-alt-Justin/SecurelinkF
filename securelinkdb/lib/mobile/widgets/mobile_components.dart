@@ -538,7 +538,7 @@ class _ServerHostModalState extends State<ServerHostModal> {
     _portCtrl = TextEditingController(text: widget.service.port.toString());
     final initialTunnel = widget.service.cloudTunnelUrl.isNotEmpty
         ? widget.service.cloudTunnelUrl
-        : 'https://rings-diploma-evaluated-mls.trycloudflare.com';
+        : '';
     _tunnelCtrl = TextEditingController(text: initialTunnel);
     _useTunnel = widget.service.useCloudTunnel;
 
@@ -811,22 +811,21 @@ class _ServerHostModalState extends State<ServerHostModal> {
                       }
                     },
                   ),
-                  ActionChip(
-                    avatar: const Icon(Icons.bolt_rounded, size: 14, color: MobileDesignSystem.primaryGreenMint),
-                    label: Text(
-                      'Active: ${(widget.service.cloudTunnelUrl.isNotEmpty ? widget.service.cloudTunnelUrl : "https://rings-diploma-evaluated-mls.trycloudflare.com").replaceAll("https://", "")}',
-                      style: const TextStyle(fontSize: 10.5, color: Colors.white70),
+                  if (widget.service.cloudTunnelUrl.isNotEmpty)
+                    ActionChip(
+                      avatar: const Icon(Icons.bolt_rounded, size: 14, color: MobileDesignSystem.primaryGreenMint),
+                      label: Text(
+                        'Active: ${widget.service.cloudTunnelUrl.replaceAll("https://", "")}',
+                        style: const TextStyle(fontSize: 10.5, color: Colors.white70),
+                      ),
+                      backgroundColor: MobileDesignSystem.primaryGreen.withValues(alpha: 0.12),
+                      side: BorderSide(color: MobileDesignSystem.primaryGreen.withValues(alpha: 0.3)),
+                      onPressed: () {
+                        setState(() {
+                          _tunnelCtrl.text = widget.service.cloudTunnelUrl;
+                        });
+                      },
                     ),
-                    backgroundColor: MobileDesignSystem.primaryGreen.withValues(alpha: 0.12),
-                    side: BorderSide(color: MobileDesignSystem.primaryGreen.withValues(alpha: 0.3)),
-                    onPressed: () {
-                      setState(() {
-                        _tunnelCtrl.text = widget.service.cloudTunnelUrl.isNotEmpty
-                            ? widget.service.cloudTunnelUrl
-                            : 'https://rings-diploma-evaluated-mls.trycloudflare.com';
-                      });
-                    },
-                  ),
                 ],
               ),
             ] else ...[

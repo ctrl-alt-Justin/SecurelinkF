@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import '../models/device_model.dart';
@@ -128,18 +129,21 @@ class MobileServerService extends ChangeNotifier {
   String _csName = 'SecureLink Campus Central System';
 
   // --- Cloudflare Tunnel (Global Routing for Cellular 4G/5G & AP Isolation) ---
-  String? _cloudTunnelUrl = 'https://rings-diploma-evaluated-mls.trycloudflare.com';
+  String? _cloudTunnelUrl; // No hardcoded hostname; dynamic trycloudflare.com tunnel
   bool _useCloudTunnel = false;
 
-  // --- Mobile Device Profile (Teacher / Student) ---
+  // --- Mobile Device Profile & Cryptographic Auth Token ---
   String _mobileId = 'MOBILE-USER-01';
   String _userName = 'Teacher / Student';
   String _userRole = 'Teacher'; // 'Teacher' or 'Student'
+  String? _authToken;
+  static const FlutterSecureStorage _secureStorage = FlutterSecureStorage();
 
   // --- Connection State ---
   WebSocketChannel? _channel;
   Timer? _pingTimer;
   Timer? _reconnectTimer;
+  Timer? _networkFallbackTimer;
   bool _isConnected = false;
   bool _isConnecting = false;
   bool _isSearchingPins = false;
@@ -151,6 +155,7 @@ class MobileServerService extends ChangeNotifier {
   final Map<String, DeviceStatus> _devices = {};
   final List<WifiCheckpoint> _checkpoints = [];
   final List<IncidentReport> _recentIncidents = [];
+  final Set<String> _seenIncidentIds = {}; // Deduplication across reconnects
 
   // --- Paired Pins for this specific Mobile Device ---
   final Set<String> _pairedPinIds = {};
@@ -166,6 +171,8 @@ class MobileServerService extends ChangeNotifier {
   String get mobileId => _mobileId;
   String get userName => _userName;
   String get userRole => _userRole;
+  bool get isPaired => _authToken != null && _authToken!.isNotEmpty;
+  String? get authToken => _authToken;
 
   bool get isConnected => _isConnected;
   bool get isConnecting => _isConnecting;
@@ -209,6 +216,13 @@ class MobileServerService extends ChangeNotifier {
   }
 
   Uri getUiWsUri() => Uri.parse('$baseWsUrl/ui');
+  Uri getMobileWsUri() {
+    final devId = Uri.encodeComponent(_mobileId);
+    final tokParam = (_authToken != null && _authToken!.isNotEmpty)
+        ? '&token=${Uri.encodeComponent(_authToken!)}'
+        : '';
+    return Uri.parse('$baseWsUrl/mobile?device_id=$devId$tokParam');
+  }
   Uri getPinWsUri([String deviceId = 'PIN-001']) => Uri.parse('$baseWsUrl/?device_id=$deviceId');
   Uri getApiUri(String path) => Uri.parse('$baseHttpUrl/api$path');
 
@@ -291,11 +305,19 @@ class MobileServerService extends ChangeNotifier {
       _port = prefs.getInt('cs_port') ?? 8080;
       _csId = prefs.getString('cs_id') ?? 'CS-CAMPUS-01';
       _csName = prefs.getString('cs_name') ?? 'SecureLink Campus Central System';
-      _cloudTunnelUrl = prefs.getString('cloud_tunnel_url') ?? 'https://rings-diploma-evaluated-mls.trycloudflare.com';
+      _cloudTunnelUrl = prefs.getString('cloud_tunnel_url');
       _useCloudTunnel = prefs.getBool('use_cloud_tunnel') ?? false;
       _mobileId = prefs.getString('mobile_id') ?? 'MOBILE-${DateTime.now().millisecondsSinceEpoch % 10000}';
       _userName = prefs.getString('user_name') ?? 'Teacher / Student';
       _userRole = prefs.getString('user_role') ?? 'Teacher';
+
+      // Load cryptographic mobile authentication token from FlutterSecureStorage
+      try {
+        _authToken = await _secureStorage.read(key: 'mobile_auth_token');
+      } catch (_) {}
+      if (_authToken == null || _authToken!.isEmpty) {
+        _authToken = prefs.getString('mobile_auth_token');
+      }
 
       final savedPins = prefs.getStringList('paired_pins') ?? [];
       _pairedPinIds.clear();
@@ -361,6 +383,14 @@ class MobileServerService extends ChangeNotifier {
       await prefs.setStringList('paired_pins', _pairedPinIds.toList());
       await prefs.setString('pin_aliases', jsonEncode(_pinAliases));
 
+      // Persist authentication token securely
+      if (_authToken != null && _authToken!.isNotEmpty) {
+        try {
+          await _secureStorage.write(key: 'mobile_auth_token', value: _authToken!);
+        } catch (_) {}
+        await prefs.setString('mobile_auth_token', _authToken!);
+      }
+
       // Persist paired devices cache so pins stay on phone even when offline
       final pairedMap = <String, dynamic>{};
       for (final pid in _pairedPinIds) {
@@ -372,6 +402,38 @@ class MobileServerService extends ChangeNotifier {
     } catch (e) {
       debugPrint('[PREFS] Save error: $e');
     }
+  }
+
+  Future<void> saveAuthCredentials({
+    required String token,
+    required String deviceId,
+    required String csId,
+    String? serverIp,
+    int? serverPort,
+    String? cloudTunnelUrl,
+  }) async {
+    _authToken = token.trim();
+    _mobileId = deviceId.trim();
+    _csId = csId.trim();
+    if (serverIp != null && serverIp.isNotEmpty) _host = serverIp.trim();
+    if (serverPort != null && serverPort > 0) _port = serverPort;
+    if (cloudTunnelUrl != null && cloudTunnelUrl.isNotEmpty) {
+      _cloudTunnelUrl = cloudTunnelUrl.trim();
+    }
+    await _savePreferences();
+    notifyListeners();
+    reconnect();
+  }
+
+  Future<void> clearAuthCredentials() async {
+    _authToken = null;
+    try {
+      await _secureStorage.delete(key: 'mobile_auth_token');
+    } catch (_) {}
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('mobile_auth_token');
+    notifyListeners();
+    reconnect();
   }
 
   void setUserProfile({required String name, required String role}) {
@@ -570,22 +632,55 @@ class MobileServerService extends ChangeNotifier {
   }
 
   // --------------------------------------------------------------------------
-  // WEBSOCKET LIFECYCLE
+  // WEBSOCKET LIFECYCLE & LOCAL-FIRST/REMOTE-FALLBACK CONNECTION ARCHITECTURE
   // --------------------------------------------------------------------------
   void reconnect() {
     _channel?.sink.close();
     _pingTimer?.cancel();
     _reconnectTimer?.cancel();
+    _networkFallbackTimer?.cancel();
     _isConnected = false;
     _isConnecting = false;
     connect();
   }
 
+  Future<bool> _probeHttp(String url, {int timeoutMs = 1500}) async {
+    try {
+      final client = HttpClient()..connectionTimeout = Duration(milliseconds: timeoutMs);
+      final req = await client.getUrl(Uri.parse(url));
+      final res = await req.close();
+      final ok = (res.statusCode == 200);
+      client.close();
+      return ok;
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<void> connect() async {
     if (_isConnecting) return;
     _isConnecting = true;
-    final wsUri = getUiWsUri();
-    _statusMessage = 'Connecting to Central System ($wsUri)...';
+    _statusMessage = 'Resolving connection to Central System...';
+    notifyListeners();
+
+    // 1. Automatic Local-First vs Remote-Fallback selection:
+    bool localOk = false;
+    if (_host.isNotEmpty && _host != '0.0.0.0') {
+      localOk = await _probeHttp('http://$_host:$_port/health', timeoutMs: 1200);
+    }
+
+    if (localOk) {
+      _useCloudTunnel = false;
+    } else if (_cloudTunnelUrl != null && _cloudTunnelUrl!.isNotEmpty) {
+      final cleanTunnel = _cloudTunnelUrl!.startsWith('http') ? _cloudTunnelUrl! : 'https://$_cloudTunnelUrl';
+      bool remoteOk = await _probeHttp('$cleanTunnel/health', timeoutMs: 2000);
+      if (remoteOk) {
+        _useCloudTunnel = true;
+      }
+    }
+
+    final wsUri = isPaired ? getMobileWsUri() : getUiWsUri();
+    _statusMessage = 'Connecting to Central System (${_useCloudTunnel ? "Remote Tunnel" : "Local Wi-Fi"})...';
     notifyListeners();
 
     _fetchDevicesRest();
@@ -598,12 +693,13 @@ class MobileServerService extends ChangeNotifier {
       _channel!.ready.then((_) {
         _isConnected = true;
         _isConnecting = false;
-        _statusMessage = 'Synced with Central System ($csId @ ${isDirectCloudTunnel ? activeTunnelHost : "$_host:$_port"})';
+        _statusMessage = 'Synced with Central System ($csId @ ${_useCloudTunnel ? activeTunnelHost : "$_host:$_port"})';
         notifyListeners();
         _fetchDevicesRest();
         _fetchCheckpointsRest();
         _fetchCloudTunnelRest();
         _startHeartbeat();
+        _startNetworkSwitchWatchdog();
         _syncWithCentralSystem();
       }).catchError((err) {
         _handleDisconnect('Connection refused by CS ($err)');
@@ -623,11 +719,30 @@ class MobileServerService extends ChangeNotifier {
     }
   }
 
+  void _startNetworkSwitchWatchdog() {
+    _networkFallbackTimer?.cancel();
+    // Every 15 seconds, check if network environment changed
+    _networkFallbackTimer = Timer.periodic(const Duration(seconds: 15), (_) async {
+      if (!_isConnected) return;
+      if (_useCloudTunnel && _host.isNotEmpty) {
+        // We are currently on remote tunnel; check if local campus Wi-Fi became available
+        bool localAvailable = await _probeHttp('http://$_host:$_port/health', timeoutMs: 1200);
+        if (localAvailable) {
+          debugPrint('[NET] Local campus Wi-Fi detected! Seamlessly switching to local connection...');
+          _useCloudTunnel = false;
+          _savePreferences();
+          reconnect();
+        }
+      }
+    });
+  }
+
   void _handleDisconnect(String reason) {
     _isConnected = false;
     _isConnecting = false;
     _statusMessage = reason;
     _pingTimer?.cancel();
+    _networkFallbackTimer?.cancel();
     notifyListeners();
 
     _reconnectTimer?.cancel();
@@ -662,12 +777,169 @@ class MobileServerService extends ChangeNotifier {
   }
 
   // --------------------------------------------------------------------------
+  // MOBILE PAIRING CREDENTIAL SUBMISSION & POLLING (QR / 8-DIGIT MANUAL CODE)
+  // --------------------------------------------------------------------------
+  Future<Map<String, dynamic>> submitPairingRequest({
+    required String pairingCode,
+    String? sessionId,
+    String? serverIp,
+    int? serverPort,
+    String? cloudTunnelUrl,
+    String? preferredRole,
+    String? customDeviceName,
+  }) async {
+    final cleanCode = pairingCode.replaceAll(RegExp(r'[\s-]'), '').trim();
+    final targetHost = (serverIp != null && serverIp.isNotEmpty) ? serverIp.trim() : _host;
+    final targetPort = (serverPort != null && serverPort > 0) ? serverPort : _port;
+    final targetTunnel = (cloudTunnelUrl != null && cloudTunnelUrl.isNotEmpty) ? cloudTunnelUrl.trim() : _cloudTunnelUrl;
+
+    // Check candidate URLs in order: local first, then remote tunnel
+    final candidateBases = <String>[];
+    if (targetHost.isNotEmpty) {
+      candidateBases.add('http://$targetHost:$targetPort');
+    }
+    if (targetTunnel != null && targetTunnel.isNotEmpty) {
+      final cleanTunnel = targetTunnel.startsWith('http') ? targetTunnel : 'https://$targetTunnel';
+      candidateBases.add(cleanTunnel);
+    }
+    if (candidateBases.isEmpty) {
+      candidateBases.add('http://$_host:$_port');
+    }
+
+    final payload = {
+      'pairing_code': cleanCode,
+      if (sessionId != null && sessionId.isNotEmpty) 'session_id': sessionId,
+      'device_id': _mobileId,
+      'device_name': customDeviceName ?? 'Mobile Companion (${_mobileId.substring(_mobileId.length > 6 ? _mobileId.length - 6 : 0)})',
+      'user_name': _userName,
+      'role': preferredRole ?? _userRole,
+    };
+
+    String? lastError;
+    for (final base in candidateBases) {
+      try {
+        final client = HttpClient()..connectionTimeout = const Duration(seconds: 4);
+        final req = await client.postUrl(Uri.parse('$base/api/mobile-pairing/redeem'));
+        req.headers.contentType = ContentType.json;
+        req.write(jsonEncode(payload));
+        final res = await req.close();
+        final bodyStr = await res.transform(utf8.decoder).join();
+        client.close();
+
+        final parsed = jsonDecode(bodyStr) as Map<String, dynamic>;
+        if (res.statusCode == 200) {
+          // Update host/tunnel if this candidate succeeded
+          if (base.contains('trycloudflare.com')) {
+            _cloudTunnelUrl = base;
+            _useCloudTunnel = true;
+          } else {
+            _host = targetHost;
+            _port = targetPort;
+            _useCloudTunnel = false;
+          }
+          _savePreferences();
+          return parsed;
+        } else {
+          lastError = parsed['message'] ?? 'Pairing request rejected (${res.statusCode})';
+          return parsed;
+        }
+      } catch (e) {
+        lastError = 'Could not reach server at $base: $e';
+      }
+    }
+
+    return {
+      'status': 'error',
+      'code': 'ERR_NETWORK',
+      'message': lastError ?? 'Failed to reach Central System.',
+    };
+  }
+
+  Future<Map<String, dynamic>> pollPairingStatus(String sessionId, {String? targetBaseUrl}) async {
+    final candidateBases = <String>[];
+    if (targetBaseUrl != null && targetBaseUrl.isNotEmpty) {
+      candidateBases.add(targetBaseUrl);
+    }
+    if (_host.isNotEmpty) candidateBases.add('http://$_host:$_port');
+    if (_cloudTunnelUrl != null && _cloudTunnelUrl!.isNotEmpty) {
+      final t = _cloudTunnelUrl!.startsWith('http') ? _cloudTunnelUrl! : 'https://$_cloudTunnelUrl';
+      candidateBases.add(t);
+    }
+
+    for (final base in candidateBases) {
+      try {
+        final client = HttpClient()..connectionTimeout = const Duration(seconds: 3);
+        final req = await client.getUrl(Uri.parse('$base/api/mobile-pairing/status/$sessionId'));
+        final res = await req.close();
+        final bodyStr = await res.transform(utf8.decoder).join();
+        client.close();
+
+        if (res.statusCode == 200) {
+          final parsed = jsonDecode(bodyStr) as Map<String, dynamic>;
+          if (parsed['status'] == 'success' && parsed['state'] == 'approved' && parsed['auth_token'] != null) {
+            final tok = parsed['auth_token'] as String;
+            final devId = parsed['device_id'] as String? ?? _mobileId;
+            final cs = parsed['cs_id'] as String? ?? _csId;
+            final sIp = parsed['server_ip'] as String?;
+            final sPort = parsed['server_port'] as int?;
+            final cTun = parsed['cloud_tunnel_url'] as String?;
+            await saveAuthCredentials(
+              token: tok,
+              deviceId: devId,
+              csId: cs,
+              serverIp: sIp,
+              serverPort: sPort,
+              cloudTunnelUrl: cTun,
+            );
+          }
+          return parsed;
+        }
+      } catch (_) {}
+    }
+
+    return {'status': 'error', 'message': 'Unable to poll pairing status'};
+  }
+
+  // --------------------------------------------------------------------------
   // MESSAGE RECEIVER & INCIDENT STREAM
   // --------------------------------------------------------------------------
   void _onMessageReceived(dynamic rawData) {
     try {
       final json = jsonDecode(rawData.toString());
       final eventType = json['event_type'];
+
+      if (eventType == 'mobile_sync_init') {
+        _csId = json['cs_id'] ?? _csId;
+        _csName = json['name'] ?? _csName;
+        if (json['role'] != null) _userRole = json['role'];
+        if (json['cloud_tunnel_url'] != null) {
+          final t = (json['cloud_tunnel_url'] as String).trim();
+          if (t.isNotEmpty && t != _cloudTunnelUrl) {
+            _cloudTunnelUrl = t;
+            _savePreferences();
+          }
+        }
+        if (json['devices'] != null) {
+          for (final d in (json['devices'] as List)) {
+            final dev = DeviceStatus.fromJson(d as Map<String, dynamic>);
+            _devices[dev.id.toUpperCase()] = dev;
+          }
+        }
+        if (json['recent_incidents'] != null) {
+          for (final rawInc in (json['recent_incidents'] as List)) {
+            final inc = IncidentReport.fromJson(rawInc as Map<String, dynamic>, host: _host, port: _port);
+            if (!_seenIncidentIds.contains(inc.id)) {
+              _seenIncidentIds.add(inc.id);
+              if (_pairedPinIds.isEmpty || _pairedPinIds.contains(inc.deviceId.toUpperCase())) {
+                _recentIncidents.add(inc);
+              }
+            }
+          }
+        }
+        _statusMessage = 'Synced with $csId (${isDirectCloudTunnel ? "Remote" : "Local LAN"})';
+        notifyListeners();
+        return;
+      }
 
       if (eventType == 'device_update' && json['device'] != null) {
         final dev = DeviceStatus.fromJson(json['device']);
@@ -709,6 +981,11 @@ class MobileServerService extends ChangeNotifier {
       } else if (eventType == 'incident' || (eventType == 'incident_detected' && json['incident'] != null)) {
         final rawIncident = eventType == 'incident' ? json : json['incident'];
         final inc = IncidentReport.fromJson(rawIncident, host: _host, port: _port);
+        // Deduplicate incidents across reconnects
+        if (_seenIncidentIds.contains(inc.id)) {
+          return;
+        }
+        _seenIncidentIds.add(inc.id);
         if (_pairedPinIds.isEmpty || _pairedPinIds.contains(inc.deviceId.toUpperCase())) {
           _recentIncidents.insert(0, inc);
           if (_recentIncidents.length > 50) _recentIncidents.removeLast();

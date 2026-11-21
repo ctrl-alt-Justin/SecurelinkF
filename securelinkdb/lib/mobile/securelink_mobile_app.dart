@@ -8,6 +8,7 @@ import 'screens/battery_tracker_screen.dart';
 import 'screens/wifi_config_screen.dart';
 import 'widgets/mobile_components.dart';
 import 'widgets/mobile_splash_screen.dart';
+import 'widgets/pair_mobile_modal.dart';
 
 class SecureLinkMobileApp extends StatefulWidget {
   final String? initialHost;
@@ -197,6 +198,29 @@ class _SecureLinkMobileAppState extends State<SecureLinkMobileApp> {
                           ),
                         ),
                       ),
+                    ),
+                    const SizedBox(width: 5),
+
+                    // Pair with Central System (QR Code / 8-Digit Code)
+                    IconButton(
+                      tooltip: 'Pair with Central System (QR / Code)',
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                      onPressed: () {
+                        showModalBottomSheet(
+                          context: context,
+                          isScrollControlled: true,
+                          backgroundColor: const Color(0xFF0E151A),
+                          shape: const RoundedRectangleBorder(
+                            borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
+                          ),
+                          builder: (ctx) => PairMobileCentralSystemModal(
+                            service: _serverService,
+                            onPaired: () => setState(() {}),
+                          ),
+                        );
+                      },
+                      icon: const Icon(Icons.qr_code_scanner_rounded, color: MobileDesignSystem.primaryGreenMint, size: 20),
                     ),
                     const SizedBox(width: 5),
 

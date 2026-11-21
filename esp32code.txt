@@ -10,6 +10,7 @@
 #include <DNSServer.h>
 #include <Preferences.h>
 #include <HTTPClient.h>
+#include <WiFiClientSecure.h>
 #include <esp_mac.h>
 #include "esp_camera.h"
 
@@ -148,18 +149,36 @@ class BleServerCallbacks: public BLEServerCallbacks {
 
 void handleBleProvisioning(const String& rxJson);
 
+static String bleRxBuffer = "";
+static constexpr size_t MAX_BLE_RX_BUFFER = 1024;
+
 class BleRxCallbacks: public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic *pCharacteristic) override {
-        String rxValue = pCharacteristic->getValue().c_str();
-        if (rxValue.length() > 0) {
-            Serial.print("[BLE-RX] Received: ");
-            Serial.println(rxValue);
-            if (rxValue.startsWith("{") || rxValue.indexOf("\"type\"") >= 0) {
-                handleBleProvisioning(rxValue);
-            } else if (rxValue == "TRIGGER:DANGER" || rxValue == "CMD:CAPTURE_SNAPSHOT") {
-                Serial.println("[BLE] Snapshot trigger received over BLE! Capturing...");
+        String chunk = pCharacteristic->getValue().c_str();
+        if (chunk.length() == 0) return;
+
+        // Security requirement: Never log raw BLE provisioning payload, pairing code, or passwords
+        Serial.printf("[BLE-RX] Received fragment (%d bytes)\n", chunk.length());
+
+        if (bleRxBuffer.length() + chunk.length() > MAX_BLE_RX_BUFFER) {
+            bleRxBuffer = ""; // Safety guard: purge on overflow
+        }
+        bleRxBuffer += chunk;
+
+        // Check if message is a full JSON object or hardware trigger command
+        if (bleRxBuffer.startsWith("{") && bleRxBuffer.endsWith("}")) {
+            String fullJson = bleRxBuffer;
+            bleRxBuffer = "";
+            handleBleProvisioning(fullJson);
+        } else if (bleRxBuffer == "TRIGGER:DANGER" || bleRxBuffer == "CMD:CAPTURE_SNAPSHOT") {
+            Serial.println("[BLE] Snapshot trigger received over BLE! Capturing...");
+            bleRxBuffer = "";
+            captureIncidentSnapshot();
+        } else if (!bleRxBuffer.startsWith("{")) {
+            if (bleRxBuffer.indexOf("TRIGGER:DANGER") >= 0 || bleRxBuffer.indexOf("CMD:CAPTURE_SNAPSHOT") >= 0) {
                 captureIncidentSnapshot();
             }
+            bleRxBuffer = "";
         }
     }
 };
@@ -262,8 +281,8 @@ void handleBleProvisioning(const String& rxJson) {
             return;
         }
 
-        Serial.printf("\n[BLE-PROV] Provisioning command received!\n  SSID: '%s'\n  Code: '%s'\n  Server: '%s'\n",
-            newSsid.c_str(), pCode.c_str(), srvUrl.c_str());
+        // Security requirement: Never log raw pairing code or Wi-Fi password
+        Serial.printf("\n[BLE-PROV] Provisioning command received for SSID: '%s'\n", newSsid.c_str());
         sendBleText("{\"type\":\"wifi_connecting\",\"ssid\":\"" + newSsid + "\"}");
 
         // Attempt STA connection
@@ -314,11 +333,19 @@ void handleBleProvisioning(const String& rxJson) {
             }
         }
 
-        // Contact Central System POST /api/pin/register
+        // Contact Central System POST /api/pin/register with HTTPS if remote
         HTTPClient http;
-        String regUrl = "http://" + targetHost + ":" + String(targetPort) + "/api/pin/register";
+        bool isRemoteHttps = (srvUrl.startsWith("https://") || targetHost.indexOf("trycloudflare.com") >= 0 || targetPort == 443);
+        String regUrl = (isRemoteHttps ? "https://" : "http://") + targetHost + (isRemoteHttps ? "" : (":" + String(targetPort))) + "/api/pin/register";
         Serial.printf("[BLE-PROV] Contacting registration endpoint: %s\n", regUrl.c_str());
-        http.begin(regUrl);
+
+        if (isRemoteHttps) {
+            WiFiClientSecure secureClient;
+            secureClient.setInsecure(); // Quick Tunnel TLS verification
+            http.begin(secureClient, regUrl);
+        } else {
+            http.begin(regUrl);
+        }
         http.addHeader("Content-Type", "application/json");
         http.setTimeout(8000);
 
@@ -327,7 +354,8 @@ void handleBleProvisioning(const String& rxJson) {
         String httpResp = http.getString();
         http.end();
 
-        Serial.printf("[BLE-PROV] Central System HTTP response (%d): %s\n", httpCode, httpResp.c_str());
+        // Security requirement: Never log raw tokens in serial output
+        Serial.printf("[BLE-PROV] Central System HTTP response code: %d\n", httpCode);
 
         if (httpCode == 200 && httpResp.indexOf("\"status\":\"success\"") >= 0) {
             String token = extractJsonField(httpResp, "device_token");

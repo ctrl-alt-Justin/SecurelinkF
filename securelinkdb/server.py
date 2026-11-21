@@ -15,15 +15,19 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
+import collections
 
 import numpy as np
 import scipy.signal as signal
 import torch
 import torch.nn.functional as F
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Response
 from fastapi.staticfiles import StaticFiles
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 import uvicorn
+
+from tunnel_manager import CloudflareTunnelManager, TunnelState
+from mobile_pairing import MobilePairingManager, PairingState
 
 import sys
 
@@ -263,62 +267,63 @@ def init_registered_devices_from_credentials():
             }
 
 
-def is_cloudflared_running() -> bool:
-    """Checks if a cloudflared process is currently running on the host."""
-    try:
-        if sys.platform == "win32":
-            res = subprocess.run(["tasklist", "/FI", "IMAGENAME eq cloudflared*"], capture_output=True, text=True, timeout=1.0)
-            return "cloudflared" in res.stdout.lower()
-        else:
-            res = subprocess.run(["pgrep", "-f", "cloudflared"], capture_output=True, text=True, timeout=1.0)
-            return bool(res.stdout.strip())
-    except Exception:
-        return False
-
+# --- CLOUDFLARE QUICK TUNNEL & MOBILE PAIRING MANAGERS ---
 TUNNEL_CONFIG_FILE = os.path.join(BASE_DIR, "tunnel_config.json")
-current_cloud_tunnel_url = None
+current_cloud_tunnel_url: Optional[str] = None
+active_mobile_clients: Dict[WebSocket, dict] = {}
+recent_incidents: collections.deque = collections.deque(maxlen=50)
 
-def get_active_tunnel_url():
+async def _on_tunnel_url_changed(new_url: Optional[str]):
     global current_cloud_tunnel_url
-    if current_cloud_tunnel_url:
-        if not is_cloudflared_running():
-            print("[TUNNEL] cloudflared is not running. Clearing stale Cloudflare Tunnel URL.")
-            current_cloud_tunnel_url = None
-            if os.path.exists(TUNNEL_CONFIG_FILE):
-                try:
-                    os.remove(TUNNEL_CONFIG_FILE)
-                except Exception:
-                    pass
-    return current_cloud_tunnel_url
+    current_cloud_tunnel_url = new_url
+    await broadcast_to_clients({
+        "event_type": "cloud_tunnel_update",
+        "cloud_tunnel_url": new_url
+    })
 
+tunnel_mgr = CloudflareTunnelManager(port=8080, on_url_change=_on_tunnel_url_changed)
+mobile_pairing_mgr = MobilePairingManager(cs_id="CS-CAMPUS-01", cs_name="SecureLink Campus Central System")
+
+def get_active_tunnel_url() -> Optional[str]:
+    return tunnel_mgr.active_url or current_cloud_tunnel_url
+
+# Load existing tunnel_config if available
 if os.path.exists(TUNNEL_CONFIG_FILE):
-    if not is_cloudflared_running():
-        try:
-            os.remove(TUNNEL_CONFIG_FILE)
-            print("[TUNNEL] Removed stale tunnel_config.json (cloudflared is not running)")
-        except Exception:
-            pass
-    else:
-        try:
-            with open(TUNNEL_CONFIG_FILE, "r", encoding="utf-8") as f:
-                cfg = json.load(f)
-                current_cloud_tunnel_url = cfg.get("cloud_tunnel_url")
-                if current_cloud_tunnel_url:
-                    print(f"[TUNNEL] Loaded active Cloudflare Tunnel: {current_cloud_tunnel_url}")
-        except Exception:
-            pass
+    try:
+        with open(TUNNEL_CONFIG_FILE, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+            t_url = cfg.get("cloud_tunnel_url")
+            if t_url:
+                current_cloud_tunnel_url = t_url
+                tunnel_mgr.active_url = t_url
+                tunnel_mgr.state = TunnelState.CONNECTED
+                print(f"[TUNNEL] Loaded active Cloudflare Tunnel: {current_cloud_tunnel_url}")
+    except Exception:
+        pass
 
-async def broadcast_to_ui(payload: dict):
-    if not ui_clients:
-        return
-    dead_clients = set()
+async def broadcast_to_clients(payload: dict):
     message = json.dumps(payload)
-    for client in ui_clients:
+    # 1. UI Clients (Desktop Dashboard)
+    dead_ui = set()
+    for client in list(ui_clients):
         try:
             await client.send_text(message)
         except Exception:
-            dead_clients.add(client)
-    ui_clients.difference_update(dead_clients)
+            dead_ui.add(client)
+    ui_clients.difference_update(dead_ui)
+
+    # 2. Mobile Companion Clients (/mobile)
+    dead_mobile = set()
+    for mclient, minfo in list(active_mobile_clients.items()):
+        try:
+            await mclient.send_text(message)
+        except Exception:
+            dead_mobile.add(mclient)
+    for dm in dead_mobile:
+        active_mobile_clients.pop(dm, None)
+
+# Alias for backwards compatibility
+broadcast_to_ui = broadcast_to_clients
 
 @app.get("/health")
 @app.get("/")
@@ -329,28 +334,40 @@ async def health_check():
         "whisper": has_whisper,
         "classifier": bert_model is not None,
         "cloud_tunnel_url": get_active_tunnel_url(),
+        "tunnel_state": tunnel_mgr.state,
     }
 
 @app.get("/api/cloud-tunnel")
 async def get_cloud_tunnel():
-    return {
-        "status": "success",
-        "cloud_tunnel_url": get_active_tunnel_url()
-    }
+    st = tunnel_mgr.get_status()
+    # Ensure backwards compatibility for callers expecting cloud_tunnel_url string
+    st["cloud_tunnel_url"] = st.get("cloud_tunnel_url") or current_cloud_tunnel_url
+    return st
+
+@app.post("/api/cloud-tunnel/start")
+async def start_cloud_tunnel_api():
+    """Starts the Cloudflare Quick Tunnel forwarding to port 8080."""
+    res = await tunnel_mgr.start()
+    return res
+
+@app.post("/api/cloud-tunnel/stop")
+async def stop_cloud_tunnel_api():
+    """Cleanly terminates the Cloudflare Quick Tunnel."""
+    res = await tunnel_mgr.stop()
+    return res
 
 @app.post("/api/cloud-tunnel")
 async def set_cloud_tunnel(payload: dict):
+    """Compatibility endpoint to manually register or notify the server of an active tunnel URL."""
     global current_cloud_tunnel_url
     url = payload.get("cloud_tunnel_url")
     if url:
         current_cloud_tunnel_url = str(url).strip()
-        try:
-            with open(TUNNEL_CONFIG_FILE, "w", encoding="utf-8") as f:
-                json.dump({"cloud_tunnel_url": current_cloud_tunnel_url, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}, f, indent=2)
-        except Exception:
-            pass
+        tunnel_mgr.active_url = current_cloud_tunnel_url
+        tunnel_mgr.state = TunnelState.CONNECTED
+        tunnel_mgr._save_config(current_cloud_tunnel_url)
         print(f"[TUNNEL] Cloudflare Tunnel URL updated: {current_cloud_tunnel_url}")
-        await broadcast_to_ui({
+        await broadcast_to_clients({
             "event_type": "cloud_tunnel_update",
             "cloud_tunnel_url": current_cloud_tunnel_url
         })
@@ -885,17 +902,20 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
 async def get_cs_info():
     """Provides Central System gateway identification and routing information for mobile companions."""
     true_ip = get_primary_ip()
+    active_tunnel = get_active_tunnel_url()
     return {
         "status": "online",
         "cs_id": "CS-CAMPUS-01",
         "name": "SecureLink Campus Central System",
-        "cloud_tunnel_url": current_cloud_tunnel_url,
+        "cloud_tunnel_url": active_tunnel,
+        "tunnel_state": tunnel_mgr.state,
         "server_ip": true_ip,
         "server_port": 8080,
         "priority_level": "PRIMARY (Priority 1: Central System, Priority 2: Mobile App)",
         "active_pins_count": len(active_pins),
         "registered_pins": list(registered_devices.keys()),
         "ui_clients_count": len(ui_clients),
+        "mobile_clients_count": len(active_mobile_clients),
         "harmful_words_only": harmful_words_only,
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
@@ -946,7 +966,8 @@ async def generate_pairing_code_api(payload: Optional[dict] = None):
         "used": False,
         "device_id": None,
     }
-    print(f"\n[PAIRING] New 6-digit pairing code generated: {code} (TTL: {ttl_seconds}s)")
+    # Security requirement: Never log raw pairing codes
+    print(f"\n[PAIRING] New 6-digit smart pin pairing code generated (TTL: {ttl_seconds}s)")
     return {
         "status": "success",
         "pairing_code": code,
@@ -997,7 +1018,8 @@ async def register_pin_api(payload: dict):
     now = time.time()
     code_info = active_pairing_codes.get(pairing_code)
     if not code_info or code_info.get("used", False) or now > code_info.get("expires_at", 0):
-        print(f"\n[PAIRING-ERR] Registration rejected for '{device_id}': Invalid/expired pairing code '{pairing_code}'.")
+        # Security requirement: Never log raw pairing codes
+        print(f"\n[PAIRING-ERR] Registration rejected for '{device_id}': Invalid, already used, or expired pairing code.")
         return {
             "status": "error",
             "code": "ERR_INVALID_CODE",
@@ -1079,6 +1101,261 @@ async def get_paired_devices_api():
         })
     return {"status": "success", "count": len(result), "devices": result}
 
+# =========================================================================
+# MOBILE COMPANION PAIRING & SYNCHRONIZATION APIS (QR + 8-DIGIT CODE)
+# =========================================================================
+@app.post("/api/mobile-pairing/create")
+async def create_mobile_pairing_session(payload: Optional[dict] = None):
+    """Generates an ephemeral 8-digit numeric pairing code with a ~90-second TTL and QR payload."""
+    primary_ip = get_primary_ip()
+    active_tunnel = get_active_tunnel_url()
+    ttl = int(payload.get("ttl_seconds", 90)) if payload else 90
+    session_data = await mobile_pairing_mgr.create_session(
+        server_ip=primary_ip,
+        server_port=8080,
+        cloud_tunnel_url=active_tunnel,
+        ttl_seconds=ttl
+    )
+    return session_data
+
+@app.post("/api/mobile-pairing/redeem")
+async def redeem_mobile_pairing_code(request: Request, payload: dict):
+    """Accepts QR payload or manual 8-digit code, verifies single-use & rate limits, and enqueues approval request."""
+    client_ip = request.headers.get("cf-connecting-ip") or request.headers.get("x-forwarded-for") or (request.client.host if request.client else "127.0.0.1")
+    if "," in client_ip:
+        client_ip = client_ip.split(",")[0].strip()
+
+    pairing_code = str(payload.get("pairing_code", "")).strip()
+    session_id = payload.get("session_id")
+    device_id = str(payload.get("device_id", f"MOBILE-{secrets.token_hex(4)}")).strip().upper()
+    device_name = str(payload.get("device_name", "")).strip()
+    user_name = str(payload.get("user_name", "Teacher / Student")).strip()
+    role = str(payload.get("role", "Teacher")).strip()
+
+    host_hdr = request.headers.get("host", "").lower()
+    cf_hdr = request.headers.get("cf-connecting-ip") or request.headers.get("x-forwarded-for")
+    is_remote = bool(cf_hdr or "trycloudflare.com" in host_hdr)
+    conn_type = "remote" if is_remote else "local"
+
+    success, result = await mobile_pairing_mgr.redeem_code(
+        pairing_code=pairing_code,
+        device_id=device_id,
+        device_name=device_name,
+        user_name=user_name,
+        role=role,
+        client_ip=client_ip,
+        session_id=session_id,
+        connection_type=conn_type
+    )
+
+    if success:
+        # Broadcast pending approval request to all Dashboard stations
+        await broadcast_to_ui({
+            "event_type": "mobile_pairing_request",
+            "session_id": result.get("session_id"),
+            "device": {
+                "device_id": device_id,
+                "device_name": device_name or f"Mobile Device ({device_id})",
+                "user_name": user_name,
+                "role": role,
+                "connection_type": conn_type,
+                "timestamp": datetime.now().strftime("%H:%M:%S")
+            }
+        })
+        return result
+    else:
+        status_code = 429 if result.get("code") == "ERR_RATE_LIMITED" else 400
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=status_code, content=result)
+
+@app.get("/api/mobile-pairing/status/{session_id}")
+async def get_mobile_pairing_status(session_id: str):
+    """Pollable endpoint for mobile app and dashboard to monitor pairing session progress."""
+    res = await mobile_pairing_mgr.get_session_status(session_id)
+    if res.get("status") == "success" and res.get("state") == PairingState.APPROVED:
+        res["server_ip"] = get_primary_ip()
+        res["server_port"] = 8080
+        res["cloud_tunnel_url"] = get_active_tunnel_url()
+    return res
+
+@app.post("/api/mobile-pairing/approve")
+async def approve_mobile_pairing(payload: dict):
+    """Dashboard administrator approves pending mobile device, issuing permanent 32-byte credential."""
+    session_id = str(payload.get("session_id", "")).strip()
+    role_override = payload.get("role")
+    success, res = await mobile_pairing_mgr.approve_session(session_id, role_override)
+    if success:
+        dev_id = res.get("device_id")
+        await broadcast_to_ui({
+            "event_type": "mobile_device_approved",
+            "device_id": dev_id,
+            "role": res.get("role"),
+            "timestamp": datetime.now().strftime("%H:%M:%S")
+        })
+        return res
+    else:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=400, content=res)
+
+@app.post("/api/mobile-pairing/revoke")
+async def revoke_mobile_device(payload: dict):
+    """Revokes a previously paired mobile device, immediately closing any active WebSockets."""
+    device_id = str(payload.get("device_id", "")).strip().upper()
+    success, res = await mobile_pairing_mgr.revoke_device(device_id)
+    if success:
+        # Close any active WebSocket connection for this device
+        to_close = [ws for ws, info in list(active_mobile_clients.items()) if info.get("device_id") == device_id]
+        for ws in to_close:
+            try:
+                await ws.close(code=4403, reason="Device revoked by administrator")
+            except Exception:
+                pass
+            active_mobile_clients.pop(ws, None)
+
+        await broadcast_to_ui({
+            "event_type": "mobile_device_revoked",
+            "device_id": device_id,
+            "timestamp": datetime.now().strftime("%H:%M:%S")
+        })
+        return res
+    else:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=400, content=res)
+
+@app.get("/api/mobile-devices")
+async def get_mobile_devices():
+    """Lists all paired mobile devices and any currently pending approval requests."""
+    active_map = {info["device_id"]: info for info in active_mobile_clients.values() if "device_id" in info}
+    devices = mobile_pairing_mgr.list_all_devices(active_map)
+    pending = mobile_pairing_mgr.list_pending_requests()
+    return {
+        "status": "success",
+        "devices": devices,
+        "pending_requests": pending,
+        "count": len(devices),
+        "online_count": len([d for d in devices if d.get("online")])
+    }
+
+# =========================================================================
+# DEDICATED AUTHENTICATED MOBILE WEBSOCKET ENDPOINT
+# =========================================================================
+@app.websocket("/mobile")
+async def mobile_websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+
+    # Query param token & device_id or wait up to 3.0s for auth frame
+    token = websocket.query_params.get("token")
+    device_id = websocket.query_params.get("device_id")
+
+    is_authenticated = False
+    device_info = None
+
+    if token and device_id:
+        is_authenticated, device_info = mobile_pairing_mgr.verify_mobile_token(device_id.strip().upper(), token.strip())
+
+    if not is_authenticated:
+        try:
+            raw_auth = await asyncio.wait_for(websocket.receive_text(), timeout=3.0)
+            try:
+                auth_data = json.loads(raw_auth)
+                if auth_data.get("type") == "auth":
+                    device_id = auth_data.get("device_id", "").strip().upper()
+                    token = auth_data.get("token", "").strip()
+                    is_authenticated, device_info = mobile_pairing_mgr.verify_mobile_token(device_id, token)
+                    if is_authenticated:
+                        await websocket.send_text(json.dumps({"type": "auth_ok", "status": "authenticated"}))
+            except Exception:
+                pass
+        except asyncio.TimeoutError:
+            pass
+
+    if not is_authenticated or not device_info:
+        client_ip = websocket.client.host if websocket.client else "unknown"
+        print(f"\n[WS-MOBILE-AUTH] Unauthorized mobile connection rejected for '{device_id}' from {client_ip}.")
+        await websocket.close(code=4401, reason="Unauthorized mobile device")
+        return
+
+    # Determine connection type (remote via Cloudflare tunnel vs local LAN)
+    host_hdr = websocket.headers.get("host", "").lower()
+    cf_hdr = websocket.headers.get("cf-connecting-ip") or websocket.headers.get("x-forwarded-for")
+    is_remote = bool(cf_hdr or "trycloudflare.com" in host_hdr)
+    conn_type = "remote" if is_remote else "local"
+
+    mobile_pairing_mgr.update_device_presence(device_id, conn_type)
+    active_mobile_clients[websocket] = {
+        "device_id": device_id,
+        "device_name": device_info.get("device_name", device_id),
+        "user_name": device_info.get("user_name", "Teacher / Student"),
+        "role": device_info.get("role", "Teacher"),
+        "connection_type": conn_type,
+        "connected_at": time.time()
+    }
+
+    print(f"\n[WS-MOBILE] Mobile Companion '{device_id}' ({device_info.get('user_name')} [{device_info.get('role')}]) connected via {conn_type.upper()}.")
+
+    # Send initial state synchronization payload
+    initial_sync = {
+        "event_type": "mobile_sync_init",
+        "cs_id": "CS-CAMPUS-01",
+        "name": "SecureLink Campus Central System",
+        "role": device_info.get("role", "Teacher"),
+        "cloud_tunnel_url": get_active_tunnel_url(),
+        "tunnel_state": tunnel_mgr.state,
+        "server_ip": get_primary_ip(),
+        "server_port": 8080,
+        "harmful_words_only": harmful_words_only,
+        "devices": list(registered_devices.values()),
+        "checkpoints": load_checkpoints(),
+        "recent_incidents": list(recent_incidents),
+        "timestamp": datetime.now().strftime("%H:%M:%S")
+    }
+    await websocket.send_text(json.dumps(initial_sync))
+
+    # Notify dashboard of mobile connection
+    await broadcast_to_ui({
+        "event_type": "mobile_client_connected",
+        "device_id": device_id,
+        "user_name": device_info.get("user_name"),
+        "role": device_info.get("role"),
+        "connection_type": conn_type
+    })
+
+    try:
+        while True:
+            data = await websocket.receive_text()
+            if data == "ping":
+                await websocket.send_text(json.dumps({"event_type": "pong"}))
+                continue
+
+            try:
+                msg = json.loads(data)
+                mtype = msg.get("event_type") or msg.get("type")
+                if mtype in ("TRIGGER:DANGER", "CMD:CAPTURE_SNAPSHOT"):
+                    user_role = device_info.get("role", "Teacher")
+                    if user_role.lower() != "student":
+                        print(f"[WS-MOBILE] Hardware command '{mtype}' authorized from {device_id} ({user_role}). Relaying to pins...")
+                        for pin_ws in list(active_pins.keys()):
+                            try:
+                                await pin_ws.send_text(mtype)
+                            except Exception:
+                                pass
+                    else:
+                        print(f"[WS-MOBILE] Blocked unauthorized command '{mtype}' from student device {device_id}.")
+            except Exception:
+                pass
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        print(f"[WS-MOBILE] Connection error: {e}")
+    finally:
+        active_mobile_clients.pop(websocket, None)
+        mobile_pairing_mgr.update_device_presence(device_id, conn_type)
+        await broadcast_to_ui({
+            "event_type": "mobile_client_disconnected",
+            "device_id": device_id
+        })
+        print(f"[WS-MOBILE] Mobile device '{device_id}' disconnected.")
+
 
 async def pin_liveness_watchdog():
     """Runs every 3 seconds. Forces any device without an active socket to OFFLINE."""
@@ -1145,8 +1422,13 @@ async def startup_event():
     # Launch background recording retention cleaner (30-day default)
     asyncio.create_task(periodic_recordings_cleanup())
 
-    print("[SYS] WebSocket Server active on port 8080 (UI: /ui | Pins: /)")
+    print("[SYS] WebSocket Server active on port 8080 (UI: /ui | Pins: / | Mobile: /mobile)")
     print("[SYS] Ready for connections!\n")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    print("\n[SYS] Server shutting down. Cleaning up Cloudflare Tunnel...")
+    await tunnel_mgr.stop()
 
 # =========================================================================
 # 7. AUDIO PROCESSING PIPELINE (DENOISING + WHISPER STT)
@@ -1553,7 +1835,7 @@ async def handle_completed_audio(device_id: str, pcm_bytes: bytes, websocket: We
             active_tunnel = get_active_tunnel_url()
             base_audio = active_tunnel if active_tunnel else f"http://{primary_ip}:8080"
 
-            await broadcast_to_ui({
+            incident_payload = {
                 "event_type": "incident",
                 "id": incident_id,
                 "device_id": device_id,
@@ -1567,7 +1849,9 @@ async def handle_completed_audio(device_id: str, pcm_bytes: bytes, websocket: We
                 "audio_file": wav_filename,
                 "video": is_danger,
                 "duration": f"00:{max(1, int(dur_sec)):02d}"
-            })
+            }
+            recent_incidents.append(incident_payload)
+            await broadcast_to_ui(incident_payload)
         else:
             transcript = ""
             print(f"[ASR] ({device_id} in {infer_dur:.2f}s) Audio ({dur_sec:.2f}s, peak={audio_peak:.2f}) -> Status: {result.status.value}, Reason: {result.reason}")
@@ -1614,35 +1898,35 @@ async def pin_websocket_endpoint(websocket: WebSocket):
     # Authenticate device using cryptographically registered token
     device_token = websocket.query_params.get("token") or websocket.headers.get("x-device-token")
     creds = load_device_credentials()
-    if creds:
-        is_authenticated = False
-        if device_id in creds and device_token and verify_device_token(device_id, device_token):
-            is_authenticated = True
-        elif device_id in creds and not device_token:
-            # Device did not pass token in query param; give it 3 seconds to send an auth frame
-            try:
-                auth_raw = await asyncio.wait_for(websocket.receive_text(), timeout=3.0)
-                try:
-                    auth_json = json.loads(auth_raw)
-                    if auth_json.get("type") == "auth":
-                        auth_tok = auth_json.get("token", "")
-                        auth_dev = auth_json.get("device_id", "").strip().upper()
-                        if (auth_dev == device_id or not auth_dev) and verify_device_token(device_id, auth_tok):
-                            is_authenticated = True
-                            await websocket.send_text(json.dumps({"type": "auth_ok", "status": "authenticated"}))
-                except Exception:
-                    pass
-            except asyncio.TimeoutError:
-                pass
+    is_authenticated = False
 
-        if not is_authenticated:
-            client_ip = websocket.client.host if websocket.client else "unknown"
-            print(f"\n[WS-AUTH] Unauthorized connection rejected for '{device_id}' from {client_ip} (missing or invalid device token).")
-            active_pins.pop(websocket, None)
-            await websocket.close(code=4401, reason="Unauthorized device token")
-            return
-        else:
-            print(f"[WS-AUTH] Smart Pin '{device_id}' authenticated successfully.")
+    if device_id in creds and device_token and verify_device_token(device_id, device_token):
+        is_authenticated = True
+    elif device_id in creds and not device_token:
+        # Device did not pass token in query param; give it 3 seconds to send an auth frame
+        try:
+            auth_raw = await asyncio.wait_for(websocket.receive_text(), timeout=3.0)
+            try:
+                auth_json = json.loads(auth_raw)
+                if auth_json.get("type") == "auth":
+                    auth_tok = auth_json.get("token", "")
+                    auth_dev = auth_json.get("device_id", "").strip().upper()
+                    if (auth_dev == device_id or not auth_dev) and verify_device_token(device_id, auth_tok):
+                        is_authenticated = True
+                        await websocket.send_text(json.dumps({"type": "auth_ok", "status": "authenticated"}))
+            except Exception:
+                pass
+        except asyncio.TimeoutError:
+            pass
+
+    if not is_authenticated:
+        client_ip = websocket.client.host if websocket.client else "unknown"
+        print(f"\n[WS-AUTH] Unauthorized connection rejected for '{device_id}' from {client_ip} (missing, unregistered, or invalid device token).")
+        active_pins.pop(websocket, None)
+        await websocket.close(code=4401, reason="Unauthorized device token")
+        return
+    else:
+        print(f"[WS-AUTH] Smart Pin '{device_id}' authenticated successfully.")
 
     pending_cfg = None
     if device_id in pending_wifi_configs:

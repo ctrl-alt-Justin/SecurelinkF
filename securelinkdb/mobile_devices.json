@@ -1,0 +1,27 @@
+{
+  "MOBILE-FACULTY-01": {
+    "device_id": "MOBILE-FACULTY-01",
+    "device_name": "Dr. Mendoza Galaxy S24",
+    "user_name": "Dr. Mendoza",
+    "role": "Admin",
+    "token_hash": "657584caefd29889c2f7dd48936291789bc3765d3939a4082069f06b77a9a4e2",
+    "paired_at": "2026-11-21 22:21:49",
+    "revoked": false,
+    "last_seen": "Just paired",
+    "connection_type": "local",
+    "paired_ip": "127.0.0.1"
+  },
+  "MOBILE-REVOKE-ME": {
+    "device_id": "MOBILE-REVOKE-ME",
+    "device_name": "Lost Phone",
+    "user_name": "Lost User",
+    "role": "Student",
+    "token_hash": "c21baad3e175bfcaa17528b61820b82e9e490c031db3ebe39e8a24187438c742",
+    "paired_at": "2026-11-21 22:21:49",
+    "revoked": true,
+    "last_seen": "Just paired",
+    "connection_type": "local",
+    "paired_ip": "127.0.0.1",
+    "revoked_at": "2026-11-21 22:21:49"
+  }
+}
