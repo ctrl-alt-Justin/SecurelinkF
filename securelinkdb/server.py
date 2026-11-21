@@ -3,13 +3,19 @@ import io
 import json
 import logging
 import os
+import re
 import socket
 import struct
+import subprocess
 import time
 import wave
+from dataclasses import dataclass, field
 from datetime import datetime
+from enum import Enum
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+import scipy.signal as signal
 import torch
 import torch.nn.functional as F
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -17,18 +23,69 @@ from fastapi.staticfiles import StaticFiles
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 import uvicorn
 
+import sys
+
+# Prevent Windows CP1252 UnicodeEncodeError crashes on emojis/special characters
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
+
+# Ensure Windows locates cuBLAS and cuDNN DLLs from PyTorch package for CTranslate2 / Faster-Whisper
+if torch.cuda.is_available():
+    torch_lib_dir = os.path.join(os.path.dirname(torch.__file__), "lib")
+    if os.path.exists(torch_lib_dir):
+        try:
+            os.add_dll_directory(torch_lib_dir)
+        except Exception:
+            pass
+        os.environ["PATH"] = torch_lib_dir + os.path.pathsep + os.environ.get("PATH", "")
+
 # Suppress verbose websocket protocol logs
 logging.getLogger("websockets.server").setLevel(logging.CRITICAL)
 logging.getLogger("websockets.protocol").setLevel(logging.CRITICAL)
 
+
+class TranscriptionStatus(str, Enum):
+    NO_SPEECH = "NO_SPEECH"
+    SPEECH_DETECTED = "SPEECH_DETECTED"
+    TRANSCRIBED = "TRANSCRIBED"
+    UNCERTAIN_TRANSCRIPTION = "UNCERTAIN_TRANSCRIPTION"
+    TRANSCRIPTION_REJECTED = "TRANSCRIPTION_REJECTED"
+
+
+@dataclass
+class TranscriptionResult:
+    status: TranscriptionStatus
+    transcript: str = ""
+    reason: str = ""
+    metrics: Dict[str, Any] = field(default_factory=dict)
+    audio_quality: Dict[str, Any] = field(default_factory=dict)
+    processing_info: Dict[str, Any] = field(default_factory=dict)
+
+    def __str__(self) -> str:
+        return self.transcript
+
+    def __bool__(self) -> bool:
+        return bool(self.transcript)
+
 app = FastAPI(title="SecureLink AI Inference Server")
 
 # Ensure required storage directories exist
-os.makedirs("recordings/audio", exist_ok=True)
-os.makedirs("recordings/snapshots", exist_ok=True)
+RECORDINGS_DIR = os.path.join(BASE_DIR, "recordings")
+AUDIO_RECORDINGS_DIR = os.path.join(RECORDINGS_DIR, "audio")
+SNAPSHOTS_RECORDINGS_DIR = os.path.join(RECORDINGS_DIR, "snapshots")
+os.makedirs(AUDIO_RECORDINGS_DIR, exist_ok=True)
+os.makedirs(SNAPSHOTS_RECORDINGS_DIR, exist_ok=True)
 
 # Mount recordings directory so dashboard and client devices can fetch/replay audio and snapshots
-app.mount("/recordings", StaticFiles(directory="recordings"), name="recordings")
+app.mount("/recordings", StaticFiles(directory=RECORDINGS_DIR), name="recordings")
 
 # =========================================================================
 # 1. FASTER-WHISPER SPEECH-TO-TEXT SETUP
@@ -44,77 +101,54 @@ try:
     print(f"[SYS] Loading Faster-Whisper ({model_size}) on {device.upper()} ({compute_type})...")
     whisper_model = WhisperModel(model_size, device=device, compute_type=compute_type)
     has_whisper = True
-    print("[SYS] Faster-Whisper loaded successfully!")
+    print(f"[SYS] Faster-Whisper ({model_size}) loaded successfully on {device.upper()}!")
 except Exception as e:
     print(f"[WARN] Failed to load Faster-Whisper: {e}")
     print("[WARN] Running with fallback transcription stub.")
     has_whisper = False
     whisper_model = None
 
-def load_tagalog_vocabulary(filepath: str = "tagalog_words.txt"):
-    """
-    Loads categorized Tagalog words and phrases from text file.
-    Returns:
-        (initial_prompt, hotwords_str)
-    """
-    default_prompt = (
-        "Usapan sa wikang Tagalog at Filipino ng mga estudyante sa paaralan. "
-        "Mga karaniwang salita: anong ginagawa mo, malong ginagawa mo, pangit ka, "
-        "walang kwenta, walang kuenta, kumusta ka, tara na kain tayo, bakit ganyan, "
-        "saan ka pupunta, kailan pa, ano ba yan, pre pakiusap, tanga ka talaga, "
-        "bobo, bugbugin kita, suntukan, baon, pera, palamunin, gago, "
-        "hiwain, patayin kita, upakan kita, pahiram ng ballpen, resbak, yari ka na, "
-        "kupal, bwisit ka, ambag mo, ilabas mo ang gamit mo, sasapakin kita, "
-        "wag ka maingay, putangina, inutil, duwag, takot ka, lumayas ka, "
-        "pabibo, mayabang, pakialamero, nagmamataas, sinungaling."
-    )
-    if not os.path.exists(filepath):
-        print(f"[SYS] {filepath} not found. Using default Tagalog prompt.")
-        return default_prompt, ""
+# =========================================================================
+# 1.1 ANTI-HALLUCINATION CONFIGURATION
+# =========================================================================
+# Whisper treats initial_prompt as fake preceding conversation history.
+# Paragraph prompts trigger endless repetition loops ("magandang magandang...").
+# Keeping it empty or tiny ("Hello.") completely starves Whisper of hallucination seeds.
+INITIAL_TAGALOG_PROMPT = ""
 
-    words = []
-    try:
-        with open(filepath, "r", encoding="utf-8-sig") as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and not line.startswith("["):
-                    words.append(line)
-        print(f"[SYS] Successfully loaded {len(words)} Tagalog words/phrases from {filepath}")
-        
-        prompt = (
-            "Usapan: Magandang tanghali! Ba't ganoon? 'Di ko alam. "
-            "Maingay ba doon? Walang kwenta 'yon! 'Di pa rin accurate. "
-            "Anong problema? Parang ampangit talaga. Hindi pa rin accurate."
-        )
-        return prompt, ""
-    except Exception as e:
-        print(f"[WARN] Failed to load prompt ({e}).")
-        return default_prompt, ""
+# Hotwords: strictly true safety threats & physical violence terms (15-20 words max).
+# Never include conversational slang like 'taray' or 'ganda' which Whisper hallucinates from fan noise.
+TAGALOG_HOTWORDS = None
 
-INITIAL_TAGALOG_PROMPT, _ = load_tagalog_vocabulary()
+# Content words from common prompt-echo regurgitations to discard immediately
+PROMPT_ECHO_WORDS = {
+    "magandang", "araw", "umaga", "hapon", "gabi", "kumusta", "usapan",
+    "tagalog", "filipino", "paaralan", "silid-aralan", "sandali", "opo", "tara"
+}
 
 # =========================================================================
-# 2. SERVER-SIDE ACOUSTIC DENOISING SETUP (DEEPFILTERNET + NOISEREDUCE)
+# 2. SERVER-SIDE ACOUSTIC DENOISING SETUP (MICROSOFT NSNet2 + NOISEREDUCE)
 # =========================================================================
-print("\n[SYS] Initializing Server-side Acoustic Denoising...")
-has_deepfilternet = False
-df_model = None
-df_state = None
+print("\n[SYS] Initializing Server-side Acoustic Denoising (Microsoft NSNet2)...")
+has_nsnet2 = False
+nsnet2_denoiser = None
 
 try:
-    from df.enhance import enhance, init_df  # type: ignore
-    df_model, df_state, _ = init_df()
-    # The AI guide suggested DeepFilterNet3, but it was trained on English voice profiles.
-    # It aggressively destroys Tagalog consonants (causing "mincent", "ndip", "Well on Cuenta").
-    has_deepfilternet = False
-    print("[SYS] DeepFilterNet3 disabled (distorts Tagalog). Falling back to NoiseReduce.")
-except Exception:
-    pass
+    from nsnet2 import NSNet2Denoiser
+    nsnet2_denoiser = NSNet2Denoiser()
+    has_nsnet2 = True
+    print("[SYS] Microsoft NSNet2 Neural Noise Suppression loaded! Fan/AC isolation ACTIVE.")
+except Exception as e:
+    print(f"[WARN] Failed to initialize NSNet2 ({e}).")
+    has_nsnet2 = False
+
+# Adjustable noise reduction strength (0.0 = transparent/off, 1.0 = maximum suppression)
+# 0.50 is the balanced sweet spot: fan noise is eliminated while trailing syllables decay smoothly
+DENOISE_STRENGTH = 0.50
 
 try:
     import noisereduce as nr  # type: ignore
     has_noisereduce = True
-    print("[SYS] NoiseReduce Spectral Gating loaded! Classroom AC/Fan suppression ACTIVE.")
 except Exception:
     has_noisereduce = False
 
@@ -122,103 +156,49 @@ except Exception:
 # 3. TAGALOG BERT THREAT CLASSIFIER SETUP
 # =========================================================================
 print("\n[SYS] Loading fine-tuned TagalogBERT into memory...")
-MODEL_PATH = "./securelink_final_model"
+MODEL_PATH = os.path.join(BASE_DIR, "securelink_final_model")
+if not os.path.exists(MODEL_PATH):
+    alt_path = os.path.join(BASE_DIR, "securelink_tagalogbert")
+    if os.path.exists(alt_path):
+        MODEL_PATH = alt_path
+
 try:
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
-    bert_model = AutoModelForSequenceClassification.from_pretrained(MODEL_PATH)
+    if os.path.isdir(MODEL_PATH):
+        tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH, local_files_only=True)
+        bert_model = AutoModelForSequenceClassification.from_pretrained(MODEL_PATH, local_files_only=True)
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
+        bert_model = AutoModelForSequenceClassification.from_pretrained(MODEL_PATH)
+    if torch.cuda.is_available():
+        bert_model = bert_model.to("cuda")
+        print("[SYS] TagalogBERT loaded successfully on CUDA!")
+    else:
+        print("[SYS] TagalogBERT loaded successfully on CPU.")
     bert_model.eval()
-    print("[SYS] Fine-tuned TagalogBERT loaded successfully!")
 except Exception as e:
     print(f"[ERR] Failed to load fine-tuned model from {MODEL_PATH}: {e}")
     tokenizer = None
     bert_model = None
 
 # =========================================================================
-# 4. CONTEXT ENGINE (NLP CLASSIFICATION + PRONOUN TARGETING + ESCALATION)
+# 4. CONTEXT ENGINE (NLP CLASSIFICATION + INTENT & SEVERITY ASSESSMENT V3)
 # =========================================================================
-class ContextEngine:
-    def __init__(self):
-        self.history = []
-        self.target_pronouns = {"ikaw", "ka", "mo", "sayo", "sa'yo", "kita", "niyo", "ninyo"}
-        self.hard_threats = ["patayin", "suntukin", "bugbugin", "tumba", "sasapakin", "tadyakan", "upakan", "hiwain", "basagin", "resbakan"]
-        self.hard_extort = ["pera", "bayad", "ambag", "ilabas", "bigyan", "baon", "tax", "allowance"]
-        self.hard_harass = ["pangit", "bobo", "kuwenta", "kwenta", "tanga", "ewan", "inutil", "kadiri", "baho", "palamunin", "pabigat"]
+from context_engine import (
+    ContextEngine,
+    ThreatIntent,
+    ThreatType,
+    Targetedness,
+    Imminence,
+    EvidenceReliability,
+    IncidentLevel,
+    ContextExtraction,
+    SeverityAssessment,
+    context_engine,
+)
 
-    def evaluate(self, text: str):
-        if not text or len(text.strip()) < 3:
-            return 0.0, "Conversational"
-
-        # 1. Base Deep Learning Inference
-        if bert_model and tokenizer:
-            inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=128)
-            with torch.no_grad():
-                outputs = bert_model(**inputs)
-            
-            logits = outputs.logits
-            probabilities = F.softmax(logits, dim=-1)
-            predicted_class = logits.argmax(-1).item()
-            confidence = probabilities[0][predicted_class].item()
-
-            if confidence < 0.40:
-                predicted_class = 0
-
-            if predicted_class == 0:
-                base_score = 1.0
-                category = "Conversational"
-            elif predicted_class == 1:
-                base_score = 2.0 + (confidence * 1.9)
-                category = "Verbal Harassment"
-            elif predicted_class == 2:
-                base_score = 4.0 + (confidence * 2.0)
-                category = "Extortion / Demand"
-            elif predicted_class == 3:
-                base_score = 7.0 + (confidence * 2.0)
-                category = "Physical Threat"
-            else:
-                base_score = 1.0
-                category = "Conversational"
-        else:
-            base_score = 1.0
-            category = "Conversational"
-
-        # 2. Targetedness & Heuristic Safety Net
-        text_lower = text.lower()
-        words = text_lower.split()
-        
-        is_targeted = any(p in words for p in self.target_pronouns)
-        targetedness_multiplier = 1.3 if is_targeted else 1.0
-
-        has_threat = any(t in text_lower for t in self.hard_threats)
-        has_extort = any(e in text_lower for e in self.hard_extort)
-        has_harass = any(h in text_lower for h in self.hard_harass)
-
-        if has_threat:
-            base_score = max(base_score, 8.5)
-            category = "Physical Threat"
-        elif has_extort and is_targeted and base_score < 4.0:
-            base_score = max(base_score, 4.5)
-            category = "Extortion / Demand"
-        elif has_harass and is_targeted and base_score < 2.0:
-            base_score = max(base_score, 2.5)
-            category = "Verbal Harassment"
-
-        current_score = base_score * targetedness_multiplier if category != "Conversational" else base_score
-
-        # 3. Rolling Window Aggregation (Threat Escalation)
-        self.history.append(current_score)
-        if len(self.history) > 4:
-            self.history.pop(0)
-
-        consecutive_friction = sum(1 for s in self.history if s >= 2.0)
-        
-        if consecutive_friction >= 2 and current_score >= 2.0:
-            final_score = min(current_score * 1.25, 10.0)
-        else:
-            final_score = min(current_score, 10.0)
-
-        return round(final_score, 1), category
-
-context_engine = ContextEngine()
+# Connect fine-tuned TagalogBERT and tokenizer to the ContextEngine instance
+context_engine.bert_model = bert_model
+context_engine.tokenizer = tokenizer
 
 # =========================================================================
 # 5. WEBSOCKET & DEVICE FLEET ORCHESTRATION
@@ -226,6 +206,52 @@ context_engine = ContextEngine()
 ui_clients = set()
 registered_devices = {}
 active_pins = {} # Map of websocket -> device_id
+harmful_words_only = False # Default False so all speech during testing is visible on the dashboard!
+
+def is_cloudflared_running() -> bool:
+    """Checks if a cloudflared process is currently running on the host."""
+    try:
+        if sys.platform == "win32":
+            res = subprocess.run(["tasklist", "/FI", "IMAGENAME eq cloudflared*"], capture_output=True, text=True, timeout=1.0)
+            return "cloudflared" in res.stdout.lower()
+        else:
+            res = subprocess.run(["pgrep", "-f", "cloudflared"], capture_output=True, text=True, timeout=1.0)
+            return bool(res.stdout.strip())
+    except Exception:
+        return False
+
+TUNNEL_CONFIG_FILE = os.path.join(BASE_DIR, "tunnel_config.json")
+current_cloud_tunnel_url = None
+
+def get_active_tunnel_url():
+    global current_cloud_tunnel_url
+    if current_cloud_tunnel_url:
+        if not is_cloudflared_running():
+            print("[TUNNEL] cloudflared is not running. Clearing stale Cloudflare Tunnel URL.")
+            current_cloud_tunnel_url = None
+            if os.path.exists(TUNNEL_CONFIG_FILE):
+                try:
+                    os.remove(TUNNEL_CONFIG_FILE)
+                except Exception:
+                    pass
+    return current_cloud_tunnel_url
+
+if os.path.exists(TUNNEL_CONFIG_FILE):
+    if not is_cloudflared_running():
+        try:
+            os.remove(TUNNEL_CONFIG_FILE)
+            print("[TUNNEL] Removed stale tunnel_config.json (cloudflared is not running)")
+        except Exception:
+            pass
+    else:
+        try:
+            with open(TUNNEL_CONFIG_FILE, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+                current_cloud_tunnel_url = cfg.get("cloud_tunnel_url")
+                if current_cloud_tunnel_url:
+                    print(f"[TUNNEL] Loaded active Cloudflare Tunnel: {current_cloud_tunnel_url}")
+        except Exception:
+            pass
 
 async def broadcast_to_ui(payload: dict):
     if not ui_clients:
@@ -247,7 +273,33 @@ async def health_check():
         "app": "SecureLink AI Server",
         "whisper": has_whisper,
         "classifier": bert_model is not None,
+        "cloud_tunnel_url": get_active_tunnel_url(),
     }
+
+@app.get("/api/cloud-tunnel")
+async def get_cloud_tunnel():
+    return {
+        "status": "success",
+        "cloud_tunnel_url": get_active_tunnel_url()
+    }
+
+@app.post("/api/cloud-tunnel")
+async def set_cloud_tunnel(payload: dict):
+    global current_cloud_tunnel_url
+    url = payload.get("cloud_tunnel_url")
+    if url:
+        current_cloud_tunnel_url = str(url).strip()
+        try:
+            with open(TUNNEL_CONFIG_FILE, "w", encoding="utf-8") as f:
+                json.dump({"cloud_tunnel_url": current_cloud_tunnel_url, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}, f, indent=2)
+        except Exception:
+            pass
+        print(f"[TUNNEL] Cloudflare Tunnel URL updated: {current_cloud_tunnel_url}")
+        await broadcast_to_ui({
+            "event_type": "cloud_tunnel_update",
+            "cloud_tunnel_url": current_cloud_tunnel_url
+        })
+    return {"status": "success", "cloud_tunnel_url": current_cloud_tunnel_url}
 
 @app.get("/api/network-info")
 async def get_network_info():
@@ -272,7 +324,68 @@ async def get_network_info():
         "server_port": 8080,
         "serial_ports": ports,
         "active_pins": len(active_pins),
+        "harmful_words_only": harmful_words_only,
     }
+
+@app.get("/api/devices")
+async def get_devices():
+    """Returns all currently registered and active smart pins on the network."""
+    devices_list = []
+    for dev_id, dev in registered_devices.items():
+        is_active = any(d_id == dev_id for d_id in active_pins.values())
+        dev_copy = dict(dev)
+        dev_copy["online"] = is_active
+        if not is_active and dev_copy.get("state") != "OFFLINE":
+            dev_copy["state"] = "OFFLINE"
+        devices_list.append(dev_copy)
+    return {
+        "status": "success",
+        "devices": devices_list,
+        "active_count": len([d for d in devices_list if d.get("online")]),
+        "total_count": len(devices_list),
+        "timestamp": datetime.now().strftime("%H:%M:%S")
+    }
+
+@app.post("/api/toggle-harmful-only")
+async def toggle_harmful_only(payload: dict = None):
+    global harmful_words_only
+    payload = payload or {}
+    if "enabled" in payload:
+        harmful_words_only = bool(payload["enabled"])
+    else:
+        harmful_words_only = not harmful_words_only
+    print(f"[FILTER] Harmful Words Only Mode toggled to: {harmful_words_only}")
+    await broadcast_to_ui({
+        "event_type": "harmful_only_update",
+        "enabled": harmful_words_only
+    })
+    return {"status": "success", "harmful_words_only": harmful_words_only}
+
+@app.get("/api/filter-mode")
+async def get_filter_mode():
+    return {"status": "success", "harmful_words_only": harmful_words_only}
+
+@app.get("/api/denoise-settings")
+async def get_denoise_settings():
+    return {
+        "status": "success",
+        "strength": DENOISE_STRENGTH,
+        "mingain_db": -18.0,
+        "engine": "Microsoft NSNet2" if has_nsnet2 else "NoiseReduce",
+        "description": "0.0 (off) to 1.0 (max). 0.60 protects vowels, nasal consonants ('ng','n','m') and pauses."
+    }
+
+@app.post("/api/denoise-settings")
+async def set_denoise_settings(payload: dict):
+    global DENOISE_STRENGTH
+    if "strength" in payload:
+        try:
+            val = float(payload["strength"])
+            DENOISE_STRENGTH = float(np.clip(val, 0.0, 1.0))
+            print(f"[DENOISE] Noise reduction strength updated to: {DENOISE_STRENGTH:.2f}")
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+    return {"status": "success", "strength": DENOISE_STRENGTH}
 
 # =========================================================================
 # CHECKPOINTS PERSISTENCE & FLEET WI-FI MANAGEMENT
@@ -572,6 +685,7 @@ async def provision_pin_serial(payload: dict):
 
 @app.websocket("/ui")
 async def ui_websocket_endpoint(websocket: WebSocket):
+    global harmful_words_only
     await websocket.accept()
     ui_clients.add(websocket)
     print(f"\n[UI] Dashboard station connected! Active UI clients: {len(ui_clients)}")
@@ -583,11 +697,17 @@ async def ui_websocket_endpoint(websocket: WebSocket):
         "message": "SecureLink AI Server Online",
         "whisper": has_whisper,
         "classifier": bert_model is not None,
+        "harmful_words_only": harmful_words_only,
+        "cloud_tunnel_url": current_cloud_tunnel_url,
         "timestamp": datetime.now().strftime("%H:%M:%S")
     }))
 
-    # Send current device states on dashboard connect
-    for dev in registered_devices.values():
+    # Send current device states on dashboard connect (mark devices without active socket as OFFLINE)
+    for dev_id, dev in registered_devices.items():
+        is_active = any(d_id == dev_id for d_id in active_pins.values())
+        if not is_active:
+            dev["online"] = False
+            dev["state"] = "OFFLINE"
         await websocket.send_text(json.dumps({"event_type": "device_update", "device": dev}))
         
     # Send saved checkpoints on connect
@@ -601,6 +721,14 @@ async def ui_websocket_endpoint(websocket: WebSocket):
             data = await websocket.receive_text()
             if data == "ping":
                 await websocket.send_text(json.dumps({"event_type": "pong"}))
+                continue
+            if data in ("TRIGGER:DANGER", "CMD:CAPTURE_SNAPSHOT"):
+                print(f"[UI] Relay camera snapshot command to all active pins: {data}")
+                for pin_ws in list(active_pins.keys()):
+                    try:
+                        await pin_ws.send_text(data)
+                    except Exception:
+                        pass
                 continue
             
             # Handle fleet configuration deployed from Flutter Configuration Tab
@@ -635,6 +763,13 @@ async def ui_websocket_endpoint(websocket: WebSocket):
                         "dispatched_count": dispatched,
                         "message": f"Command {cmd} sent to {dispatched} active smart pin(s). Pin will enter Setup Portal."
                     }))
+                elif ev_type == "set_harmful_only":
+                    harmful_words_only = bool(msg.get("enabled", False))
+                    print(f"\n[FILTER] Harmful Words Only Mode set to: {harmful_words_only}")
+                    await broadcast_to_ui({
+                        "event_type": "harmful_only_update",
+                        "enabled": harmful_words_only
+                    })
             except Exception as e:
                 print(f"[UI] Error processing message: {e}")
     except WebSocketDisconnect:
@@ -645,30 +780,135 @@ async def ui_websocket_endpoint(websocket: WebSocket):
             ui_clients.remove(websocket)
 
 # =========================================================================
-# 6. UDP AUTO-DISCOVERY (PORT 8888)
+# 6. UDP AUTO-DISCOVERY (PORT 8888) & CENTRAL SYSTEM GATEWAY
 # =========================================================================
 def get_primary_ip():
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    # Attempt 1: Standard public DNS route probe (doesn't send packets, just probes OS routing table)
+    for test_target in [('8.8.8.8', 80), ('1.1.1.1', 80), ('10.255.255.255', 1)]:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(test_target)
+            ip = s.getsockname()[0]
+            s.close()
+            if ip and not ip.startswith('127.'):
+                return ip
+        except Exception:
+            pass
+    # Attempt 2: Local hostname resolution
     try:
-        s.connect(('10.255.255.255', 1))
-        ip = s.getsockname()[0]
+        ip = socket.gethostbyname(socket.gethostname())
+        if ip and not ip.startswith('127.'):
+            return ip
     except Exception:
-        ip = '127.0.0.1'
-    finally:
-        s.close()
-    return ip
+        pass
+    return '127.0.0.1'
 
 class DiscoveryProtocol(asyncio.DatagramProtocol):
     def connection_made(self, transport):
         self.transport = transport
-        print("[UDP] Auto-discovery service listening on port 8888...")
+        print("[UDP] Central System discovery service listening on port 8888...")
 
     def datagram_received(self, data, addr):
         message = data.decode('utf-8', errors='ignore')
-        if "SECURELINK_PIN_V1" in message:
+        if "SECURELINK" in message:
             true_ip = get_primary_ip()
-            print(f"\n[UDP] Discovery broadcast from Pin at {addr}. Replying with server IP: {true_ip}...")
+            print(f"\n[UDP] Discovery broadcast from {addr} ('{message.strip()}'). Replying with server IP: {true_ip}...")
+            # 1. Plaintext format for ESP32 Smart Pins (Priority 1: Central System)
             self.transport.sendto(f"ACK:{true_ip}".encode('utf-8'), addr)
+            # 2. JSON structured discovery payload for Mobile Companions
+            cs_payload = json.dumps({
+                "type": "CS_DISCOVERY_ACK",
+                "cs_id": "CS-CAMPUS-01",
+                "server_ip": true_ip,
+                "server_port": 8080,
+                "name": "SecureLink Campus Central System",
+                "priority": "PRIMARY_CS_1"
+            })
+            self.transport.sendto(cs_payload.encode('utf-8'), addr)
+
+@app.get("/api/cs-info")
+async def get_cs_info():
+    """Provides Central System gateway identification and routing information for mobile companions."""
+    true_ip = get_primary_ip()
+    return {
+        "status": "online",
+        "cs_id": "CS-CAMPUS-01",
+        "name": "SecureLink Campus Central System",
+        "cloud_tunnel_url": current_cloud_tunnel_url,
+        "server_ip": true_ip,
+        "server_port": 8080,
+        "priority_level": "PRIMARY (Priority 1: Central System, Priority 2: Mobile App)",
+        "active_pins_count": len(active_pins),
+        "registered_pins": list(registered_devices.keys()),
+        "ui_clients_count": len(ui_clients),
+        "harmful_words_only": harmful_words_only,
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
+
+@app.post("/api/mobile-sync")
+async def sync_mobile_companion(payload: dict):
+    """Registers and synchronizes a mobile companion device with the Central System."""
+    mobile_id = str(payload.get("mobile_id", "MOBILE-APP-01")).strip()
+    user_name = str(payload.get("user_name", "Teacher / Student")).strip()
+    role = str(payload.get("role", "Teacher")).strip()
+    paired_pins = payload.get("paired_pins", [])
+    if not isinstance(paired_pins, list):
+        paired_pins = [str(paired_pins)]
+
+    print(f"\n[MOBILE-SYNC] Mobile Companion '{mobile_id}' ({user_name} [{role}]) paired with pins: {paired_pins}")
+    return {
+        "status": "success",
+        "cs_id": "CS-CAMPUS-01",
+        "cs_name": "SecureLink Campus Central System",
+        "server_ip": get_primary_ip(),
+        "server_port": 8080,
+        "paired_pins": paired_pins,
+        "message": f"Successfully synchronized with Central System. Pins will route priority updates to CS-1."
+    }
+
+async def pin_liveness_watchdog():
+    """Runs every 3 seconds. Forces any device without an active socket to OFFLINE."""
+    while True:
+        await asyncio.sleep(3.0)
+        try:
+            for dev_id, dev in list(registered_devices.items()):
+                is_active = any(d_id == dev_id for d_id in active_pins.values())
+                if not is_active and dev.get("online", False):
+                    now_str = datetime.now().strftime("%H:%M:%S")
+                    dev["online"] = False
+                    dev["state"] = "OFFLINE"
+                    dev["lastSeen"] = f"Disconnected at {now_str}"
+                    await broadcast_to_ui({"event_type": "device_update", "device": dev})
+                    print(f"[WATCHDOG] Pin {dev_id} has no active socket -> broadcasted OFFLINE")
+        except Exception as e:
+            print(f"[WATCHDOG] Error: {e}")
+
+RECORDINGS_RETENTION_DAYS = int(os.getenv("RECORDINGS_RETENTION_DAYS", "30"))
+
+async def periodic_recordings_cleanup():
+    """Periodically purges audio recordings and snapshots older than RECORDINGS_RETENTION_DAYS."""
+    while True:
+        try:
+            now = time.time()
+            cutoff_sec = now - (RECORDINGS_RETENTION_DAYS * 86400)
+            deleted_count = 0
+            for folder in [AUDIO_RECORDINGS_DIR, SNAPSHOTS_RECORDINGS_DIR]:
+                if os.path.exists(folder):
+                    for fname in os.listdir(folder):
+                        fpath = os.path.join(folder, fname)
+                        if os.path.isfile(fpath):
+                            try:
+                                if os.path.getmtime(fpath) < cutoff_sec:
+                                    os.remove(fpath)
+                                    deleted_count += 1
+                            except Exception:
+                                pass
+            if deleted_count > 0:
+                print(f"[CLEANUP] Purged {deleted_count} recording files older than {RECORDINGS_RETENTION_DAYS} days.")
+        except Exception as e:
+            print(f"[CLEANUP] Error during recordings cleanup: {e}")
+        # Run cleanup every 12 hours
+        await asyncio.sleep(43200)
 
 @app.on_event("startup")
 async def startup_event():
@@ -681,82 +921,455 @@ async def startup_event():
         print("[UDP] Auto-discovery service listening on port 8888...")
     except Exception as udp_err:
         print(f"[WARN] UDP port 8888 busy or unavailable ({udp_err}). Continuing without UDP discovery...")
+    
+    # Launch background watchdog that monitors socket health and forces ghost pins OFFLINE
+    asyncio.create_task(pin_liveness_watchdog())
+    
+    # Launch background recording retention cleaner (30-day default)
+    asyncio.create_task(periodic_recordings_cleanup())
+
     print("[SYS] WebSocket Server active on port 8080 (UI: /ui | Pins: /)")
     print("[SYS] Ready for connections!\n")
 
 # =========================================================================
 # 7. AUDIO PROCESSING PIPELINE (DENOISING + WHISPER STT)
 # =========================================================================
-def process_audio_buffer(pcm_bytes: bytes) -> str:
-    """Applies DeepFilterNet denoising and Faster-Whisper Tagalog ASR."""
-    if len(pcm_bytes) < 3200: # Less than 100ms
-        return ""
+def process_audio_buffer(pcm_bytes: bytes) -> tuple[TranscriptionResult, bytes]:
+    """Applies 85Hz HPF, MS-NSNet2 noise suppression, gentle quiet-speech post-gain, and Faster-Whisper ASR with segment validation."""
+    if len(pcm_bytes) < 3200:  # Less than 100ms
+        return TranscriptionResult(
+            status=TranscriptionStatus.NO_SPEECH,
+            reason="Buffer shorter than 100ms"
+        ), pcm_bytes
     
     # 1. Convert raw 16kHz 16-bit Mono PCM bytes to float32 NumPy array [-1.0, 1.0]
     audio_int16 = np.frombuffer(pcm_bytes, dtype=np.int16)
     audio_float = audio_int16.astype(np.float32) / 32768.0
 
-    # 2. Server-side Denoising (DeepFilterNet3 or NoiseReduce Spectral Gating)
-    if has_deepfilternet and df_model is not None:
+    raw_peak = float(np.max(np.abs(audio_float)))
+    raw_rms = float(np.sqrt(np.mean(audio_float**2)))
+
+    # 2. Strip infrasonic fan blade chop & motor rumble (< 85Hz) while preserving vocal formants (90Hz-3400Hz)
+    try:
+        sos_hp = signal.butter(2, 85 / (16000 / 2), btype='high', output='sos')
+        audio_float = signal.sosfilt(sos_hp, audio_float).astype(np.float32)
+    except Exception:
+        pass
+
+    hpf_rms = float(np.sqrt(np.mean(audio_float**2)))
+    hpf_peak = float(np.max(np.abs(audio_float)))
+
+    # Drop pure electrical silence or dead mic line (peak < 0.003, raw ADC peak < 100)
+    if hpf_peak < 0.003:
+        return TranscriptionResult(
+            status=TranscriptionStatus.NO_SPEECH,
+            reason=f"Electrical silence below threshold (Peak={hpf_peak:.4f} < 0.003)",
+            audio_quality={"raw_peak": round(raw_peak, 4), "raw_rms": round(raw_rms, 4), "hpf_peak": round(hpf_peak, 4), "hpf_rms": round(hpf_rms, 4)}
+        ), pcm_bytes
+
+    # 3. Server-side Denoising FIRST (Microsoft NSNet2 Neural Speech Isolation)
+    # Neural suppression runs on natural SNR before applying any digital gain
+    if has_nsnet2 and nsnet2_denoiser is not None:
         try:
-            audio_tensor = torch.from_numpy(audio_float).unsqueeze(0)
-            enhanced = enhance(df_model, df_state, audio_tensor)
-            audio_float = enhanced.squeeze(0).cpu().numpy()
+            audio_float = nsnet2_denoiser.enhance(audio_float, fs=16000, strength=DENOISE_STRENGTH)
         except Exception as e:
-            print(f"[WARN] DeepFilterNet error: {e}")
+            print(f"[WARN] NSNet2 inference error: {e}")
+            if has_noisereduce:
+                try:
+                    audio_float = nr.reduce_noise(
+                        y=audio_float,
+                        sr=16000,
+                        prop_decrease=0.65,
+                        stationary=True,
+                        n_std_thresh_stationary=1.5
+                    )
+                except Exception:
+                    pass
     elif has_noisereduce:
         try:
-            # Light stationary noise reduction (0.25) to avoid eating Tagalog vowels/formants
-            audio_float = nr.reduce_noise(y=audio_float, sr=16000, prop_decrease=0.25, stationary=True)
+            audio_float = nr.reduce_noise(
+                y=audio_float,
+                sr=16000,
+                prop_decrease=0.65,
+                stationary=True,
+                n_std_thresh_stationary=1.5
+            )
         except Exception as e:
             print(f"[WARN] NoiseReduce error: {e}")
 
-    # 3. Faster-Whisper Speech Recognition with Initial Prompt Conditioning & Hotwords
-    if has_whisper and whisper_model is not None:
-        try:
-            transcribe_kwargs = {
-                "language": "tl",
-                "initial_prompt": INITIAL_TAGALOG_PROMPT,
-                "beam_size": 5,
-                "temperature": [0.0, 0.2, 0.4, 0.6, 0.8, 1.0], 
-                "condition_on_previous_text": False,
-                "no_speech_threshold": 0.5, 
-                "log_prob_threshold": -1.0,
-                "compression_ratio_threshold": 2.4,
-                "word_timestamps": False,
-                "vad_parameters": dict(min_speech_duration_ms=250, speech_pad_ms=400)
-            }
+    audio_float = np.asarray(audio_float, dtype=np.float32)
+    denoised_peak = float(np.max(np.abs(audio_float)))
+    denoised_rms = float(np.sqrt(np.mean(audio_float**2)))
 
+    # 4. Gentle Post-Denoising Normalization (Preserves quiet genuine speech, avoids boosting noise)
+    # Only scale when genuine acoustic energy is present (> 0.01) but soft (< 0.35)
+    # Never boost when denoised peak is negligible (< 0.01) to avoid amplifying residual fan floor
+    if 0.01 < denoised_peak < 0.35:
+        gain_scale = min(0.45 / (denoised_peak + 1e-6), 3.0)
+        audio_float = audio_float * gain_scale
+
+    audio_float = np.clip(audio_float, -0.99, 0.99)
+
+    # 5. Convert clean audio float back to 16-bit PCM bytes for playback in recordings
+    clean_int16 = np.clip(audio_float * 32767.0, -32768, 32767).astype(np.int16)
+    clean_pcm_bytes = clean_int16.tobytes()
+
+    audio_quality = {
+        "raw_peak": round(raw_peak, 4),
+        "raw_rms": round(raw_rms, 4),
+        "hpf_peak": round(hpf_peak, 4),
+        "denoised_peak": round(denoised_peak, 4)
+    }
+
+    # 6. Faster-Whisper Speech Recognition
+    if not (has_whisper and whisper_model is not None):
+        return TranscriptionResult(
+            status=TranscriptionStatus.NO_SPEECH,
+            reason="Whisper model unavailable",
+            audio_quality=audio_quality
+        ), clean_pcm_bytes
+
+    transcribe_kwargs = {
+        "language": "tl",
+        "initial_prompt": INITIAL_TAGALOG_PROMPT if INITIAL_TAGALOG_PROMPT else None,
+        "hotwords": TAGALOG_HOTWORDS if TAGALOG_HOTWORDS else None,
+        "beam_size": 5,
+        "temperature": [0.0],
+        "condition_on_previous_text": False,
+        "no_speech_threshold": 0.60,
+        "log_prob_threshold": -1.0,
+        "compression_ratio_threshold": 2.4,
+        "word_timestamps": False,
+        "vad_parameters": dict(threshold=0.40, min_speech_duration_ms=250, speech_pad_ms=300),
+    }
+
+    try:
+        segments_gen, info = whisper_model.transcribe(
+            audio_float,
+            vad_filter=True,
+            **transcribe_kwargs
+        )
+        segments = list(segments_gen)
+    except Exception as e:
+        print(f"[ERR] Whisper transcription error: {e}")
+        return TranscriptionResult(
+            status=TranscriptionStatus.TRANSCRIPTION_REJECTED,
+            reason=f"Whisper transcription error: {e}",
+            audio_quality=audio_quality
+        ), clean_pcm_bytes
+
+    if not segments:
+        return TranscriptionResult(
+            status=TranscriptionStatus.TRANSCRIPTION_REJECTED if raw_peak >= 0.05 else TranscriptionStatus.NO_SPEECH,
+            reason="No speech segments detected by VAD",
+            audio_quality=audio_quality
+        ), clean_pcm_bytes
+
+    # 7. Segment-Level Validation
+    valid_segments = []
+    seg_reject_reasons = []
+    for s in segments:
+        txt = s.text.strip()
+        if not txt:
+            continue
+        nsp = getattr(s, 'no_speech_prob', 0.0)
+        alp = getattr(s, 'avg_logprob', 0.0)
+        cr = getattr(s, 'compression_ratio', 1.0)
+
+        if nsp >= 0.60:
+            seg_reject_reasons.append(f"no_speech_prob={nsp:.3f} >= 0.60")
+            continue
+        if cr > 2.4:
+            seg_reject_reasons.append(f"compression_ratio={cr:.2f} > 2.4")
+            continue
+        if alp < -1.40:
+            seg_reject_reasons.append(f"avg_logprob={alp:.3f} < -1.40")
+            continue
+
+        valid_segments.append(s)
+
+    if not valid_segments:
+        reason_msg = "; ".join(seg_reject_reasons) if seg_reject_reasons else "All segments filtered by quality checks"
+        return TranscriptionResult(
+            status=TranscriptionStatus.TRANSCRIPTION_REJECTED,
+            reason=reason_msg,
+            audio_quality=audio_quality
+        ), clean_pcm_bytes
+
+    # 8. Fallback Rule: only force 'tl' if duration >= 2.5s and detected language is non-Philippine
+    dur_sec = len(audio_float) / 16000.0
+    detected_lang = getattr(info, 'language', 'tl')
+    if detected_lang not in ('tl', 'en'):
+        if dur_sec >= 2.5:
+            print(f"[ASR] Auto-detected '{detected_lang}' on {dur_sec:.1f}s clip. Re-running with forced Tagalog ('tl')...")
+            fallback_kwargs = dict(transcribe_kwargs)
+            fallback_kwargs["language"] = "tl"
             try:
-                segments, info = whisper_model.transcribe(
+                fb_segments_gen, _ = whisper_model.transcribe(
                     audio_float,
                     vad_filter=True,
-                    **transcribe_kwargs
+                    **fallback_kwargs
                 )
-                transcript = " ".join([seg.text for seg in segments]).strip()
-                return transcript
-            except Exception as vad_err:
-                print(f"[WARN] VAD filter error ({vad_err}). Retrying without VAD filter...")
-                segments, info = whisper_model.transcribe(
-                    audio_float,
-                    vad_filter=False,
-                    **transcribe_kwargs
-                )
-                transcript = " ".join([seg.text for seg in segments]).strip()
-                return transcript
-        except Exception as e:
-            print(f"[ERR] Whisper transcription error: {e}")
-            return ""
-    
-    return ""
+                fb_segs = list(fb_segments_gen)
+                fb_valid = [s for s in fb_segs if s.text.strip() and getattr(s, 'no_speech_prob', 0.0) < 0.60 and getattr(s, 'compression_ratio', 1.0) <= 2.4 and getattr(s, 'avg_logprob', 0.0) >= -1.40]
+                if fb_valid:
+                    valid_segments = fb_valid
+            except Exception:
+                pass
+        else:
+            return TranscriptionResult(
+                status=TranscriptionStatus.TRANSCRIPTION_REJECTED,
+                reason=f"Discarded short noisy clip ({dur_sec:.1f}s) misdetected as '{detected_lang}'",
+                audio_quality=audio_quality
+            ), clean_pcm_bytes
+
+    transcript = " ".join(s.text.strip() for s in valid_segments).strip()
+
+    # 9. Word-Level Validation (Repetition loops, diversity, prompt-echo)
+    words = [re.sub(r'[^a-zA-Z0-9ñÑ]', '', w.lower()) for w in re.split(r'[\s\-]+', transcript)]
+    words = [w for w in words if w]
+
+    if not words:
+        return TranscriptionResult(
+            status=TranscriptionStatus.TRANSCRIPTION_REJECTED,
+            reason="Empty transcript after punctuation normalization",
+            audio_quality=audio_quality
+        ), clean_pcm_bytes
+
+    # Filter standard mic-check & silence hallucinations
+    clean_t = transcript.lower().strip().rstrip(".!?,")
+    if clean_t in [
+        "hello my check", "hello mic check", "mic check", "my check"
+    ]:
+        return TranscriptionResult(
+            status=TranscriptionStatus.SPEECH_DETECTED,
+            transcript=transcript,
+            reason="Filtered benign mic-check phrase",
+            audio_quality=audio_quality
+        ), clean_pcm_bytes
+
+    HALLUCINATION_ARTIFACTS = {
+        "thank you", "you", "thanks", "salamat", "maraming salamat",
+        "okay", "outro", "subtitles", "subtitle", "bye", "goodbye"
+    }
+    if clean_t in HALLUCINATION_ARTIFACTS:
+        return TranscriptionResult(
+            status=TranscriptionStatus.TRANSCRIPTION_REJECTED,
+            transcript="",
+            reason=f"Filtered hallucination artifact ('{clean_t}')",
+            audio_quality=audio_quality
+        ), clean_pcm_bytes
+
+    # Check 1: Consecutive word repetition loop
+    streak = 1
+    max_streak = 1
+    for idx in range(1, len(words)):
+        if len(words[idx]) >= 3 and words[idx] == words[idx - 1]:
+            streak += 1
+            if streak > max_streak:
+                max_streak = streak
+        else:
+            streak = 1
+    if max_streak >= 4 or (max_streak >= 3 and len(words) <= 5):
+        return TranscriptionResult(
+            status=TranscriptionStatus.TRANSCRIPTION_REJECTED,
+            transcript=transcript,
+            reason=f"Consecutive word repetition loop (streak={max_streak})",
+            audio_quality=audio_quality
+        ), clean_pcm_bytes
+
+    # Check 2: Lexical diversity (unique words / total words < 0.35 on clips with >= 6 words)
+    if len(words) >= 6:
+        lexical_diversity = len(set(words)) / len(words)
+        if lexical_diversity < 0.35:
+            return TranscriptionResult(
+                status=TranscriptionStatus.TRANSCRIPTION_REJECTED,
+                transcript=transcript,
+                reason=f"Low lexical diversity loop (diversity={lexical_diversity:.2f} < 0.35)",
+                audio_quality=audio_quality
+            ), clean_pcm_bytes
+
+    # Check 3: Token concentration (> 50% of words identical in clip with >= 4 words)
+    if len(words) >= 4:
+        from collections import Counter
+        word_counts = Counter(words)
+        most_common_word, count = word_counts.most_common(1)[0]
+        if len(most_common_word) >= 3 and (count / len(words)) > 0.50:
+            return TranscriptionResult(
+                status=TranscriptionStatus.TRANSCRIPTION_REJECTED,
+                transcript=transcript,
+                reason=f"High token concentration ('{most_common_word}' is {count}/{len(words)} tokens)",
+                audio_quality=audio_quality
+            ), clean_pcm_bytes
+
+    # Check 4: Prompt-echo filter (if >= 50% of words match prompt echo vocabulary)
+    if PROMPT_ECHO_WORDS and len(words) >= 2:
+        echo_count = sum(1 for w in words if w in PROMPT_ECHO_WORDS)
+        if (echo_count / len(words)) >= 0.50:
+            return TranscriptionResult(
+                status=TranscriptionStatus.TRANSCRIPTION_REJECTED,
+                transcript=transcript,
+                reason=f"Prompt-echo filter triggered ({echo_count}/{len(words)} prompt words)",
+                audio_quality=audio_quality
+            ), clean_pcm_bytes
+
+    # Metrics calculation
+    mean_logprob = float(np.mean([getattr(s, 'avg_logprob', 0.0) for s in valid_segments]))
+    max_no_speech = float(np.max([getattr(s, 'no_speech_prob', 0.0) for s in valid_segments]))
+    mean_cr = float(np.mean([getattr(s, 'compression_ratio', 1.0) for s in valid_segments]))
+
+    metrics = {
+        "avg_logprob": round(mean_logprob, 3),
+        "no_speech_prob": round(max_no_speech, 3),
+        "compression_ratio": round(mean_cr, 2),
+        "num_segments": len(valid_segments),
+        "detected_language": detected_lang
+    }
+
+    # 10. Borderline acoustic confidence check
+    if mean_logprob < -1.10:
+        return TranscriptionResult(
+            status=TranscriptionStatus.UNCERTAIN_TRANSCRIPTION,
+            transcript=transcript,
+            reason=f"Borderline acoustic confidence (avg_logprob={mean_logprob:.3f} < -1.10)",
+            metrics=metrics,
+            audio_quality=audio_quality
+        ), clean_pcm_bytes
+
+    return TranscriptionResult(
+        status=TranscriptionStatus.TRANSCRIBED,
+        transcript=transcript,
+        reason="Speech transcribed with high confidence",
+        metrics=metrics,
+        audio_quality=audio_quality
+    ), clean_pcm_bytes
+
 
 def save_wav(pcm_bytes: bytes, filepath: str):
-    """Saves raw 16kHz 16-bit PCM bytes to standard WAV format."""
+    """Saves 16kHz 16-bit PCM bytes to standard WAV format."""
     with wave.open(filepath, "wb") as wav_file:
         wav_file.setnchannels(1)
         wav_file.setsampwidth(2) # 16-bit
         wav_file.setframerate(16000)
         wav_file.writeframes(pcm_bytes)
+
+# Global mutex for AI inference: guarantees single-pipeline execution for NSNet2, Whisper, and BERT
+# Prevents concurrent thread race conditions, CUDA memory corruption, and out-of-memory errors
+ai_inference_lock = asyncio.Lock()
+
+async def handle_completed_audio(device_id: str, pcm_bytes: bytes, websocket: WebSocket):
+    """Processes accumulated speech audio buffer, runs Faster-Whisper + BERT, and updates UI."""
+    if len(pcm_bytes) < 4800: # Less than 150ms
+        if device_id in registered_devices:
+            now_str = datetime.now().strftime("%H:%M:%S")
+            is_still_connected = any(d_id == device_id for d_id in active_pins.values())
+            registered_devices[device_id]["online"] = is_still_connected
+            registered_devices[device_id]["state"] = "VAD ARMED" if is_still_connected else "OFFLINE"
+            registered_devices[device_id]["lastSeen"] = f"Active at {now_str}" if is_still_connected else f"Disconnected at {now_str}"
+            await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
+        return
+
+    dur_sec = len(pcm_bytes) / 32000.0
+    audio_int16 = np.frombuffer(pcm_bytes, dtype=np.int16)
+    audio_peak = float(np.max(np.abs(audio_int16))) / 32768.0
+
+    if device_id in registered_devices:
+        registered_devices[device_id]["state"] = "ANALYZING SPEECH"
+        registered_devices[device_id]["online"] = True
+        registered_devices[device_id]["lastSeen"] = "Whisper inferencing..."
+        await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
+
+    async with ai_inference_lock:
+        t_infer_start = time.time()
+        result, clean_pcm = await asyncio.to_thread(process_audio_buffer, pcm_bytes)
+        infer_dur = time.time() - t_infer_start
+
+        if result.status == TranscriptionStatus.TRANSCRIBED and result.transcript:
+            transcript = result.transcript
+            print(f"[FINAL TRANSCRIPT] ({device_id} in {infer_dur:.2f}s, dur={dur_sec:.2f}s, peak={audio_peak:.2f}) -> \"{transcript}\"")
+            score, category = context_engine.evaluate(transcript, device_id=device_id, transcription_result=result)
+            is_danger = score >= 8.0
+
+            # --- HARMFUL WORDS ONLY FILTER ---
+            # When active, ignore benign/conversational speech and do not save WAV or log incident
+            is_harmful = (category != "Conversational") or (score >= 2.0)
+            if harmful_words_only and not is_harmful:
+                print(f"[FILTER] Ignored conversational speech under 'Harmful Words Only' mode: \"{transcript}\" (cat={category}, score={score})")
+                if device_id in registered_devices:
+                    now_str = datetime.now().strftime("%H:%M:%S")
+                    is_still_connected = any(d_id == device_id for d_id in active_pins.values())
+                    registered_devices[device_id]["online"] = is_still_connected
+                    registered_devices[device_id]["state"] = "VAD ARMED" if is_still_connected else "OFFLINE"
+                    registered_devices[device_id]["lastSeen"] = f"Filtered benign speech at {now_str}" if is_still_connected else f"Disconnected at {now_str}"
+                    await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
+                return
+
+            if is_danger:
+                print(f"[THREAT] DANGER grade detected! Dispatching TRIGGER:DANGER to {device_id}...")
+                try:
+                    await websocket.send_text("TRIGGER:DANGER")
+                except Exception as e:
+                    print(f"[THREAT] Error sending TRIGGER:DANGER: {e}")
+                for pin_ws, p_id in list(active_pins.items()):
+                    if p_id == device_id and pin_ws != websocket:
+                        try:
+                            await pin_ws.send_text("TRIGGER:DANGER")
+                        except Exception:
+                            pass
+
+            incident_id = f"EVT-{int(time.time() * 1000) % 1000000}"
+            if device_id in registered_devices:
+                registered_devices[device_id]["latest_incident_id"] = incident_id
+            else:
+                registered_devices[device_id] = {
+                    "latest_incident_id": incident_id,
+                    "state": "ANALYZING SPEECH",
+                    "online": True
+                }
+
+            wav_filename = f"{incident_id}.wav"
+            wav_path = os.path.join(AUDIO_RECORDINGS_DIR, wav_filename)
+            # Save the clean, denoised audio to WAV so playback is crystal-clear and fan-free
+            await asyncio.to_thread(save_wav, clean_pcm, wav_path)
+
+            primary_ip = get_primary_ip()
+            active_tunnel = get_active_tunnel_url()
+            base_audio = active_tunnel if active_tunnel else f"http://{primary_ip}:8080"
+
+            await broadcast_to_ui({
+                "event_type": "incident",
+                "id": incident_id,
+                "device_id": device_id,
+                "score": float(score),
+                "category": category,
+                "transcript": transcript,
+                "audio": True,
+                "audio_url": f"{base_audio}/recordings/audio/{wav_filename}",
+                "local_audio_url": f"http://127.0.0.1:8080/recordings/audio/{wav_filename}",
+                "lan_audio_url": f"http://{primary_ip}:8080/recordings/audio/{wav_filename}",
+                "audio_file": wav_filename,
+                "video": is_danger,
+                "duration": f"00:{max(1, int(dur_sec)):02d}"
+            })
+        else:
+            transcript = ""
+            print(f"[ASR] ({device_id} in {infer_dur:.2f}s) Audio ({dur_sec:.2f}s, peak={audio_peak:.2f}) -> Status: {result.status.value}, Reason: {result.reason}")
+
+    if device_id in registered_devices:
+        now_str = datetime.now().strftime("%H:%M:%S")
+        is_still_connected = any(d_id == device_id for d_id in active_pins.values())
+        registered_devices[device_id]["online"] = is_still_connected
+        
+        # FIX: Only reset to VAD ARMED if a new audio stream hasn't already started
+        if registered_devices[device_id].get("state") == "ANALYZING SPEECH":
+            registered_devices[device_id]["state"] = "VAD ARMED" if is_still_connected else "OFFLINE"
+            
+        if is_still_connected:
+            registered_devices[device_id]["lastSeen"] = f'Heard: "{transcript[:25]}..."' if transcript else f"Active at {now_str}"
+        else:
+            registered_devices[device_id]["lastSeen"] = f"Disconnected at {now_str}"
+            
+        await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
 
 # =========================================================================
 # 8. PHYSICAL PIN WEBSOCKET ENDPOINT (AUDIO STREAM & DANGER TRIGGER)
@@ -765,14 +1378,33 @@ def save_wav(pcm_bytes: bytes, filepath: str):
 async def pin_websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     
-    # Consistent device ID based on client IP so reconnects do not create duplicate phantom pins
-    client_host = websocket.client.host if (websocket.client and websocket.client.host) else "001"
-    pin_suffix = client_host.split(".")[-1].zfill(3) if "." in client_host else "001"
-    device_id = f"PIN-{pin_suffix}"
+    # Consistent device ID: prioritize explicit query param (?device_id=PIN-001) or header (for BLE relay & Cloudflare Tunnel)
+    explicit_dev_id = websocket.query_params.get("device_id") or websocket.headers.get("x-device-id")
+    if explicit_dev_id:
+        device_id = explicit_dev_id.strip().upper()
+    else:
+        cf_ip = websocket.headers.get("cf-connecting-ip") or websocket.headers.get("x-forwarded-for")
+        if cf_ip:
+            ip_clean = cf_ip.split(",")[0].strip()
+            pin_suffix = ip_clean.split(".")[-1].zfill(3) if "." in ip_clean else "001"
+            device_id = f"PIN-{pin_suffix}"
+        else:
+            client_host = websocket.client.host if (websocket.client and websocket.client.host) else "001"
+            pin_suffix = client_host.split(".")[-1].zfill(3) if "." in client_host else "001"
+            device_id = f"PIN-{pin_suffix}"
     active_pins[websocket] = device_id
     
     # Check if there is a pending Wi-Fi config queued for this pin or fleet-wide
-    pending_cfg = pending_wifi_configs.get(device_id) or pending_wifi_configs.get("ALL")
+    pending_cfg = None
+    if device_id in pending_wifi_configs:
+        pending_cfg = pending_wifi_configs.pop(device_id)
+    elif "ALL" in pending_wifi_configs:
+        all_cfg = pending_wifi_configs["ALL"]
+        delivered = all_cfg.setdefault("delivered_devices", set())
+        if device_id not in delivered:
+            pending_cfg = all_cfg
+            delivered.add(device_id)
+
     if pending_cfg:
         print(f"[CFG] Pushing queued Wi-Fi checkpoint '{pending_cfg.get('checkpoint_name')}' to {device_id}...")
         try:
@@ -780,17 +1412,20 @@ async def pin_websocket_endpoint(websocket: WebSocket):
         except Exception as e:
             print(f"[CFG] Error pushing queued config: {e}")
 
-    prev_net = registered_devices.get(device_id, {}).get("network", "Campus Wi-Fi")
+    prev_dev = registered_devices.get(device_id, {})
+    prev_net = prev_dev.get("network", "Campus Wi-Fi")
+    prev_batt = prev_dev.get("battery", 100)
+    prev_runtime = prev_dev.get("estRuntime", "--")
     registered_devices[device_id] = {
         "id": device_id,
         "online": True,
-        "battery": 92,
+        "battery": prev_batt,
         "state": "VAD ARMED",
         "network": pending_cfg["ssid"] if pending_cfg else prev_net,
         "lastSeen": "Just now",
-        "cpuMhz": 80,
+        "cpuMhz": 160,
         "rssi": -60,
-        "estRuntime": "6h 45m"
+        "estRuntime": prev_runtime
     }
     
     await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
@@ -799,49 +1434,107 @@ async def pin_websocket_endpoint(websocket: WebSocket):
     audio_accumulator = bytearray()
     last_audio_chunk_time = time.time()
     next_expected_snapshot = False
-    
+
+    # Audio rate limiting per device (400 KB/s allows pre-roll drain bursts & LittleFS uploads without dropping audio)
+    MAX_BYTES_PER_SECOND = 400000
+    rate_window_start = time.time()
+    bytes_in_window = 0
+
+    # Streaming audio chunking: Process 6-second blocks with 1-second overlap
+    # Prevents huge latency on continuous speech and avoids mid-word truncations
+    CHUNK_LIMIT_BYTES = 192000 # 6s @ 16kHz 16-bit mono
+    OVERLAP_BYTES = 32000      # 1s overlap
+
     try:
         while True:
             try:
-                message = await asyncio.wait_for(websocket.receive(), timeout=12.0)
+                # 30-second timeout: With the ESP32 sending keepalive pings every 3.0s,
+                # this gives a generous 10-retry safety buffer against transient Wi-Fi drops!
+                message = await asyncio.wait_for(websocket.receive(), timeout=30.0)
             except asyncio.TimeoutError:
-                print(f"\n[WS] {device_id} silence timeout. Closing session.")
-                if len(audio_accumulator) > 32000:
-                    pcm_chunk = bytes(audio_accumulator)
-                    transcript = await asyncio.to_thread(process_audio_buffer, pcm_chunk)
-                    if transcript:
-                        print(f"\n[FINAL TRANSCRIPT] ({device_id}) -> \"{transcript}\"")
-                        score, category = await asyncio.to_thread(context_engine.evaluate, transcript)
-                        await broadcast_to_ui({
-                            "event_type": "incident", "id": f"EVT-{int(time.time()*1000)%1000000}",
-                            "device_id": device_id, "score": float(score), "category": category,
-                            "transcript": transcript, "audio": False, "video": False, "duration": "00:02"
-                        })
+                print(f"\n[WS] {device_id} heartbeat timed out (no data for 15s, pin disconnected or unpowered).")
+                break
+            except (WebSocketDisconnect, RuntimeError, OSError):
+                print(f"\n[WS] {device_id} disconnected.")
                 break
             except Exception as wsock_err:
-                print(f"\n[WS] {device_id} disconnected.")
-                if len(audio_accumulator) > 32000:
-                    pcm_chunk = bytes(audio_accumulator)
-                    transcript = await asyncio.to_thread(process_audio_buffer, pcm_chunk)
-                    if transcript:
-                        print(f"\n[FINAL TRANSCRIPT] ({device_id}) -> \"{transcript}\"")
-                        score, category = await asyncio.to_thread(context_engine.evaluate, transcript)
-                        await broadcast_to_ui({
-                            "event_type": "incident", "id": f"EVT-{int(time.time()*1000)%1000000}",
-                            "device_id": device_id, "score": float(score), "category": category,
-                            "transcript": transcript, "audio": False, "video": False, "duration": "00:02"
-                        })
+                print(f"\n[WS] {device_id} stream ended: {wsock_err}")
                 break
 
             if "text" in message:
                 text_msg = message["text"]
-                if text_msg.startswith("SNAP:"):
+                if text_msg.startswith("PING:"):
+                    # Standby keep-alive ping from ESP32: PING:<rssi>[:<battery_pct>[:<battery_mv>]]
+                    parts = text_msg.split(":")
+                    if len(parts) >= 2:
+                        try:
+                            rssi_val = int(parts[1])
+                            registered_devices[device_id]["rssi"] = rssi_val
+                        except Exception:
+                            pass
+                    if len(parts) >= 3:
+                        try:
+                            batt_pct = int(parts[2])
+                            batt_pct = max(0, min(100, batt_pct))
+                            registered_devices[device_id]["battery"] = batt_pct
+                            # Realistic runtime estimation:
+                            # 200mAh LiPo in 160MHz VAD Standby with modem sleep + camera sleep (~38mA avg):
+                            # Total battery life is ~5.3h = ~315 minutes from 100% to 0%.
+                            rem_mins = int((batt_pct / 100.0) * 315)
+                            hours = rem_mins // 60
+                            mins = rem_mins % 60
+                            registered_devices[device_id]["estRuntime"] = f"{hours}h {mins:02d}m"
+                        except Exception:
+                            pass
+                    if len(parts) >= 4:
+                        try:
+                            batt_mv = int(parts[3])
+                            registered_devices[device_id]["batteryMv"] = batt_mv
+                        except Exception:
+                            pass
+                    now_str = datetime.now().strftime("%H:%M:%S")
+                    registered_devices[device_id]["online"] = True
+                    registered_devices[device_id]["state"] = "VAD ARMED"
+                    registered_devices[device_id]["lastSeen"] = f"Active at {now_str}"
+                    await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
+                    try:
+                        await websocket.send_text("PONG")
+                    except Exception:
+                        pass
+                    continue
+                elif text_msg in ("STREAM_END", "STREAM_STOP"):
+                    print(f"\n[STREAM] {device_id} completed speech stream ({len(audio_accumulator)} bytes).")
+                    if len(audio_accumulator) >= 4800:
+                        final_pcm = bytes(audio_accumulator)
+                        audio_accumulator.clear()
+                        asyncio.create_task(handle_completed_audio(device_id, final_pcm, websocket))
+                    else:
+                        audio_accumulator.clear()
+                        if device_id in registered_devices:
+                            now_str = datetime.now().strftime("%H:%M:%S")
+                            registered_devices[device_id]["state"] = "VAD ARMED"
+                            registered_devices[device_id]["lastSeen"] = f"Active at {now_str}"
+                            await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
+                elif text_msg.startswith("SNAP:"):
                     print(f"\n[CAM] Incoming camera frame snapshot from {device_id}...")
                     next_expected_snapshot = True
                 elif "ARCHIVE_START" in text_msg:
                     print(f"\n[SYS] {device_id} syncing stored offline incident from LittleFS.")
+                    # Clear accumulator before receiving offline archive to avoid mixing with previous audio
+                    audio_accumulator.clear()
                 elif "ARCHIVE_END" in text_msg:
-                    print(f"\n[SYS] {device_id} offline incident sync complete.")
+                    print(f"\n[SYS] {device_id} offline incident sync complete ({len(audio_accumulator)} bytes).")
+                    if len(audio_accumulator) >= 4800:
+                        final_pcm = bytes(audio_accumulator)
+                        audio_accumulator.clear()
+                        asyncio.create_task(handle_completed_audio(device_id, final_pcm, websocket))
+                    else:
+                        audio_accumulator.clear()
+                        if device_id in registered_devices:
+                            now_str = datetime.now().strftime("%H:%M:%S")
+                            registered_devices[device_id]["state"] = "VAD ARMED"
+                            registered_devices[device_id]["lastSeen"] = f"Active at {now_str}"
+                            await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
 
             elif "bytes" in message:
                 binary_data = message["bytes"]
@@ -849,18 +1542,44 @@ async def pin_websocket_endpoint(websocket: WebSocket):
                 # If this payload is a JPEG camera snapshot
                 if next_expected_snapshot:
                     next_expected_snapshot = False
-                    snap_id = f"snap_{device_id}_{int(time.time())}.jpg"
-                    snap_path = os.path.join("recordings/snapshots", snap_id)
-                    with open(snap_path, "wb") as snap_file:
-                        snap_file.write(binary_data)
-                    print(f"📸 [CAM] DANGER Snapshot saved to {snap_path} ({len(binary_data)} bytes)")
-                    
-                    await broadcast_to_ui({
-                        "event_type": "snapshot_ready",
-                        "device_id": device_id,
-                        "snapshot_file": snap_id,
-                        "timestamp": datetime.now().strftime("%H:%M:%S")
-                    })
+                    try:
+                        snap_id = f"snap_{device_id}_{int(time.time())}.jpg"
+                        snap_path = os.path.join(SNAPSHOTS_RECORDINGS_DIR, snap_id)
+                        with open(snap_path, "wb") as snap_file:
+                            snap_file.write(binary_data)
+                        print(f"[CAM] DANGER Snapshot saved to {snap_path} ({len(binary_data)} bytes)")
+                        
+                        latest_incident_id = registered_devices.get(device_id, {}).get("latest_incident_id", "")
+                        primary_ip = get_primary_ip()
+                        active_tunnel = get_active_tunnel_url()
+                        base_url = active_tunnel if active_tunnel else f"http://{primary_ip}:8080"
+                        snapshot_url = f"{base_url}/recordings/snapshots/{snap_id}"
+                        local_url = f"http://127.0.0.1:8080/recordings/snapshots/{snap_id}"
+                        lan_url = f"http://{primary_ip}:8080/recordings/snapshots/{snap_id}"
+
+                        await broadcast_to_ui({
+                            "event_type": "snapshot_ready",
+                            "device_id": device_id,
+                            "incident_id": latest_incident_id,
+                            "snapshot_file": snap_id,
+                            "snapshot_url": snapshot_url,
+                            "local_url": local_url,
+                            "lan_url": lan_url,
+                            "timestamp": datetime.now().strftime("%H:%M:%S")
+                        })
+                        print(f"[CAM] Successfully broadcast snapshot_ready to UI: {snapshot_url} (local: {local_url})")
+                    except Exception as snap_err:
+                        print(f"[CAM] Error processing camera snapshot: {snap_err}")
+                    continue
+
+                # Rate limit protection against rogue flooding
+                now = time.time()
+                if now - rate_window_start >= 1.0:
+                    rate_window_start = now
+                    bytes_in_window = 0
+                bytes_in_window += len(binary_data)
+                if bytes_in_window > MAX_BYTES_PER_SECOND:
+                    print(f"[WARN] {device_id} exceeded audio rate limit ({bytes_in_window} B/s > {MAX_BYTES_PER_SECOND} B/s). Dropping packet.")
                     continue
 
                 # Normal 16kHz PCM audio stream
@@ -874,107 +1593,37 @@ async def pin_websocket_endpoint(websocket: WebSocket):
                     registered_devices[device_id]["lastSeen"] = "Streaming voice..."
                     await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
 
-                # No rigid mid-speech chunking! Wait for the device to send silence timeout (disconnect).
-                # Fallback safeguard: Process if buffer hits 30 seconds (960,000 bytes) to prevent memory issues.
-                if len(audio_accumulator) >= 960000:
-                    pcm_chunk = bytes(audio_accumulator)
-                    audio_accumulator.clear()
-
-                    transcript = await asyncio.to_thread(process_audio_buffer, pcm_chunk)
-                    if transcript:
-                        print(f"\n[TRANSCRIPT] ({device_id}) -> \"{transcript}\"")
-                        score, category = await asyncio.to_thread(context_engine.evaluate, transcript)
-                        is_danger = score >= 8.0
-
-                        if is_danger:
-                            print(f"🚨 [DANGER ALERT] Severity: {score}/10 | Category: {category}")
-                            print("⚡ [CAM] Dispatching TRIGGER:DANGER to pin for OV2640 snapshot!")
-                            try:
-                                await websocket.send_text("TRIGGER:DANGER")
-                            except Exception as e:
-                                print(f"[ERR] Failed to send trigger to pin: {e}")
-                        elif score >= 4.0:
-                            print(f"⚠️ [THREAT] Severity: {score}/10 | Category: {category}")
-                        elif score >= 2.0:
-                            print(f"🟡 [WARNING] Severity: {score}/10 | Category: {category}")
-                        else:
-                            print(f"🟢 [SAFE] Severity: {score}/10 | Category: {category}")
-
-                        # Save evidence audio as WAV
-                        incident_id = f"EVT-{int(time.time() * 1000) % 1000000}"
-                        wav_filename = f"{incident_id}.wav"
-                        wav_path = os.path.join("recordings/audio", wav_filename)
-                        await asyncio.to_thread(save_wav, pcm_chunk, wav_path)
-
-                        # Broadcast incident to Flutter Dashboard UI
-                        await broadcast_to_ui({
-                            "event_type": "incident",
-                            "id": incident_id,
-                            "device_id": device_id,
-                            "score": float(score),
-                            "category": category,
-                            "transcript": transcript,
-                            "audio": True,
-                            "audio_url": f"http://127.0.0.1:8080/recordings/audio/{wav_filename}",
-                            "audio_file": wav_filename,
-                            "video": is_danger,
-                            "duration": "00:03"
-                        })
+                # Continuous speech chunking: Process in 6-second blocks with 1-second overlap
+                if len(audio_accumulator) >= CHUNK_LIMIT_BYTES:
+                    pcm_chunk = bytes(audio_accumulator[:CHUNK_LIMIT_BYTES])
+                    # Retain 1-second overlap for boundary continuity
+                    audio_accumulator = bytearray(audio_accumulator[CHUNK_LIMIT_BYTES - OVERLAP_BYTES:])
+                    # Dispatch inference asynchronously so live socket reading never blocks
+                    asyncio.create_task(handle_completed_audio(device_id, pcm_chunk, websocket))
 
     except (WebSocketDisconnect, RuntimeError, OSError):
         print(f"\n[WS] {device_id} Disconnected.")
     finally:
         # Process any remaining audio in accumulator before closing
-        if len(audio_accumulator) >= 16000:
-            if device_id in registered_devices:
-                registered_devices[device_id]["state"] = "ANALYZING SPEECH"
-                registered_devices[device_id]["online"] = True
-                registered_devices[device_id]["lastSeen"] = "Whisper inferencing..."
-                await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
-
+        if len(audio_accumulator) >= 4800:
             final_pcm = bytes(audio_accumulator)
-            final_transcript = await asyncio.to_thread(process_audio_buffer, final_pcm)
-            if final_transcript:
-                print(f"[FINAL TRANSCRIPT] ({device_id}) -> \"{final_transcript}\"")
-                score, category = context_engine.evaluate(final_transcript)
-                is_danger = score >= 8.0
-                if is_danger:
-                    try:
-                        await websocket.send_text("TRIGGER:DANGER")
-                    except Exception:
-                        pass
-
-                incident_id = f"EVT-{int(time.time() * 1000) % 1000000}"
-                wav_filename = f"{incident_id}.wav"
-                wav_path = os.path.join("recordings/audio", wav_filename)
-                save_wav(final_pcm, wav_path)
-
-                await broadcast_to_ui({
-                    "event_type": "incident",
-                    "id": incident_id,
-                    "device_id": device_id,
-                    "score": float(score),
-                    "category": category,
-                    "transcript": final_transcript,
-                    "audio": True,
-                    "audio_url": f"http://127.0.0.1:8080/recordings/audio/{wav_filename}",
-                    "audio_file": wav_filename,
-                    "video": is_danger,
-                    "duration": f"00:{len(final_pcm) // 32000:02d}"
-                })
+            audio_accumulator.clear()
+            asyncio.create_task(handle_completed_audio(device_id, final_pcm, websocket))
 
         if websocket in active_pins:
             del active_pins[websocket]
 
+        # MARK PIN AS OFFLINE IMMEDIATELY UPON DISCONNECT OR TIMEOUT
         if device_id in registered_devices:
             now_str = datetime.now().strftime("%H:%M:%S")
-            registered_devices[device_id]["online"] = True
-            registered_devices[device_id]["state"] = "VAD ARMED (STANDBY)"
-            registered_devices[device_id]["lastSeen"] = f"Active at {now_str}"
+            registered_devices[device_id]["online"] = False
+            registered_devices[device_id]["state"] = "OFFLINE"
+            registered_devices[device_id]["lastSeen"] = f"Disconnected at {now_str}"
             await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
+            print(f"[WS] {device_id} marked OFFLINE on dashboard.")
 
 if __name__ == "__main__":
     print("=======================================================")
     print(" SECURELINK AI INFERENCE SERVER V7.0 (WHISPER + DENOISE)")
     print("=======================================================")
-    uvicorn.run(app, host="0.0.0.0", port=8080, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=8080, log_level="info", ws_ping_interval=None, ws_ping_timeout=None)

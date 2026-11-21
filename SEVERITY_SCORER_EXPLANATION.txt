@@ -1,0 +1,252 @@
+================================================================================
+SECURELINK THREAT DETECTION: SEVERITY SCORER & THREAT LEVEL SPECIFICATION
+================================================================================
+Location in Codebase:
+  - Backend Context Engine: securelinkdb/server.py (Class ContextEngine)
+  - Frontend Mapping:       securelinkdb/lib/main.dart (IncidentLevel, Incident.fromJson)
+  - Mobile Service Mapping: securelinkdb/lib/mobile/services/mobile_server_service.dart
+================================================================================
+
+
+1. ARCHITECTURE OVERVIEW
+--------------------------------------------------------------------------------
+The SecureLink Severity Scorer evaluates transcribed speech in real-time through a 
+three-tier evaluation pipeline:
+
+  [ Raw Audio from Smart Pin ]
+               |
+               v
+  [ Pre-Filter & NSNet2 Denoising + Faster-Whisper ASR ]
+               |
+               v
+  [ Text Transcript (Tagalog / English / Taglish) ]
+               |
+  +------------v--------------------------------------------------------------+
+  | CONTEXT ENGINE (server.py)                                                |
+  |                                                                           |
+  |  Step 1: Deep Learning Inference (Fine-Tuned TagalogBERT Classifier)     |
+  |  Step 2: Heuristic Safety Net & Pronoun Targetedness Multiplier (1.3x)    |
+  |  Step 3: Rolling Window Escalation (Last 5 events history tracking)       |
+  +---------------------------------------------------------------------------+
+               |
+               v
+  [ Threat Score (1.0 - 10.0) & Threat Category ]
+               |
+  +------------v--------------------------------------------------------------+
+  | THREAT LEVEL CLASSIFICATION (Flutter Desktop Dashboard & Mobile App)     |
+  |                                                                           |
+  |  Score 0.0 - 1.9 : NORMAL   (Green)  - Everyday conversation              |
+  |  Score 2.0 - 3.9 : WARNING  (Yellow) - Mild friction / low hostility       |
+  |  Score 4.0 - 7.9 : THREAT   (Orange) - Harassment, extortion, insults      |
+  |  Score 8.0 - 10.0: DANGER   (Red)    - Severe threats / Camera Trigger     |
+  +---------------------------------------------------------------------------+
+
+
+================================================================================
+2. STEP-BY-STEP SCORING MECHANISM
+================================================================================
+
+--------------------------------------------------------------------------------
+STEP 1: BASE DEEP LEARNING INFERENCE (TagalogBERT)
+--------------------------------------------------------------------------------
+The server passes the transcript through a sequence classification model 
+(fine-tuned jcblaise/roberta-tagalog-base with 4 output classes):
+
+  * Class 0: Conversational
+      - Base Score: 1.0
+      - Confidence threshold: If model confidence for any class is < 0.60, 
+        the prediction is automatically demoted to Class 0 (Conversational).
+
+  * Class 1: Verbal Harassment
+      - Base Score: 4.5 + (confidence * 2.0)
+      - Dynamic Range: 5.7 to 6.5
+      - Category: "Verbal Harassment"
+
+  * Class 2: Extortion / Demand
+      - Confidence Gate: Requires confidence >= 0.70 OR a match against the 
+        hard extortion keyword dictionary. If not met, demoted to Class 0 (1.0).
+      - Base Score: 5.0 + (confidence * 2.0)
+      - Dynamic Range: 6.4 to 7.0
+      - Category: "Extortion / Demand"
+
+  * Class 3: Physical Threat
+      - Confidence Gate: Requires confidence >= 0.70 OR a match against the 
+        hard threat keyword dictionary. If not met, demoted to Class 0 (1.0).
+      - Base Score: 7.0 + (confidence * 2.0)
+      - Dynamic Range: 8.4 to 9.0
+      - Category: "Physical Threat"
+
+Note: If the transcript has fewer than 3 characters, it returns (0.0, "Conversational").
+
+
+--------------------------------------------------------------------------------
+STEP 2: HEURISTIC SAFETY NET & TARGETEDNESS MULTIPLIER
+--------------------------------------------------------------------------------
+To prevent NLP false-negatives from slang, background noise, or model hallucinations,
+a deterministic keyword and pronoun engine executes on the raw text:
+
+A. Target Pronouns (Direct Victim Confrontation)
+   - Pronouns checked: 
+     {"ikaw", "ka", "mo", "sayo", "sa'yo", "kita", "niyo", "ninyo", "you", "your", "u"}
+   - Multiplier:
+     * If targeted: 1.3x multiplier applied to base score
+     * If untargeted (general exclamation): 1.0x (no boost)
+
+B. Hard Threat Safety Net
+   - Tagalog roots (substring matching):
+     ["patay", "suntok", "bugbog", "tumba", "sapak", "tadyak", "upak", "hiwa", "basag", "resbak", "kikilitin"]
+   - English terms (regex word boundaries):
+     [\bkill\b, \bpunch\b, \bbeat you\b, \bhurt you\b, \bthreat\b, \bstab\b, \bdie\b, \battack\b, \bmurder\b]
+   - Rule:
+     * If any threat keyword matches:
+       base_score = max(base_score, 8.5)
+       Category is forced to "Physical Threat"
+
+C. Hard Extortion Safety Net
+   - Tagalog roots:
+     ["pera", "bayad", "ambag", "ilabas", "bigyan", "baon", "allowance", "barya"]
+   - English terms:
+     [\btax\b, \bgive me money\b, \bpay up\b, \bhand it over\b, \bgive your money\b, \bextort\b]
+   - Rule:
+     * If any extortion keyword matches:
+       base_score = max(base_score, 6.0 if is_targeted else 4.5)
+       Category is forced to "Extortion / Demand"
+
+D. Hard Harassment / Bullying Safety Net
+   - Tagalog roots:
+     ["pangit", "bobo", "kuwenta", "kwenta", "tanga", "inutil", "kadiri", "baho", 
+      "palamunin", "pabigat", "monggoloid", "abnoy", "baliw", "siraulo", "gago", "tarantado", "gaga", "puta"]
+   - English terms:
+     [\bidiot\b, \bstupid\b, \bugly\b, \bloser\b, \bshut up\b, \bworthless\b, \bfreak\b, \bfool\b]
+   - Rule:
+     * Untargeted insult: base_score = max(base_score, 4.8) -> Triggers THREAT
+     * Targeted insult (e.g., "gago ka"): base_score = max(base_score, 6.5) -> Severe THREAT
+     Category is forced to "Verbal Harassment"
+
+E. Score Calculation After Heuristics:
+   current_score = base_score * 1.3 (if targeted and not Conversational)
+   current_score = base_score       (if untargeted or Conversational)
+
+
+--------------------------------------------------------------------------------
+STEP 3: ROLLING WINDOW AGGREGATION (ESCALATION ENGINE)
+--------------------------------------------------------------------------------
+Bullying and extortion frequently escalate over consecutive exchanges. The system 
+maintains a FIFO sliding window of the last 5 statements:
+
+  self.history.append(current_score)
+  if len(self.history) > 5:
+      self.history.pop(0)
+
+A "hostile statement" is defined as any score >= 4.5.
+Hostile count = number of statements in history with score >= 4.5:
+
+1. Hostile Count >= 3 (Severe Escalation):
+   - Condition: Aggressor delivers 3 or more hostile statements across 5 turns.
+   - Action:
+     * final_score = max(current_score, 8.5)
+     * Category is overridden to: "Escalated Harassment / Danger"
+     * Guarantees reaching the DANGER threshold (>= 8.0), triggering automated camera capture!
+
+2. Hostile Count == 2 (Rising Warning Escalation):
+   - Condition: Exactly 2 hostile statements in recent history.
+   - Action:
+     * final_score = min(current_score * 1.5, 7.9)
+     * Category is overridden to: "Hostile Escalation"
+     * Amplifies urgency while staying below the automatic camera trigger.
+
+3. Hostile Count < 2 (Isolated Incident):
+   - Condition: 0 or 1 hostile statement.
+   - Action:
+     * final_score = min(current_score, 10.0)
+
+Final score is rounded to 1 decimal place: round(final_score, 1).
+
+
+================================================================================
+3. THREAT LEVELS & FRONTEND DASHBOARD MAPPING
+================================================================================
+
+The calculated score maps to four operational Incident Levels in the Flutter 
+Dashboard and Mobile Companion:
+
++----------------+-------------+---------------------+-------------------+------------------------------------------+
+| Threat Level   | Score Range | UI Color / Hex      | Status Icon       | System Response & Actions                |
++----------------+-------------+---------------------+-------------------+------------------------------------------+
+| NORMAL         | 0.0 - 1.9   | Green (#55D58B)     | Check Circle      | Normal speech. Ignored if "Harmful Words |
+|                |             |                     |                   | Only" mode is enabled.                   |
++----------------+-------------+---------------------+-------------------+------------------------------------------+
+| WARNING        | 2.0 - 3.9   | Yellow (#FFC857)    | Warning Amber     | Minor friction/dispute. Logged to UI,    |
+|                |             |                     |                   | audio WAV archived.                      |
++----------------+-------------+---------------------+-------------------+------------------------------------------+
+| THREAT         | 4.0 - 7.9   | Orange (#FF914D)    | Shield Alert      | Elevated incident. Harassment, extortion,|
+|                |             |                     |                   | or targeted slurs. Logged + audio alert. |
++----------------+-------------+---------------------+-------------------+------------------------------------------+
+| DANGER         | 8.0 - 10.0  | Red (#FF4D67)       | Emergency Alarm   | Critical emergency. Physical threat,     |
+|                |             |                     |                   | severe escalation. SENDS 'TRIGGER:DANGER'|
+|                |             |                     |                   | -> Pin fires OV2640 camera snapshot!     |
++----------------+-------------+---------------------+-------------------+------------------------------------------+
+
+
+================================================================================
+4. HARDWARE AUTOMATION & EVIDENCE TRIGGER
+================================================================================
+
+When final_score >= 8.0 (DANGER):
+  1. The server immediately dispatches "TRIGGER:DANGER" to the smart pin WebSocket.
+  2. The ESP32 firmware reads this signal, turns on the OV2640 camera sensor, 
+     and snaps a JPEG evidence photo of the aggressor.
+  3. The JPEG is streamed back to the server and saved under recordings/snapshots/.
+  4. Audio is archived under recordings/audio/<incident_id>.wav.
+  5. The dashboard UI triggers a pulsing red banner and enables the snapshot viewer.
+
+
+================================================================================
+5. REAL-WORLD EXAMPLES & SCORING WALKTHROUGHS
+================================================================================
+
+Example A: Benign Conversation
+  - Phrase: "Tara kain tayo sa canteen mamaya."
+  - Bert Prediction: Class 0 (Conversational, 99% conf) -> Base: 1.0
+  - Pronoun: "tayo" (inclusive/first person, not targeted) -> Multiplier: 1.0
+  - Hard Keywords: None
+  - Final Score: 1.0 -> NORMAL (Green)
+
+Example B: Untargeted Profanity / Venting
+  - Phrase: "Bwisit naman tong araw na to, ang malas!"
+  - Bert Prediction: Class 0 or 1 low conf
+  - Pronoun: None -> Multiplier: 1.0
+  - Hard Keywords: None
+  - Final Score: 1.0 - 2.5 -> NORMAL / WARNING
+
+Example C: Targeted Insult (Verbal Bullying)
+  - Phrase: "Ang bobo mo talaga, umalis ka nga dito!"
+  - Bert Prediction: Class 1 (Verbal Harassment, 85% conf) -> Base: 4.5 + (0.85 * 2.0) = 6.2
+  - Hard Keyword: "bobo" (Harassment keyword) -> max(6.2, 6.5) = 6.5
+  - Target Pronouns: "mo", "ka" -> Multiplier: 1.3
+  - Base * Multiplier: 6.5 * 1.3 = 8.45 -> Rounds to 8.5
+  - Final Score: 8.5 -> DANGER (Red) - Triggers camera snapshot
+
+Example D: Extortion / Demand
+  - Phrase: "Akin na yang baon mo kundi aabangan kita sa gate."
+  - Bert Prediction: Class 2 (Extortion)
+  - Hard Keyword: "baon" (Extortion keyword) -> Base: 6.0
+  - Target Pronouns: "mo", "kita" -> Multiplier: 1.3
+  - Score: 6.0 * 1.3 = 7.8
+  - Final Score: 7.8 -> THREAT (Orange)
+
+Example E: Physical Threat
+  - Phrase: "Papatayin kita paglabas mo ng school!"
+  - Hard Keyword: "patay" -> Base: 8.5
+  - Target Pronoun: "kita", "mo" -> Multiplier: 1.3
+  - Score: 8.5 * 1.3 = 11.05 -> Capped at 10.0
+  - Final Score: 10.0 -> DANGER (Red) - Immediate emergency alert + camera capture
+
+Example F: Repetitive Bullying (Escalation Trigger)
+  - Turn 1: "Pangit" (Untargeted insult) -> Score: 4.8 (History: [4.8])
+  - Turn 2: "Inutil" (Untargeted insult) -> Score: 4.8 (History: [4.8, 4.8])
+    -> Hostile Count = 2 -> 4.8 * 1.5 = 7.2 (THREAT - "Hostile Escalation")
+  - Turn 3: "Wala kang kwenta" -> Score: 6.5 * 1.3 = 8.45
+    -> Hostile Count = 3 -> Forced to max(8.45, 8.5) = 8.5
+    -> Category overridden to "Escalated Harassment / Danger" -> DANGER (Red)
+================================================================================

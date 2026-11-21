@@ -5,10 +5,12 @@ import 'dart:math';
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:audioplayers/audioplayers.dart';
+import 'mobile/securelink_mobile_app.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -99,10 +101,13 @@ class ServerManager {
         isStarting = false;
       });
 
-      // Poll up to 25 seconds for the server to be ready
+      // Poll up to 75 seconds for the heavy AI models (Faster-Whisper large-v3-turbo + RoBERTa) to finish loading
       final stopwatch = Stopwatch()..start();
-      while (stopwatch.elapsedMilliseconds < 25000) {
-        await Future.delayed(const Duration(milliseconds: 800));
+      while (stopwatch.elapsedMilliseconds < 75000) {
+        await Future.delayed(const Duration(milliseconds: 1000));
+        final elapsedSec = (stopwatch.elapsedMilliseconds / 1000).round();
+        statusMessage = 'Loading AI Models (${elapsedSec}s)...';
+        onStatusChanged();
         if (await isAlive()) {
           debugPrint('[SERVER] AI Server successfully initialized and online!');
           isStarting = false;
@@ -185,6 +190,10 @@ class SecureLinkApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+      return const SecureLinkMobileApp();
+    }
+
     return MaterialApp(
       title: 'SecureLink',
       debugShowCheckedModeBanner: false,
@@ -333,21 +342,51 @@ class _BackdropState extends State<_Backdrop> with SingleTickerProviderStateMixi
   Widget build(BuildContext context) {
     final base = widget.status.baseColor;
     final accent = widget.status.accent;
-    final isAlert = widget.status == DashboardStatus.danger || widget.status == DashboardStatus.threat;
+    final isAlert = widget.status != DashboardStatus.safe;
+
+    final List<Color> gradientColors = switch (widget.status) {
+      DashboardStatus.safe => [
+        const Color(0xFF030708),
+        const Color(0xFF041712),
+        const Color(0xFF06291E),
+        const Color(0xFF020907),
+      ],
+      DashboardStatus.warning => [
+        const Color(0xFF140D01),
+        const Color(0xFF331F02),
+        const Color(0xFF5A3804),
+        const Color(0xFF180E02),
+      ],
+      DashboardStatus.threat => [
+        const Color(0xFF1C0802),
+        const Color(0xFF421503),
+        const Color(0xFF6B2404),
+        const Color(0xFF1F0802),
+      ],
+      DashboardStatus.danger => [
+        const Color(0xFF220308),
+        const Color(0xFF4A0612),
+        const Color(0xFF740A1D),
+        const Color(0xFF220308),
+      ],
+    };
+
+    final double orbIntensity = switch (widget.status) {
+      DashboardStatus.safe => 0.08,
+      DashboardStatus.warning => 0.28,
+      DashboardStatus.threat => 0.38,
+      DashboardStatus.danger => 0.48,
+    };
 
     return IgnorePointer(
       child: AnimatedContainer(
-        duration: const Duration(milliseconds: 400),
+        duration: const Duration(milliseconds: 500),
+        curve: Curves.easeInOut,
         decoration: BoxDecoration(
           gradient: LinearGradient(
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
-            colors: [
-              const Color(0xFF04070B),
-              Color.lerp(const Color(0xFF071015), base, .25)!,
-              Color.lerp(const Color(0xFF050A0F), base, .16)!,
-              const Color(0xFF030508),
-            ],
+            colors: gradientColors,
             stops: const [0.0, 0.35, 0.75, 1.0],
           ),
         ),
@@ -375,15 +414,17 @@ class _BackdropState extends State<_Backdrop> with SingleTickerProviderStateMixi
                   painter: _SplashParticlesPainter(
                     particles: _particles,
                     elapsedSeconds: elapsedSeconds,
-                    color: const Color(0xFF55E2C0),
+                    color: accent.withOpacity(0.65),
                   ),
                 );
               },
             ),
 
-            Positioned(left: -190, top: -220, child: _GlowOrb(size: 540, color: accent.withOpacity(.08))),
-            Positioned(right: -210, top: 50, child: _GlowOrb(size: 470, color: base.withOpacity(.07))),
-            Positioned(left: 240, bottom: -280, child: _GlowOrb(size: 580, color: accent.withOpacity(.04))),
+            Positioned(left: -190, top: -220, child: _GlowOrb(size: 640, color: accent.withOpacity(orbIntensity * 1.1))),
+            Positioned(right: -210, top: 50, child: _GlowOrb(size: 580, color: base.withOpacity(orbIntensity * 1.3))),
+            Positioned(left: 240, bottom: -280, child: _GlowOrb(size: 680, color: accent.withOpacity(orbIntensity * 0.9))),
+            if (isAlert)
+              Positioned(right: 280, bottom: -180, child: _GlowOrb(size: 560, color: accent.withOpacity(orbIntensity * 1.2))),
           ],
         ),
       ),
@@ -432,15 +473,23 @@ class _TacticalGridPainter extends CustomPainter {
       final borderGlow = Paint()
         ..shader = RadialGradient(
           center: Alignment.center,
-          radius: 1.15,
+          radius: 1.0,
           colors: [
             Colors.transparent,
-            accent.withOpacity(0.03 + pulse * 0.08),
+            accent.withOpacity(0.04),
+            accent.withOpacity(0.18 + pulse * 0.16),
           ],
-          stops: const [0.72, 1.0],
+          stops: const [0.55, 0.82, 1.0],
         ).createShader(Rect.fromLTWH(0, 0, size.width, size.height));
 
       canvas.drawRect(Rect.fromLTWH(0, 0, size.width, size.height), borderGlow);
+
+      // High-contrast pulsing emergency border stroke around viewport
+      final borderStroke = Paint()
+        ..color = accent.withOpacity(0.35 + pulse * 0.35)
+        ..strokeWidth = 2.5
+        ..style = PaintingStyle.stroke;
+      canvas.drawRect(Rect.fromLTWH(1, 1, size.width - 2, size.height - 2), borderStroke);
     }
   }
 
@@ -498,8 +547,8 @@ class _Glass extends StatelessWidget {
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
           colors: [
-            tint?.withOpacity(0.92) ?? const Color(0xEE0E141B),
-            tint ?? const Color(0xEE090D13),
+            tint?.withOpacity(0.85) ?? const Color(0xD60E141B),
+            tint ?? const Color(0xD6090D13),
           ],
         ),
         border: border ??
@@ -543,15 +592,15 @@ extension DashboardStatusX on DashboardStatus {
       };
   Color get baseColor => switch (this) {
         DashboardStatus.safe => const Color(0xFF06352A),
-        DashboardStatus.warning => const Color(0xFF463800),
-        DashboardStatus.threat => const Color(0xFF4A2109),
-        DashboardStatus.danger => const Color(0xFF42101F)
+        DashboardStatus.warning => const Color(0xFF5A3C03),
+        DashboardStatus.threat => const Color(0xFF702504),
+        DashboardStatus.danger => const Color(0xFF730A1F)
       };
   Color get accent => switch (this) {
-        DashboardStatus.safe => const Color(0xFF109C6D),
-        DashboardStatus.warning => const Color(0xFFB48E15),
-        DashboardStatus.threat => const Color(0xFFC95A17),
-        DashboardStatus.danger => const Color(0xFFA52A4B)
+        DashboardStatus.safe => const Color(0xFF10B981),
+        DashboardStatus.warning => const Color(0xFFFFB800),
+        DashboardStatus.threat => const Color(0xFFFF6A1A),
+        DashboardStatus.danger => const Color(0xFFFF2E56)
       };
   IconData get icon => switch (this) {
         DashboardStatus.safe => Icons.verified_rounded,
@@ -579,7 +628,7 @@ class DeviceStatus {
     required this.state,
     required this.network,
     required this.lastSeen,
-    this.cpuMhz = 80,
+    this.cpuMhz = 160,
     this.rssi = -62,
     this.estRuntime = '6h 30m',
   });
@@ -598,7 +647,7 @@ class DeviceStatus {
       state: json['state'] ?? 'STANDBY',
       network: json['network'] ?? 'Campus Wi-Fi',
       lastSeen: json['lastSeen'] ?? 'Just now',
-      cpuMhz: json['cpuMhz'] ?? 80,
+      cpuMhz: json['cpuMhz'] ?? 160,
       rssi: json['rssi'] ?? -62,
       estRuntime: json['estRuntime'] ?? runtime,
     );
@@ -662,6 +711,8 @@ class Incident {
   final String audioDuration;
   final String? audioUrl;
   final String? audioFile;
+  final String? snapshotUrl;
+  final String? snapshotFile;
 
   const Incident({
     required this.id,
@@ -676,7 +727,43 @@ class Incident {
     this.audioDuration = '00:08',
     this.audioUrl,
     this.audioFile,
+    this.snapshotUrl,
+    this.snapshotFile,
   });
+
+  Incident copyWith({
+    String? id,
+    String? deviceId,
+    String? time,
+    IncidentLevel? level,
+    double? score,
+    String? category,
+    String? transcript,
+    bool? audio,
+    bool? video,
+    String? audioDuration,
+    String? audioUrl,
+    String? audioFile,
+    String? snapshotUrl,
+    String? snapshotFile,
+  }) {
+    return Incident(
+      id: id ?? this.id,
+      deviceId: deviceId ?? this.deviceId,
+      time: time ?? this.time,
+      level: level ?? this.level,
+      score: score ?? this.score,
+      category: category ?? this.category,
+      transcript: transcript ?? this.transcript,
+      audio: audio ?? this.audio,
+      video: video ?? this.video,
+      audioDuration: audioDuration ?? this.audioDuration,
+      audioUrl: audioUrl ?? this.audioUrl,
+      audioFile: audioFile ?? this.audioFile,
+      snapshotUrl: snapshotUrl ?? this.snapshotUrl,
+      snapshotFile: snapshotFile ?? this.snapshotFile,
+    );
+  }
 
   factory Incident.fromJson(Map<String, dynamic> json) {
     double parsedScore = (json['score'] as num).toDouble();
@@ -706,6 +793,8 @@ class Incident {
       audioDuration: json['duration'] ?? '00:08',
       audioUrl: json['audio_url'] ?? 'http://127.0.0.1:8080/recordings/audio/$evtId.wav',
       audioFile: json['audio_file'] ?? '$evtId.wav',
+      snapshotUrl: json['snapshot_url'] as String?,
+      snapshotFile: json['snapshot_file'] as String?,
     );
   }
 
@@ -742,8 +831,68 @@ class _DashboardShellState extends State<DashboardShell> with WindowListener {
 
   WebSocketChannel? _uiChannel;
   bool isServerConnected = false;
+  bool harmfulWordsOnly = false;
+  String? cloudTunnelUrl = 'https://rings-diploma-evaluated-mls.trycloudflare.com';
+  String primaryIp = '10.28.20.30';
   Timer? _reconnectTimer;
   Timer? _pingTimer;
+  Timer? _statusAlertTimer;
+  Timer? _tunnelRefreshTimer;
+
+  Future<void> fetchNetworkAndTunnelInfo() async {
+    try {
+      final client = HttpClient()..connectionTimeout = const Duration(seconds: 2);
+      final req = await client.getUrl(Uri.parse('http://127.0.0.1:8080/api/cloud-tunnel'));
+      final res = await req.close();
+      if (res.statusCode == 200) {
+        final body = await res.transform(utf8.decoder).join();
+        final json = jsonDecode(body);
+        if (json['cloud_tunnel_url'] != null) {
+          final t = (json['cloud_tunnel_url'] as String).trim();
+          if (t.isNotEmpty && mounted) {
+            setState(() => cloudTunnelUrl = t);
+          }
+        }
+      }
+    } catch (_) {}
+
+    try {
+      final client = HttpClient()..connectionTimeout = const Duration(seconds: 2);
+      final req = await client.getUrl(Uri.parse('http://127.0.0.1:8080/api/network-info'));
+      final res = await req.close();
+      if (res.statusCode == 200) {
+        final body = await res.transform(utf8.decoder).join();
+        final json = jsonDecode(body);
+        if (json['server_ip'] != null && mounted) {
+          setState(() => primaryIp = json['server_ip'] as String);
+        }
+      }
+    } catch (_) {}
+  }
+
+  void _openCloudTunnelDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) => _CloudflareTunnelDialog(
+        initialTunnelUrl: cloudTunnelUrl ?? 'https://rings-diploma-evaluated-mls.trycloudflare.com',
+        primaryIp: primaryIp,
+        onTunnelUpdated: (newUrl) {
+          if (mounted) setState(() => cloudTunnelUrl = newUrl);
+        },
+      ),
+    );
+  }
+
+  void toggleHarmfulWordsOnly() {
+    final next = !harmfulWordsOnly;
+    setState(() => harmfulWordsOnly = next);
+    if (_uiChannel != null && isServerConnected) {
+      _uiChannel!.sink.add(jsonEncode({
+        'event_type': 'set_harmful_only',
+        'enabled': next,
+      }));
+    }
+  }
 
   bool _showSplashScreen = true;
   double _splashOpacity = 1.0;
@@ -772,6 +921,11 @@ class _DashboardShellState extends State<DashboardShell> with WindowListener {
       if (mounted) setState(() => now = DateTime.now());
     });
 
+    fetchNetworkAndTunnelInfo();
+    _tunnelRefreshTimer = Timer.periodic(const Duration(seconds: 20), (_) {
+      if (isServerConnected) fetchNetworkAndTunnelInfo();
+    });
+
     _initServerAndConnect();
   }
 
@@ -779,7 +933,11 @@ class _DashboardShellState extends State<DashboardShell> with WindowListener {
     await ServerManager.startServerIfNeeded(onStatusChanged: () {
       if (mounted) setState(() {});
     });
-    _connectToServer();
+    if (await ServerManager.isAlive()) {
+      _connectToServer();
+    } else {
+      _handleDisconnect();
+    }
   }
 
   void _connectToServer() {
@@ -836,21 +994,94 @@ class _DashboardShellState extends State<DashboardShell> with WindowListener {
               });
             } else if (eventType == 'incident') {
               final newIncident = Incident.fromJson(data);
+              // Deduplicate: ignore if exact same ID or identical transcript arrived from device in same time slot
+              final isDuplicate = liveIncidents.any((inc) =>
+                inc.id == newIncident.id ||
+                (inc.deviceId == newIncident.deviceId &&
+                 inc.transcript.trim().isNotEmpty &&
+                 inc.transcript.trim() == newIncident.transcript.trim() &&
+                 inc.time == newIncident.time)
+              );
+              if (isDuplicate) return;
+
               setState(() {
                 liveIncidents = [newIncident, ...liveIncidents];
 
                 if (newIncident.level == IncidentLevel.danger) {
                   currentStatus = DashboardStatus.danger;
+                  _statusAlertTimer?.cancel();
+                  _statusAlertTimer = Timer(const Duration(seconds: 35), () {
+                    if (mounted) setState(() => currentStatus = DashboardStatus.safe);
+                  });
                   // Dispatch DANGER trigger to tell the ESP32 pin to capture an evidence snapshot
                   _uiChannel?.sink.add('TRIGGER:DANGER');
                 } else if (newIncident.level == IncidentLevel.threat) {
                   currentStatus = DashboardStatus.threat;
+                  _statusAlertTimer?.cancel();
+                  _statusAlertTimer = Timer(const Duration(seconds: 25), () {
+                    if (mounted) setState(() => currentStatus = DashboardStatus.safe);
+                  });
                 } else if (newIncident.level == IncidentLevel.warning) {
-                  currentStatus = DashboardStatus.warning;
+                  if (currentStatus != DashboardStatus.danger && currentStatus != DashboardStatus.threat) {
+                    currentStatus = DashboardStatus.warning;
+                    _statusAlertTimer?.cancel();
+                    _statusAlertTimer = Timer(const Duration(seconds: 15), () {
+                      if (mounted) setState(() => currentStatus = DashboardStatus.safe);
+                    });
+                  }
                 } else if (newIncident.level == IncidentLevel.normal) {
-                  currentStatus = DashboardStatus.safe;
+                  if (_statusAlertTimer == null || !_statusAlertTimer!.isActive) {
+                    currentStatus = DashboardStatus.safe;
+                  }
                 }
               });
+            } else if (eventType == 'snapshot_ready') {
+              final targetIncidentId = data['incident_id'] as String?;
+              final rawSnapshotUrl = data['snapshot_url'] as String?;
+              final localUrl = data['local_url'] as String?;
+              final devId = data['device_id'] as String?;
+              final snapFile = data['snapshot_file'] as String?;
+
+              // On desktop dashboard, prefer local direct connection or disk
+              final snapshotUrl = (Platform.isWindows || Platform.isLinux || Platform.isMacOS)
+                  ? (localUrl ?? rawSnapshotUrl ?? (snapFile != null ? 'http://127.0.0.1:8080/recordings/snapshots/$snapFile' : null))
+                  : (rawSnapshotUrl ?? localUrl);
+
+              debugPrint('[WS-UI] snapshot_ready received: incId=$targetIncidentId dev=$devId url=$snapshotUrl file=$snapFile');
+              if (mounted) {
+                setState(() {
+                  // 1. Try to match exact incident ID
+                  int idx = -1;
+                  if (targetIncidentId != null && targetIncidentId.isNotEmpty) {
+                    idx = liveIncidents.indexWhere((inc) => inc.id.trim() == targetIncidentId.trim());
+                  }
+                  // 2. Fallback: match latest incident for device needing snapshot
+                  if (idx < 0 && devId != null) {
+                    idx = liveIncidents.indexWhere((inc) =>
+                      inc.deviceId.trim().toUpperCase() == devId.trim().toUpperCase() &&
+                      (inc.snapshotUrl == null || inc.snapshotUrl!.isEmpty)
+                    );
+                  }
+                  // 3. Fallback: match latest danger incident
+                  if (idx < 0) {
+                    idx = liveIncidents.indexWhere((inc) =>
+                      inc.level == IncidentLevel.danger && (inc.snapshotUrl == null || inc.snapshotUrl!.isEmpty)
+                    );
+                  }
+
+                  if (idx >= 0) {
+                    debugPrint('[WS-UI] Linking snapshot to incident ${liveIncidents[idx].id}');
+                    liveIncidents[idx] = liveIncidents[idx].copyWith(
+                      snapshotUrl: snapshotUrl,
+                      snapshotFile: snapFile,
+                      video: true,
+                    );
+                    liveIncidents = List.from(liveIncidents);
+                  } else {
+                    debugPrint('[WS-UI] Could not match incident for snapshot. Active: ${liveIncidents.length}');
+                  }
+                });
+              }
             } else if (eventType == 'checkpoints_updated') {
               final raw = data['checkpoints'] as List? ?? [];
               setState(() {
@@ -866,6 +1097,28 @@ class _DashboardShellState extends State<DashboardShell> with WindowListener {
                     duration: const Duration(seconds: 4),
                   ),
                 );
+              }
+            } else if (eventType == 'harmful_only_update') {
+              final enabled = data['enabled'] == true;
+              if (mounted) {
+                setState(() => harmfulWordsOnly = enabled);
+              }
+            } else if (eventType == 'server_status') {
+              if (data.containsKey('harmful_words_only') && mounted) {
+                setState(() => harmfulWordsOnly = data['harmful_words_only'] == true);
+              }
+              if (data['cloud_tunnel_url'] != null && mounted) {
+                final t = (data['cloud_tunnel_url'] as String).trim();
+                if (t.isNotEmpty) {
+                  setState(() => cloudTunnelUrl = t);
+                }
+              }
+            } else if (eventType == 'cloud_tunnel_update') {
+              if (data['cloud_tunnel_url'] != null && mounted) {
+                final t = (data['cloud_tunnel_url'] as String).trim();
+                if (t.isNotEmpty) {
+                  setState(() => cloudTunnelUrl = t);
+                }
               }
             }
           } catch (e) {
@@ -890,14 +1143,18 @@ class _DashboardShellState extends State<DashboardShell> with WindowListener {
     setState(() => isServerConnected = false);
     _reconnectTimer?.cancel();
     _reconnectTimer = Timer(const Duration(seconds: 4), () async {
-      if (!isServerConnected && !ServerManager.isStarting) {
+      if (!isServerConnected) {
         if (!await ServerManager.isAlive()) {
-          ServerManager.startServerIfNeeded(onStatusChanged: () {
+          await ServerManager.startServerIfNeeded(onStatusChanged: () {
             if (mounted) setState(() {});
           });
         }
+        if (await ServerManager.isAlive()) {
+          _connectToServer();
+        } else {
+          _handleDisconnect();
+        }
       }
-      _connectToServer();
     });
   }
 
@@ -1171,6 +1428,8 @@ class _DashboardShellState extends State<DashboardShell> with WindowListener {
     _uiChannel?.sink.close();
     _pingTimer?.cancel();
     _reconnectTimer?.cancel();
+    _statusAlertTimer?.cancel();
+    _tunnelRefreshTimer?.cancel();
     ServerManager.stopServer();
     super.dispose();
   }
@@ -1201,6 +1460,7 @@ class _DashboardShellState extends State<DashboardShell> with WindowListener {
     _uiChannel?.sink.close();
     if (mounted) setState(() => isServerConnected = false);
     _connectToServer();
+    fetchNetworkAndTunnelInfo();
     await Future<void>.delayed(const Duration(milliseconds: 350));
     if (mounted) setState(() => refreshing = false);
   }
@@ -1228,6 +1488,8 @@ class _DashboardShellState extends State<DashboardShell> with WindowListener {
                     _Sidebar(
                       tab: tab,
                       isServerConnected: isServerConnected,
+                      cloudTunnelUrl: cloudTunnelUrl,
+                      onOpenTunnelDialog: _openCloudTunnelDialog,
                       onTabChanged: (value) => setState(() => tab = value),
                     ),
                     Expanded(
@@ -1248,6 +1510,11 @@ class _DashboardShellState extends State<DashboardShell> with WindowListener {
                               },
                               onOpenPinSetup: _openPinSetupDialog,
                               hasOnlinePin: liveDevices.any((d) => d.online),
+                              harmfulWordsOnly: harmfulWordsOnly,
+                              onToggleHarmfulWordsOnly: toggleHarmfulWordsOnly,
+                              cloudTunnelUrl: cloudTunnelUrl,
+                              primaryIp: primaryIp,
+                              onOpenCloudTunnel: _openCloudTunnelDialog,
                             ),
                             const SizedBox(height: 14),
                             Expanded(
@@ -1325,6 +1592,8 @@ class _DashboardShellState extends State<DashboardShell> with WindowListener {
           wifiBatchMs: wifiBatchMs,
           devices: liveDevices,
           checkpoints: checkpoints,
+          cloudTunnelUrl: cloudTunnelUrl,
+          onOpenTunnelDialog: _openCloudTunnelDialog,
           onBufferChanged: (v) => setState(() => bufferDurationSeconds = v),
           onSilenceChanged: (v) => setState(() => silenceTimeoutSeconds = v),
           onVadStreakChanged: (v) => setState(() => vadStreakThreshold = v),
@@ -1338,6 +1607,38 @@ class _DashboardShellState extends State<DashboardShell> with WindowListener {
           onDeployCheckpoint: _deployCheckpoint,
         );
     }
+  }
+}
+
+class SecureLinkLogo extends StatelessWidget {
+  final double size;
+  final BoxFit fit;
+
+  const SecureLinkLogo({
+    super.key,
+    this.size = 24,
+    this.fit = BoxFit.contain,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Image.asset(
+      'Securelinklogo.png',
+      width: size,
+      height: size,
+      fit: fit,
+      errorBuilder: (context, error, stackTrace) {
+        final fallback1 = File('assets/Securelinklogo.png');
+        if (fallback1.existsSync()) {
+          return Image.file(fallback1, width: size, height: size, fit: fit);
+        }
+        final fallback2 = File('Securelinklogo.png');
+        if (fallback2.existsSync()) {
+          return Image.file(fallback2, width: size, height: size, fit: fit);
+        }
+        return Icon(Icons.shield_rounded, size: size, color: Colors.white);
+      },
+    );
   }
 }
 
@@ -1356,7 +1657,9 @@ class _DesktopTitleBar extends StatelessWidget {
       height: 40,
       child: Row(
         children: [
-          const SizedBox(width: 16),
+          const SizedBox(width: 14),
+          const SecureLinkLogo(size: 18),
+          const SizedBox(width: 8),
           Expanded(
             child: GestureDetector(
               behavior: HitTestBehavior.translucent,
@@ -1366,7 +1669,7 @@ class _DesktopTitleBar extends StatelessWidget {
                 alignment: Alignment.centerLeft,
                 child: Text(
                   'SECURELINK',
-                  style: TextStyle(fontSize: 11, color: Colors.white.withOpacity(.48), fontWeight: FontWeight.w700, letterSpacing: 1.5),
+                  style: TextStyle(fontSize: 11, color: Colors.white.withOpacity(.55), fontWeight: FontWeight.w700, letterSpacing: 1.5),
                 ),
               ),
             ),
@@ -1418,9 +1721,17 @@ class _WindowButtonState extends State<_WindowButton> {
 class _Sidebar extends StatelessWidget {
   final AppTab tab;
   final bool isServerConnected;
+  final String? cloudTunnelUrl;
+  final VoidCallback? onOpenTunnelDialog;
   final ValueChanged<AppTab> onTabChanged;
 
-  const _Sidebar({required this.tab, required this.isServerConnected, required this.onTabChanged});
+  const _Sidebar({
+    required this.tab,
+    required this.isServerConnected,
+    this.cloudTunnelUrl,
+    this.onOpenTunnelDialog,
+    required this.onTabChanged,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1447,7 +1758,11 @@ class _Sidebar extends StatelessWidget {
           const _SideLabel('SYSTEM'),
           _SideItem(icon: Icons.tune_rounded, label: 'Configuration', active: tab == AppTab.configuration, onTap: () => onTabChanged(AppTab.configuration)),
           const Spacer(),
-          _ServerCard(isServerConnected: isServerConnected),
+          _ServerCard(
+            isServerConnected: isServerConnected,
+            cloudTunnelUrl: cloudTunnelUrl,
+            onOpenTunnelDialog: onOpenTunnelDialog,
+          ),
         ],
       ),
     );
@@ -1460,13 +1775,26 @@ class _LogoBrand extends StatelessWidget {
     return Row(
       children: [
         Container(
-          width: 36,
-          height: 36,
+          width: 38,
+          height: 38,
+          padding: const EdgeInsets.all(4),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(11),
-            gradient: const LinearGradient(colors: [Color(0xFF8D77FF), Color(0xFF4FE2C0)]),
+            gradient: const LinearGradient(
+              colors: [Color(0xFF0C2B22), Color(0xFF135540)],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            border: Border.all(color: const Color(0xFF55E2C0).withOpacity(0.35), width: 1.2),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFF109C6D).withOpacity(0.35),
+                blurRadius: 10,
+                spreadRadius: 1,
+              ),
+            ],
           ),
-          child: const Icon(Icons.shield_rounded, size: 20, color: Colors.white),
+          child: const SecureLinkLogo(size: 28),
         ),
         const SizedBox(width: 10),
         const Expanded(
@@ -1543,7 +1871,14 @@ class _SideItem extends StatelessWidget {
 
 class _ServerCard extends StatelessWidget {
   final bool isServerConnected;
-  const _ServerCard({required this.isServerConnected});
+  final String? cloudTunnelUrl;
+  final VoidCallback? onOpenTunnelDialog;
+
+  const _ServerCard({
+    required this.isServerConnected,
+    this.cloudTunnelUrl,
+    this.onOpenTunnelDialog,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1555,6 +1890,11 @@ class _ServerCard extends StatelessWidget {
         ? const Color(0xFF57DDA0)
         : (isStarting ? const Color(0xFF9B88FF) : const Color(0xFFFFC857));
 
+    final hasTunnel = cloudTunnelUrl != null && cloudTunnelUrl!.isNotEmpty;
+    final tunnelShort = hasTunnel
+        ? cloudTunnelUrl!.replaceFirst('https://', '').replaceFirst('http://', '')
+        : 'rings-diploma-evaluated-mls.trycloudflare.com';
+
     return Container(
       padding: const EdgeInsets.all(11),
       decoration: BoxDecoration(
@@ -1562,29 +1902,80 @@ class _ServerCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(15),
         border: Border.all(color: Colors.white.withOpacity(.05)),
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
         children: [
-          _StatusDot(
-            active: isServerConnected,
-            activeColor: const Color(0xFF57DDA0),
-            inactiveColor: isStarting ? const Color(0xFF9B88FF) : const Color(0xFFFFC857),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text('AI CHECKPOINT', style: TextStyle(fontSize: 9.5, fontWeight: FontWeight.w600)),
-                const SizedBox(height: 2),
-                Text(
-                  statusText,
-                  style: TextStyle(
-                    fontSize: 9,
-                    color: statusColor,
-                    fontWeight: isStarting ? FontWeight.w600 : FontWeight.w400,
-                  ),
+          Row(
+            children: [
+              _StatusDot(
+                active: isServerConnected,
+                activeColor: const Color(0xFF57DDA0),
+                inactiveColor: isStarting ? const Color(0xFF9B88FF) : const Color(0xFFFFC857),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('AI CHECKPOINT', style: TextStyle(fontSize: 9.5, fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 2),
+                    Text(
+                      statusText,
+                      style: TextStyle(
+                        fontSize: 9,
+                        color: statusColor,
+                        fontWeight: isStarting ? FontWeight.w600 : FontWeight.w400,
+                      ),
+                    ),
+                  ],
                 ),
-              ],
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          InkWell(
+            onTap: onOpenTunnelDialog,
+            borderRadius: BorderRadius.circular(8),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 5),
+              decoration: BoxDecoration(
+                color: const Color(0xFF109C6D).withOpacity(0.12),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: const Color(0xFF55E2C0).withOpacity(0.2)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.cloud_done_rounded, size: 12, color: Color(0xFF55E2C0)),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'CLOUDFLARE TUNNEL',
+                          style: TextStyle(
+                            fontSize: 7.5,
+                            fontWeight: FontWeight.w700,
+                            color: Color(0xFF55E2C0),
+                            letterSpacing: 0.5,
+                          ),
+                        ),
+                        Text(
+                          tunnelShort,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 8.5,
+                            color: Colors.white70,
+                            fontFamily: 'monospace',
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Icon(Icons.chevron_right_rounded, size: 14, color: Colors.white.withOpacity(0.4)),
+                ],
+              ),
             ),
           ),
         ],
@@ -1693,6 +2084,11 @@ class _Header extends StatelessWidget {
   final ValueChanged<DashboardStatus> onStatusChanged;
   final VoidCallback onOpenPinSetup;
   final bool hasOnlinePin;
+  final bool harmfulWordsOnly;
+  final VoidCallback onToggleHarmfulWordsOnly;
+  final String? cloudTunnelUrl;
+  final String primaryIp;
+  final VoidCallback? onOpenCloudTunnel;
 
   const _Header({
     required this.tab,
@@ -1704,6 +2100,11 @@ class _Header extends StatelessWidget {
     required this.onStatusChanged,
     required this.onOpenPinSetup,
     required this.hasOnlinePin,
+    required this.harmfulWordsOnly,
+    required this.onToggleHarmfulWordsOnly,
+    this.cloudTunnelUrl,
+    this.primaryIp = '10.28.20.30',
+    this.onOpenCloudTunnel,
   });
 
   String get title => switch (tab) {
@@ -1717,7 +2118,7 @@ class _Header extends StatelessWidget {
   String get subtitle => switch (tab) {
         AppTab.overview => 'Live system status, acoustic telemetry & incident queue',
         AppTab.incidents => 'Review speech transcripts, audio playback & camera snapshots',
-        AppTab.devices => 'Monitor XIAO ESP32S3 wearable pins (80MHz Eco Mode & 200mAh LiPo)',
+        AppTab.devices => 'Monitor XIAO ESP32S3 wearable pins (160MHz Standard & 200mAh LiPo)',
         AppTab.analytics => 'Tagalog RoBERTa threat distribution & research metrics',
         AppTab.configuration => 'Configure pre-trigger buffer duration, silence timeouts & camera policies',
       };
@@ -1753,6 +2154,11 @@ class _Header extends StatelessWidget {
         const SizedBox(width: 8),
         _HeaderStatusPicker(status: status, onChanged: onStatusChanged),
         const SizedBox(width: 8),
+        _HarmfulWordsToggleButton(
+          active: harmfulWordsOnly,
+          onToggle: onToggleHarmfulWordsOnly,
+        ),
+        const SizedBox(width: 8),
         _PairPinHeaderButton(
           hasPins: hasOnlinePin,
           onTap: onOpenPinSetup,
@@ -1767,13 +2173,730 @@ class _Header extends StatelessWidget {
             Text(isServerConnected ? 'SERVER ONLINE' : 'CHECKPOINT OFFLINE', style: const TextStyle(fontSize: 8.5, fontWeight: FontWeight.w700, letterSpacing: .6)),
           ]),
         ),
+        const SizedBox(width: 8),
+        _CloudflareTunnelHeaderButton(
+          tunnelUrl: cloudTunnelUrl,
+          onTap: () {
+            if (onOpenCloudTunnel != null) {
+              onOpenCloudTunnel!();
+            } else {
+              _showCentralSystemSyncDialog(context);
+            }
+          },
+        ),
         const SizedBox(width: 6),
+        IconButton(
+          tooltip: 'Preview Mobile Companion (Phone Edition)',
+          onPressed: () {
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (ctx) => Scaffold(
+                  backgroundColor: const Color(0xFF090C14),
+                  body: Stack(
+                    children: [
+                      const Center(
+                        child: SizedBox(
+                          width: 440,
+                          child: SecureLinkMobileApp(),
+                        ),
+                      ),
+                      Positioned(
+                        top: 16,
+                        right: 16,
+                        child: Material(
+                          color: Colors.transparent,
+                          child: InkWell(
+                            borderRadius: BorderRadius.circular(30),
+                            onTap: () => Navigator.of(ctx).pop(),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                              decoration: BoxDecoration(
+                                color: Colors.black.withOpacity(0.7),
+                                borderRadius: BorderRadius.circular(30),
+                                border: Border.all(color: Colors.white24),
+                              ),
+                              child: const Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.close_rounded, color: Colors.white, size: 16),
+                                  SizedBox(width: 6),
+                                  Text('Exit Phone View', style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w700)),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+          icon: const Icon(Icons.phone_android_rounded, size: 19, color: Color(0xFF55E2C0)),
+        ),
+        const SizedBox(width: 4),
+        IconButton(
+          tooltip: 'Central System Mobile Sync Gateway (Priority 1)',
+          onPressed: () => _showCentralSystemSyncDialog(context),
+          icon: const Icon(Icons.hub_rounded, size: 19, color: Color(0xFF109C6D)),
+        ),
         IconButton(
           tooltip: 'Reconnect / Refresh',
           onPressed: refreshing ? null : onRefresh,
           icon: AnimatedSwitcher(
             duration: const Duration(milliseconds: 180),
             child: refreshing ? const SizedBox(key: ValueKey('loader'), width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.refresh_rounded, key: ValueKey('refresh'), size: 19),
+          ),
+        ),
+      ],
+    );
+  }
+
+  void _showCentralSystemSyncDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF0A0F14),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(22),
+          side: const BorderSide(color: Color(0x33109C6D)),
+        ),
+        title: Row(
+          children: [
+            Container(
+              width: 38,
+              height: 38,
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  colors: [Color(0xFF109C6D), Color(0xFF55E2C0)],
+                ),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: const Icon(Icons.hub_rounded, color: Colors.white, size: 20),
+            ),
+            const SizedBox(width: 12),
+            const Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Central System Gateway',
+                    style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w800),
+                  ),
+                  Text(
+                    'Primary Life-Safety & AI Hub (Priority 1)',
+                    style: TextStyle(color: Color(0xFF55E2C0), fontSize: 10.5, fontWeight: FontWeight.w600),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        content: SizedBox(
+          width: 460,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.035),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: Colors.white.withOpacity(0.08)),
+                ),
+                child: const Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Connection Hierarchy Architecture',
+                      style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w700),
+                    ),
+                    SizedBox(height: 6),
+                    Text(
+                      '• Priority 1 (Primary): Central System (This Laptop)\n  Pins stream raw 16kHz audio here for Faster-Whisper STT & TagalogBERT classification.\n\n• Priority 2 (Secondary): Mobile Companion (Teacher/Student)\n  Central System verifies incidents and pushes real-time safety alerts and battery telemetry to the paired phone.',
+                      style: TextStyle(color: Colors.white70, fontSize: 10.5, height: 1.4),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+
+              // Local Wi-Fi Station IP
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF123524).withOpacity(0.4),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: const Color(0xFF109C6D).withOpacity(0.4)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.wifi_rounded, color: Color(0xFF55E2C0), size: 22),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text('Local Wi-Fi Station IP', style: TextStyle(color: Colors.white60, fontSize: 10)),
+                          Text('$primaryIp:8080', style: const TextStyle(color: Colors.white, fontSize: 13.5, fontWeight: FontWeight.w800, fontFamily: 'monospace')),
+                          const Text('UDP Auto-Discovery Beacon: Port 8888 Active', style: TextStyle(color: Color(0xFF55E2C0), fontSize: 9.5)),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: 'Copy Local IP:Port',
+                      icon: const Icon(Icons.copy_rounded, size: 16, color: Colors.white70),
+                      onPressed: () {
+                        Clipboard.setData(ClipboardData(text: '$primaryIp:8080'));
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Copied Local IP:Port to clipboard!'), duration: Duration(seconds: 1)),
+                        );
+                      },
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 10),
+
+              // Cloudflare Global Tunnel Card
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    colors: [Color(0xFF0F3B2E), Color(0xFF07211A)],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: const Color(0xFF55E2C0).withOpacity(0.45)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.cloud_done_rounded, color: Color(0xFF55E2C0), size: 22),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text('Cloudflare Global Tunnel (Cellular / Outside)', style: TextStyle(color: Color(0xFF55E2C0), fontSize: 10, fontWeight: FontWeight.w700)),
+                          SelectableText(
+                            cloudTunnelUrl ?? 'https://rings-diploma-evaluated-mls.trycloudflare.com',
+                            style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w800, fontFamily: 'monospace'),
+                          ),
+                          const Text('Bypasses Campus AP Isolation over TLS/WSS Port 443', style: TextStyle(color: Colors.white70, fontSize: 9)),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: 'Copy Cloudflare Tunnel URL',
+                      icon: const Icon(Icons.copy_rounded, size: 16, color: Color(0xFF55E2C0)),
+                      onPressed: () {
+                        final u = cloudTunnelUrl ?? 'https://rings-diploma-evaluated-mls.trycloudflare.com';
+                        Clipboard.setData(ClipboardData(text: u));
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Copied Cloudflare Tunnel URL!'), duration: Duration(seconds: 1)),
+                        );
+                      },
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 14),
+
+              const Text(
+                'How to Sync with Mobile Companion:',
+                style: TextStyle(color: Colors.white, fontSize: 11.5, fontWeight: FontWeight.w700),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                '1. Open SecureLink Companion on teacher or student phone.\n2. Tap the Cloudflare/Hub icon in the app bar.\n3. The app will auto-fill "$primaryIp:8080" for campus Wi-Fi, or switch to Global Tunnel for cellular 4G/5G data.',
+                style: const TextStyle(color: Colors.white70, fontSize: 10.5, height: 1.4),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Close', style: TextStyle(color: Colors.white70)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CloudflareTunnelHeaderButton extends StatelessWidget {
+  final String? tunnelUrl;
+  final VoidCallback onTap;
+
+  const _CloudflareTunnelHeaderButton({super.key, required this.tunnelUrl, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final hasTunnel = tunnelUrl != null && tunnelUrl!.isNotEmpty;
+    final displayUrl = hasTunnel
+        ? tunnelUrl!.replaceFirst('https://', '').replaceFirst('http://', '')
+        : 'rings-diploma-evaluated-mls.trycloudflare.com';
+
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              colors: [Color(0xFF0F3B2E), Color(0xFF07211A)],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            borderRadius: BorderRadius.circular(11),
+            border: Border.all(
+              color: hasTunnel
+                  ? const Color(0xFF55E2C0).withOpacity(0.4)
+                  : Colors.white.withOpacity(0.12),
+            ),
+            boxShadow: hasTunnel
+                ? [
+                    BoxShadow(
+                      color: const Color(0xFF109C6D).withOpacity(0.25),
+                      blurRadius: 8,
+                      spreadRadius: 1,
+                    )
+                  ]
+                : null,
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                hasTunnel ? Icons.cloud_done_rounded : Icons.cloud_sync_rounded,
+                size: 14,
+                color: hasTunnel ? const Color(0xFF55E2C0) : Colors.white60,
+              ),
+              const SizedBox(width: 6),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        'CLOUDFLARE TUNNEL',
+                        style: TextStyle(
+                          fontSize: 7.5,
+                          fontWeight: FontWeight.w800,
+                          color: const Color(0xFF55E2C0).withOpacity(0.9),
+                          letterSpacing: 0.8,
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      Container(
+                        width: 5,
+                        height: 5,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: hasTunnel ? const Color(0xFF55E2C0) : const Color(0xFFFFB800),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 1),
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 160),
+                    child: Text(
+                      displayUrl,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 9,
+                        color: Colors.white,
+                        fontWeight: FontWeight.w600,
+                        fontFamily: 'monospace',
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(width: 4),
+              Icon(Icons.open_in_new_rounded, size: 11, color: Colors.white.withOpacity(0.5)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CloudflareTunnelDialog extends StatefulWidget {
+  final String initialTunnelUrl;
+  final String primaryIp;
+  final ValueChanged<String> onTunnelUpdated;
+
+  const _CloudflareTunnelDialog({
+    super.key,
+    required this.initialTunnelUrl,
+    required this.primaryIp,
+    required this.onTunnelUpdated,
+  });
+
+  @override
+  State<_CloudflareTunnelDialog> createState() => _CloudflareTunnelDialogState();
+}
+
+class _CloudflareTunnelDialogState extends State<_CloudflareTunnelDialog> {
+  late TextEditingController _urlCtrl;
+  bool _isSaving = false;
+  bool _isRefreshing = false;
+  String _statusMsg = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _urlCtrl = TextEditingController(text: widget.initialTunnelUrl);
+  }
+
+  @override
+  void dispose() {
+    _urlCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _refreshFromServer() async {
+    setState(() => _isRefreshing = true);
+    try {
+      final client = HttpClient()..connectionTimeout = const Duration(seconds: 2);
+      final req = await client.getUrl(Uri.parse('http://127.0.0.1:8080/api/cloud-tunnel'));
+      final res = await req.close();
+      if (res.statusCode == 200) {
+        final body = await res.transform(utf8.decoder).join();
+        final json = jsonDecode(body);
+        if (json['cloud_tunnel_url'] != null) {
+          final t = (json['cloud_tunnel_url'] as String).trim();
+          if (t.isNotEmpty && mounted) {
+            setState(() {
+              _urlCtrl.text = t;
+              _statusMsg = 'Synced live tunnel from Central System!';
+            });
+            widget.onTunnelUpdated(t);
+          }
+        }
+      }
+    } catch (e) {
+      if (mounted) setState(() => _statusMsg = 'Error reaching server: $e');
+    } finally {
+      if (mounted) setState(() => _isRefreshing = false);
+    }
+  }
+
+  Future<void> _saveTunnelUrl() async {
+    final text = _urlCtrl.text.trim();
+    if (text.isEmpty) return;
+    setState(() => _isSaving = true);
+    try {
+      final client = HttpClient()..connectionTimeout = const Duration(seconds: 3);
+      final req = await client.postUrl(Uri.parse('http://127.0.0.1:8080/api/cloud-tunnel'));
+      req.headers.contentType = ContentType.json;
+      req.write(jsonEncode({'cloud_tunnel_url': text}));
+      final res = await req.close();
+      if (res.statusCode == 200) {
+        widget.onTunnelUpdated(text);
+        if (mounted) {
+          setState(() => _statusMsg = 'Saved & broadcasted to fleet & mobile apps!');
+        }
+      }
+    } catch (e) {
+      if (mounted) setState(() => _statusMsg = 'Error saving tunnel: $e');
+    } finally {
+      if (mounted) setState(() => _isSaving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final currentText = _urlCtrl.text.trim().isNotEmpty
+        ? _urlCtrl.text.trim()
+        : 'https://rings-diploma-evaluated-mls.trycloudflare.com';
+    final hostOnly = currentText.replaceFirst('https://', '').replaceFirst('http://', '');
+    final wssUrl = 'wss://$hostOnly/ws';
+    final pinCmd = 'CMD:SET_SERVER:$hostOnly:443';
+
+    return AlertDialog(
+      backgroundColor: const Color(0xFF090D12),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(22),
+        side: const BorderSide(color: Color(0x33109C6D)),
+      ),
+      title: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 38,
+                height: 38,
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    colors: [Color(0xFF109C6D), Color(0xFF55E2C0)],
+                  ),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Icon(Icons.cloud_done_rounded, color: Colors.white, size: 20),
+              ),
+              const SizedBox(width: 12),
+              const Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Cloudflare Global Tunnel',
+                    style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w800),
+                  ),
+                  Text(
+                    'External WSS / HTTPS Gateway (Bypasses AP Isolation)',
+                    style: TextStyle(color: Color(0xFF55E2C0), fontSize: 10.5, fontWeight: FontWeight.w600),
+                  ),
+                ],
+              ),
+            ],
+          ),
+          IconButton(
+            onPressed: () => Navigator.pop(context),
+            icon: const Icon(Icons.close_rounded, color: Colors.white60, size: 18),
+          ),
+        ],
+      ),
+      content: SizedBox(
+        width: 540,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Live Active URL Display Card
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    colors: [Color(0xFF0C2B22), Color(0xFF071914)],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: const Color(0xFF55E2C0).withOpacity(0.35)),
+                  boxShadow: [
+                    BoxShadow(
+                      color: const Color(0xFF109C6D).withOpacity(0.18),
+                      blurRadius: 10,
+                      spreadRadius: 1,
+                    ),
+                  ],
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'GLOBAL TUNNEL URL (PUBLIC)',
+                          style: TextStyle(color: Color(0xFF55E2C0), fontSize: 9.5, fontWeight: FontWeight.w800, letterSpacing: 0.8),
+                        ),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF109C6D),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: const Text('PORT 8080 ROUTED', style: TextStyle(color: Colors.white, fontSize: 8.5, fontWeight: FontWeight.w800)),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    SelectableText(
+                      currentText,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w800,
+                        fontFamily: 'monospace',
+                        letterSpacing: 0.3,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        ElevatedButton.icon(
+                          onPressed: () {
+                            Clipboard.setData(ClipboardData(text: currentText));
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('Copied Full Tunnel URL to clipboard!'),
+                                duration: Duration(seconds: 1),
+                              ),
+                            );
+                          },
+                          icon: const Icon(Icons.copy_rounded, size: 13),
+                          label: const Text('Copy URL', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700)),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF109C6D),
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                          ),
+                        ),
+                        OutlinedButton.icon(
+                          onPressed: () {
+                            Clipboard.setData(ClipboardData(text: wssUrl));
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('Copied WSS address to clipboard!'),
+                                duration: Duration(seconds: 1),
+                              ),
+                            );
+                          },
+                          icon: const Icon(Icons.wifi_tethering_rounded, size: 13),
+                          label: const Text('Copy WSS URL', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700)),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: const Color(0xFF55E2C0),
+                            side: const BorderSide(color: Color(0x6655E2C0)),
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                          ),
+                        ),
+                        OutlinedButton.icon(
+                          onPressed: () {
+                            Clipboard.setData(ClipboardData(text: pinCmd));
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('Copied Pin Setup Command to clipboard!'),
+                                duration: Duration(seconds: 1),
+                              ),
+                            );
+                          },
+                          icon: const Icon(Icons.pin_rounded, size: 13),
+                          label: const Text('Copy Pin Command', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700)),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: Colors.white70,
+                            side: BorderSide(color: Colors.white.withOpacity(0.2)),
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 14),
+
+              // Architectural routing details
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.03),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.white.withOpacity(0.06)),
+                ),
+                child: Column(
+                  children: [
+                    _infoRow('Local Inference Server', 'http://${widget.primaryIp}:8080 (WS: /ui & /)'),
+                    const SizedBox(height: 6),
+                    _infoRow('Public Global Gateway', wssUrl),
+                    const SizedBox(height: 6),
+                    _infoRow('Encryption & Security', 'TLS / SSL Port 443 via Cloudflare Edge'),
+                    const SizedBox(height: 6),
+                    _infoRow('Campus AP Isolation', 'BYPASSED (Cellular & Outside Wi-Fi Enabled)'),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 14),
+
+              // Update URL Field
+              const Text(
+                'Update Active Tunnel Address (if cloudflared restarts):',
+                style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w700),
+              ),
+              const SizedBox(height: 6),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _urlCtrl,
+                      style: const TextStyle(color: Colors.white, fontSize: 12, fontFamily: 'monospace'),
+                      decoration: InputDecoration(
+                        hintText: 'https://<tunnel-id>.trycloudflare.com',
+                        hintStyle: TextStyle(color: Colors.white.withOpacity(0.3)),
+                        filled: true,
+                        fillColor: Colors.white.withOpacity(0.05),
+                        isDense: true,
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.white.withOpacity(0.1))),
+                        enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.white.withOpacity(0.1))),
+                        focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: Color(0xFF55E2C0))),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  ElevatedButton(
+                    onPressed: _isSaving ? null : _saveTunnelUrl,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF109C6D),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    ),
+                    child: _isSaving
+                        ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                        : const Text('Save & Broadcast', style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.w700)),
+                  ),
+                  const SizedBox(width: 6),
+                  IconButton(
+                    tooltip: 'Refresh from Server',
+                    onPressed: _isRefreshing ? null : _refreshFromServer,
+                    icon: _isRefreshing
+                        ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF55E2C0)))
+                        : const Icon(Icons.sync_rounded, size: 18, color: Color(0xFF55E2C0)),
+                  ),
+                ],
+              ),
+              if (_statusMsg.isNotEmpty) ...[
+                const SizedBox(height: 6),
+                Text(
+                  _statusMsg,
+                  style: const TextStyle(color: Color(0xFF55E2C0), fontSize: 10.5, fontWeight: FontWeight.w600),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Close', style: TextStyle(color: Colors.white70)),
+        ),
+      ],
+    );
+  }
+
+  Widget _infoRow(String label, String value) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 155,
+          child: Text(label, style: TextStyle(color: Colors.white.withOpacity(0.55), fontSize: 10)),
+        ),
+        Expanded(
+          child: Text(
+            value,
+            style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w700, fontFamily: 'monospace'),
           ),
         ),
       ],
@@ -1806,6 +2929,100 @@ class _HeaderStatusPicker extends StatelessWidget {
             const SizedBox(width: 5),
             Text(status.label, style: TextStyle(color: c, fontSize: 8.5, fontWeight: FontWeight.w700, letterSpacing: .7)),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _HarmfulWordsToggleButton extends StatelessWidget {
+  final bool active;
+  final VoidCallback onToggle;
+
+  const _HarmfulWordsToggleButton({
+    required this.active,
+    required this.onToggle,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: active
+          ? 'Harmful Words Filter: ACTIVE\nOnly threats, verbal harassment & harmful keywords trigger incidents.\nBenign conversational speech is ignored.'
+          : 'Harmful Words Filter: INACTIVE\nMonitoring all spoken conversation.\nClick to detect harmful words & threats only.',
+      waitDuration: const Duration(milliseconds: 300),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onToggle,
+          borderRadius: BorderRadius.circular(11),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 220),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6.5),
+            decoration: BoxDecoration(
+              gradient: active
+                  ? const LinearGradient(
+                      colors: [Color(0xFF0C3829), Color(0xFF06221A)],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    )
+                  : LinearGradient(
+                      colors: [Colors.white.withOpacity(0.04), Colors.white.withOpacity(0.02)],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    ),
+              borderRadius: BorderRadius.circular(11),
+              border: Border.all(
+                color: active ? const Color(0xFF109C6D).withOpacity(0.85) : Colors.white.withOpacity(0.09),
+                width: active ? 1.2 : 1.0,
+              ),
+              boxShadow: active
+                  ? [
+                      BoxShadow(
+                        color: const Color(0xFF109C6D).withOpacity(0.40),
+                        blurRadius: 10,
+                        spreadRadius: 1,
+                      )
+                    ]
+                  : null,
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  active ? Icons.shield_rounded : Icons.shield_outlined,
+                  size: 13.5,
+                  color: active ? const Color(0xFF55E2C0) : Colors.white60,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  'HARMFUL ONLY',
+                  style: TextStyle(
+                    fontSize: 8.5,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.6,
+                    color: active ? const Color(0xFF55E2C0) : Colors.white70,
+                  ),
+                ),
+                const SizedBox(width: 5),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 4.5, vertical: 1.5),
+                  decoration: BoxDecoration(
+                    color: active ? const Color(0xFF109C6D) : Colors.white.withOpacity(0.10),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(
+                    active ? 'ON' : 'OFF',
+                    style: TextStyle(
+                      fontSize: 7.5,
+                      fontWeight: FontWeight.w900,
+                      color: active ? Colors.white : Colors.white54,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );
@@ -1908,11 +3125,11 @@ class _MetricStrip extends StatelessWidget {
   Widget build(BuildContext context) {
     return Row(
       children: [
-        Expanded(child: _MetricCard(label: 'ACTIVE PINS', value: '$active', caption: '80MHz Xiao S3 Connected', icon: Icons.sensors_rounded, color: const Color(0xFF61D9AA))),
+        Expanded(child: _MetricCard(label: 'ACTIVE PINS', value: '$active', caption: '160MHz Xiao S3 Connected', icon: Icons.sensors_rounded, color: const Color(0xFF61D9AA))),
         const SizedBox(width: 10),
         Expanded(child: _MetricCard(label: 'THREAT ALERTS', value: '$nonNormal', caption: 'verbal & extortion events', icon: Icons.warning_amber_rounded, color: const Color(0xFFFFC45D))),
         const SizedBox(width: 10),
-        Expanded(child: _MetricCard(label: 'DANGER ESCALATIONS', value: '$danger', caption: 'OV2640 snapshot triggered', icon: Icons.emergency_rounded, color: const Color(0xFFFF5E72))),
+        Expanded(child: _MetricCard(label: 'DANGER ESCALATIONS', value: '$danger', caption: 'OV3660 snapshot triggered', icon: Icons.emergency_rounded, color: const Color(0xFFFF5E72))),
         const SizedBox(width: 10),
         const Expanded(child: _MetricCard(label: 'VAD ENGINE', value: 'ACTIVE', caption: '16kHz Speex + RoBERTa', icon: Icons.multitrack_audio_rounded, color: Color(0xFF9B84FF))),
       ],
@@ -2231,14 +3448,41 @@ Widget _buildThreatTranscript(
   int? maxLines,
 }) {
   const hardThreats = {
-    'papatayin', 'patayin', 'bugbugin', 'sasapakin', 'suntukin', 'tadyakan',
-    'upakan', 'abangan', 'tumba', 'hiwain', 'masaktan', 'resbak', 'yari'
+    'papatayin', 'patayin', 'ipapatay', 'pinatay', 'katayin', 'kakatayin',
+    'bugbugin', 'bubugbugin', 'binugbog', 'bugbugan',
+    'sasapakin', 'sapakin', 'sinapak', 'sapakan',
+    'suntukin', 'susuntukin', 'sinuntok', 'suntukan',
+    'tadyakan', 'tatadyakan', 'tinadyakan',
+    'upakan', 'uupakan', 'inupakan',
+    'saksakin', 'sasaksakin', 'sinaksak',
+    'barilin', 'babarilin', 'binaril',
+    'gulpihin', 'gugulpihin', 'ginulpi',
+    'abangan', 'aabangan', 'tumba', 'tumbahin', 'hiwain', 'masaktan', 'resbak', 'resbakan', 'yari',
+    'kill', 'punch', 'attack', 'stab', 'murder', 'hurt', 'shoot'
   };
   const hardExtort = {
-    'pera', 'bayad', 'ambag', 'ilabas', 'akin na', 'bigyan', 'palamunin'
+    'pera', 'bayad', 'ambag', 'ilabas', 'akin na', 'bigyan', 'palamunin', 'baon', 'holdap', 'snatch'
   };
   const hardHarass = {
-    'bobo', 'tanga', 'kwenta', 'kuwenta', 'kupal', 'bwisit', 'inutil', 'kadiri', 'pangit'
+    // Bullying & ableist/psychological slurs
+    'mongoloid', 'mongol', 'abnoy', 'autistic', 'retard', 'retarded',
+    'sintosinto', 'sayad', 'baliw', 'lukaluka', 'buang', 'timang', 'kulangkulang',
+    'siraulo', 'unggoy', 'aswang',
+    // Body-shaming & appearance bullying
+    'tabatoy', 'baboy', 'balyena', 'tingting', 'kalansay', 'ngongo', 'ngiwi',
+    'panget', 'pangit', 'chaka', 'dugyot', 'mabaho', 'baho',
+    // Social degradation & poverty insults
+    'squatter', 'skwater', 'isquatter', 'pulubi', 'hampaslupa', 'pataygutom',
+    'alipin', 'palamunin', 'pabigat', 'salot', 'patapon', 'basura', 'walangkwenta', 'ampaw',
+    // Slut-shaming & gender/homophobic insults
+    'bakla', 'bading', 'bayot', 'tibo', 'pokpok', 'malandi', 'kiri', 'higad', 'hitad', 'puday', 'bastos',
+    // Profanities & verbal abuse
+    'gago', 'gaga', 'tarantado', 'tarantada', 'ulol', 'tangina', 'tanginamo', 'putangina', 'putanginamoka', 'puta',
+    'pakshet', 'pakyu', 'kupal', 'leche', 'letse', 'bwisit', 'bwiset',
+    'hayop', 'hayup', 'walanghiya', 'taragis', 'hudas', 'inutil', 'bobo', 'tanga',
+    'ungas', 'punyeta', 'lintik', 'demonyo', 'kingina', 'pota', 'yawa', 'kuwenta', 'kwenta',
+    // English slurs & abuse
+    'fuck', 'shit', 'bitch', 'asshole', 'bastard', 'cunt', 'idiot', 'stupid', 'loser', 'trash'
   };
 
   final words = text.split(' ');
@@ -2524,7 +3768,7 @@ class _CompactDeviceList extends StatelessWidget {
             ),
             Divider(color: Colors.white.withOpacity(.06), height: 1),
             const SizedBox(height: 8),
-            Row(children: [Expanded(child: _FleetMetric(label: 'ONLINE STATUS', value: '$activeCount OF $totalCount ACTIVE', color: const Color(0xFF57DDA0))), const Expanded(child: _FleetMetric(label: 'CLOCK RATE', value: '80MHz ECO', color: Color(0xFF9B84FF)))]),
+            Row(children: [Expanded(child: _FleetMetric(label: 'ONLINE STATUS', value: '$activeCount OF $totalCount ACTIVE', color: const Color(0xFF57DDA0))), const Expanded(child: _FleetMetric(label: 'CLOCK RATE', value: '160MHz BALANCED', color: Color(0xFF9B84FF)))]),
             const SizedBox(height: 6),
             ClipRRect(borderRadius: BorderRadius.circular(8), child: LinearProgressIndicator(minHeight: 4, value: ratio, backgroundColor: Colors.white.withOpacity(.05), valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF57DDA0)))),
           ],
@@ -2761,7 +4005,7 @@ class _DeviceCard extends StatelessWidget {
                   children: [
                     const Icon(Icons.bolt_rounded, size: 10, color: Color(0xFF7F6CFF)),
                     const SizedBox(width: 3),
-                    Text('${device.cpuMhz} MHz Eco', style: const TextStyle(fontSize: 7.5, fontWeight: FontWeight.w700, color: Color(0xFF7F6CFF))),
+                    Text('${device.cpuMhz} MHz Standard', style: const TextStyle(fontSize: 7.5, fontWeight: FontWeight.w700, color: Color(0xFF7F6CFF))),
                   ],
                 ),
               ),
@@ -3181,6 +4425,90 @@ class _IncidentDetailCardState extends State<_IncidentDetailCard> {
     }
   }
 
+  Widget _buildSnapshotWidget(Incident incident) {
+    // 1. Direct local file check (Instant 0ms, zero network latency, 100% offline reliable on desktop)
+    final snap = incident.snapshotFile;
+    if (snap != null && snap.isNotEmpty) {
+      final candidatePaths = [
+        'recordings/snapshots/$snap',
+        './recordings/snapshots/$snap',
+        'securelinkdb/recordings/snapshots/$snap',
+        'd:/Flutter Securelink Dashboard/securelinkdb/recordings/snapshots/$snap',
+        'd:\\Flutter Securelink Dashboard\\securelinkdb\\recordings\\snapshots\\$snap',
+      ];
+      for (final p in candidatePaths) {
+        try {
+          final f = File(p);
+          if (f.existsSync()) {
+            return Image.file(
+              f,
+              fit: BoxFit.cover,
+              errorBuilder: (_, __, ___) => _buildSnapshotNetworkImage(incident),
+            );
+          }
+        } catch (_) {}
+      }
+    }
+
+    // 2. Network image loading with localhost fallback
+    return _buildSnapshotNetworkImage(incident);
+  }
+
+  Widget _buildSnapshotNetworkImage(Incident incident) {
+    final snap = incident.snapshotFile;
+    String? url = incident.snapshotUrl;
+    if (url == null || url.isEmpty) {
+      if (snap != null && snap.isNotEmpty) {
+        url = 'http://127.0.0.1:8080/recordings/snapshots/$snap';
+      }
+    }
+
+    if (url == null || url.isEmpty) {
+      return _buildSnapshotStandbyCard();
+    }
+
+    return Image.network(
+      url,
+      fit: BoxFit.cover,
+      loadingBuilder: (context, child, loadingProgress) {
+        if (loadingProgress == null) return child;
+        return const Center(
+          child: CircularProgressIndicator(
+            color: Color(0xFFFF4D67),
+            strokeWidth: 2,
+          ),
+        );
+      },
+      errorBuilder: (context, error, stackTrace) {
+        // If external URL or tunnel failed, retry with direct localhost HTTP server endpoint
+        if (snap != null && snap.isNotEmpty && !url!.contains('127.0.0.1')) {
+          final fallbackUrl = 'http://127.0.0.1:8080/recordings/snapshots/$snap';
+          return Image.network(
+            fallbackUrl,
+            fit: BoxFit.cover,
+            errorBuilder: (_, __, ___) => _buildSnapshotStandbyCard(),
+          );
+        }
+        return _buildSnapshotStandbyCard();
+      },
+    );
+  }
+
+  Widget _buildSnapshotStandbyCard() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.videocam_rounded, size: 32, color: const Color(0xFFFF4D67).withOpacity(0.7)),
+          const SizedBox(height: 5),
+          const Text('OV3660 DANGER SNAPSHOT CAPTURED', style: TextStyle(color: Colors.white70, fontSize: 9.5, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 2),
+          Text('Waiting for image sync...', style: TextStyle(color: Colors.white.withOpacity(0.3), fontSize: 7.5)),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final incident = widget.incident;
@@ -3213,7 +4541,7 @@ class _IncidentDetailCardState extends State<_IncidentDetailCard> {
             const SizedBox(height: 14),
             _DetailLine(label: 'CATEGORY', value: incident.category),
             _DetailLine(label: 'THREAT SCORE', value: '${incident.score.toStringAsFixed(1)} / 10.0'),
-            _DetailLine(label: 'EVIDENCE TYPE', value: '${incident.audio ? 'AUDIO (16kHz PCM)' : 'NO AUDIO'}${incident.video ? ' + OV2640 CAMERA SNAPSHOT' : ' (CAMERA STANDBY)'}'),
+            _DetailLine(label: 'EVIDENCE TYPE', value: '${incident.audio ? 'AUDIO (16kHz PCM)' : 'NO AUDIO'}${incident.video ? ' + OV3660 CAMERA SNAPSHOT' : ' (CAMERA STANDBY)'}'),
             const Divider(height: 22, color: Colors.white10),
 
             // SPEECH TRANSCRIPT BOX
@@ -3445,7 +4773,9 @@ class _IncidentDetailCardState extends State<_IncidentDetailCard> {
             ],
 
             // CAMERA SNAPSHOT EVIDENCE (DANGER ONLY)
-            if (incident.video && incident.level == IncidentLevel.danger) ...[
+            if ((incident.video && incident.level == IncidentLevel.danger) ||
+                (incident.snapshotUrl != null && incident.snapshotUrl!.isNotEmpty) ||
+                (incident.snapshotFile != null && incident.snapshotFile!.isNotEmpty)) ...[
               Text('CAMERA FRAME CAPTURE (DANGER EVENT)', style: TextStyle(color: Colors.white.withOpacity(.32), fontSize: 8, fontWeight: FontWeight.w600, letterSpacing: 1.0)),
               const SizedBox(height: 6),
               Container(
@@ -3458,16 +4788,10 @@ class _IncidentDetailCardState extends State<_IncidentDetailCard> {
                 ),
                 child: Stack(
                   children: [
-                    Center(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(Icons.videocam_rounded, size: 32, color: const Color(0xFFFF4D67).withOpacity(0.7)),
-                          const SizedBox(height: 5),
-                          const Text('OV2640 DANGER SNAPSHOT CAPTURED', style: TextStyle(color: Colors.white70, fontSize: 9.5, fontWeight: FontWeight.w600)),
-                          const SizedBox(height: 2),
-                          Text('320x240 QVGA • Triggered automatically by DANGER grade speech', style: TextStyle(color: Colors.white.withOpacity(0.3), fontSize: 7.5)),
-                        ],
+                    Positioned.fill(
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(13),
+                        child: _buildSnapshotWidget(incident),
                       ),
                     ),
                     Positioned(
@@ -3476,7 +4800,12 @@ class _IncidentDetailCardState extends State<_IncidentDetailCard> {
                       child: Container(
                         padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2.5),
                         decoration: BoxDecoration(color: const Color(0xFFFF4D67).withOpacity(0.2), borderRadius: BorderRadius.circular(5), border: Border.all(color: const Color(0xFFFF4D67).withOpacity(0.4))),
-                        child: Text('REC • ${incident.deviceId}', style: const TextStyle(fontSize: 7.5, color: Color(0xFFFF4D67), fontWeight: FontWeight.w700)),
+                        child: Text(
+                          (incident.snapshotUrl != null && incident.snapshotUrl!.isNotEmpty) || (incident.snapshotFile != null && incident.snapshotFile!.isNotEmpty)
+                              ? 'SNAPSHOT • ${incident.deviceId}'
+                              : 'REC • ${incident.deviceId}',
+                          style: const TextStyle(fontSize: 7.5, color: Color(0xFFFF4D67), fontWeight: FontWeight.w700),
+                        ),
                       ),
                     ),
                     Positioned(
@@ -3576,6 +4905,8 @@ class _ConfigurationPage extends StatefulWidget {
   final int wifiBatchMs;
   final List<DeviceStatus> devices;
   final List<WifiCheckpoint> checkpoints;
+  final String? cloudTunnelUrl;
+  final VoidCallback? onOpenTunnelDialog;
   final ValueChanged<int> onBufferChanged;
   final ValueChanged<int> onSilenceChanged;
   final ValueChanged<int> onVadStreakChanged;
@@ -3602,6 +4933,8 @@ class _ConfigurationPage extends StatefulWidget {
     required this.wifiBatchMs,
     required this.devices,
     required this.checkpoints,
+    this.cloudTunnelUrl,
+    this.onOpenTunnelDialog,
     required this.onBufferChanged,
     required this.onSilenceChanged,
     required this.onVadStreakChanged,
@@ -4274,6 +5607,63 @@ class _ConfigurationPageState extends State<_ConfigurationPage> {
                   style: OutlinedButton.styleFrom(
                     side: BorderSide(color: const Color(0xFFEF4444).withOpacity(0.4)),
                     backgroundColor: const Color(0xFFEF4444).withOpacity(0.12),
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // =========================================================================
+          // 5. CLOUDFLARE GLOBAL TUNNEL & EXTERNAL ROUTING
+          // =========================================================================
+          _ConfigCard(
+            title: 'CLOUDFLARE GLOBAL TUNNEL (EXTERNAL & CELLULAR ROUTING)',
+            subtitle: 'Bypasses campus AP client isolation by tunneling port 8080 over global WSS/HTTPS',
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF55E2C0).withOpacity(0.12),
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(color: const Color(0xFF55E2C0).withOpacity(0.3)),
+                            ),
+                            child: const Text('STATUS: ACTIVE & ROUTED', style: TextStyle(fontSize: 8.5, fontWeight: FontWeight.w700, color: Color(0xFF55E2C0))),
+                          ),
+                          const SizedBox(width: 8),
+                          Text('WSS / TLS Port 443 → Local 8080', style: TextStyle(fontSize: 9.5, color: Colors.white.withOpacity(0.6))),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      SelectableText(
+                        widget.cloudTunnelUrl ?? 'https://rings-diploma-evaluated-mls.trycloudflare.com',
+                        style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700, color: Colors.white, fontFamily: 'monospace'),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Mobile companions and wearable pins connect over cellular or outside Wi-Fi via this URL.',
+                        style: TextStyle(fontSize: 9.5, color: Colors.white.withOpacity(0.5)),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 16),
+                ElevatedButton.icon(
+                  onPressed: widget.onOpenTunnelDialog,
+                  icon: const Icon(Icons.cloud_rounded, size: 15),
+                  label: const Text('Manage Global Tunnel', style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.w700)),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF109C6D),
+                    foregroundColor: Colors.white,
                     padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                   ),
@@ -6127,6 +7517,7 @@ class _ServerLoadingSplashScreenState extends State<_ServerLoadingSplashScreen>
                               child: Container(
                                 width: 68,
                                 height: 68,
+                                padding: const EdgeInsets.all(10),
                                 decoration: BoxDecoration(
                                   borderRadius: BorderRadius.circular(20),
                                   gradient: const LinearGradient(
@@ -6142,7 +7533,7 @@ class _ServerLoadingSplashScreenState extends State<_ServerLoadingSplashScreen>
                                     ),
                                   ],
                                 ),
-                                child: const Icon(Icons.shield_rounded, size: 36, color: Colors.white),
+                                child: const SecureLinkLogo(size: 44),
                               ),
                             ),
                           ),
