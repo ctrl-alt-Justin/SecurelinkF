@@ -207,17 +207,29 @@ class BlePinRelayService extends ChangeNotifier {
       BluetoothCharacteristic? foundRx;
 
       for (final s in services) {
-        if (s.uuid.toString().toLowerCase() == nordicUartServiceUuid) {
+        if (_matchUuid(s.uuid, nordicUartServiceUuid)) {
           for (final c in s.characteristics) {
-            final uuid = c.uuid.toString().toLowerCase();
-            if (uuid == nordicUartTxUuid) foundTx = c;
-            if (uuid == nordicUartRxUuid) foundRx = c;
+            if (_matchUuid(c.uuid, nordicUartTxUuid)) foundTx = c;
+            if (_matchUuid(c.uuid, nordicUartRxUuid)) foundRx = c;
+          }
+        }
+      }
+
+      // Fallback: search across all discovered services
+      if (foundTx == null || foundRx == null) {
+        for (final s in services) {
+          for (final c in s.characteristics) {
+            if (foundTx == null && _matchUuid(c.uuid, nordicUartTxUuid)) foundTx = c;
+            if (foundRx == null && _matchUuid(c.uuid, nordicUartRxUuid)) foundRx = c;
           }
         }
       }
 
       if (foundTx == null) {
         throw Exception('Nordic UART TX characteristic not found on device');
+      }
+      if (foundRx == null) {
+        throw Exception('Nordic UART RX characteristic not found on device');
       }
 
       _txCharacteristic = foundTx;
@@ -468,13 +480,64 @@ class BlePinRelayService extends ChangeNotifier {
     notifyListeners();
   }
 
+  bool _matchUuid(dynamic guidObj, String target) {
+    final s = guidObj.toString().toLowerCase().replaceAll('-', '');
+    final t = target.toLowerCase().replaceAll('-', '');
+    return s == t || (s.length >= 8 && t.length >= 8 && s.startsWith(t.substring(0, 8)));
+  }
+
+  Future<bool> _writeChunkWithFallback(BluetoothCharacteristic c, List<int> chunk) async {
+    final canWriteWithResponse = c.properties.write;
+    final canWriteWithoutResponse = c.properties.writeWithoutResponse;
+
+    // Default to write with response if supported, otherwise write without response
+    bool preferWithoutResponse = !canWriteWithResponse && canWriteWithoutResponse;
+    try {
+      await c.write(chunk, withoutResponse: preferWithoutResponse);
+      return true;
+    } catch (e) {
+      debugPrint('[BLE-WRITE] Write with withoutResponse=$preferWithoutResponse failed ($e), trying alternate mode...');
+      try {
+        await c.write(chunk, withoutResponse: !preferWithoutResponse);
+        return true;
+      } catch (e2) {
+        debugPrint('[BLE-WRITE] Alternate write mode also failed: $e2');
+        return false;
+      }
+    }
+  }
+
   Future<bool> sendBleJson(Map<String, dynamic> jsonMap) async {
-    if (_rxCharacteristic == null || _connectedDevice == null) return false;
+    if (_rxCharacteristic == null || _connectedDevice == null) {
+      debugPrint('[BLE-TX] Cannot transmit JSON: rxCharacteristic=$_rxCharacteristic, device=$_connectedDevice');
+      return false;
+    }
     try {
       final jsonStr = jsonEncode(jsonMap);
       final bytes = utf8.encode(jsonStr);
-      debugPrint('[BLE-TX] Sending JSON command to pin: $jsonStr');
-      await _rxCharacteristic!.write(bytes, withoutResponse: false);
+      debugPrint('[BLE-TX] Transmitting JSON (${bytes.length} bytes) to pin: $jsonStr');
+
+      // Determine safe chunk size based on negotiated MTU (reserve 3 bytes for ATT header)
+      int maxChunk = 20; // Safe BLE default across all phones & stacks
+      if (_connectedDevice != null) {
+        final currentMtu = _connectedDevice!.mtuNow;
+        if (currentMtu > 23) {
+          maxChunk = (currentMtu - 3).clamp(20, 240);
+        }
+      }
+
+      for (int i = 0; i < bytes.length; i += maxChunk) {
+        final end = (i + maxChunk < bytes.length) ? i + maxChunk : bytes.length;
+        final chunk = bytes.sublist(i, end);
+        final ok = await _writeChunkWithFallback(_rxCharacteristic!, chunk);
+        if (!ok) {
+          debugPrint('[BLE-TX] Failed to write chunk $i..$end of ${bytes.length} bytes');
+          return false;
+        }
+        if (end < bytes.length) {
+          await Future.delayed(const Duration(milliseconds: 25));
+        }
+      }
       return true;
     } catch (e) {
       debugPrint('[BLE-TX] Error sending JSON to pin: $e');

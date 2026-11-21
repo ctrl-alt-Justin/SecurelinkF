@@ -166,16 +166,18 @@ class BleRxCallbacks: public BLECharacteristicCallbacks {
         bleRxBuffer += chunk;
 
         // Check if message is a full JSON object or hardware trigger command
-        if (bleRxBuffer.startsWith("{") && bleRxBuffer.endsWith("}")) {
-            String fullJson = bleRxBuffer;
+        String trimmed = bleRxBuffer;
+        trimmed.trim();
+        if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+            String fullJson = trimmed;
             bleRxBuffer = "";
             handleBleProvisioning(fullJson);
-        } else if (bleRxBuffer == "TRIGGER:DANGER" || bleRxBuffer == "CMD:CAPTURE_SNAPSHOT") {
+        } else if (trimmed == "TRIGGER:DANGER" || trimmed == "CMD:CAPTURE_SNAPSHOT") {
             Serial.println("[BLE] Snapshot trigger received over BLE! Capturing...");
             bleRxBuffer = "";
             captureIncidentSnapshot();
-        } else if (!bleRxBuffer.startsWith("{")) {
-            if (bleRxBuffer.indexOf("TRIGGER:DANGER") >= 0 || bleRxBuffer.indexOf("CMD:CAPTURE_SNAPSHOT") >= 0) {
+        } else if (!trimmed.startsWith("{")) {
+            if (trimmed.indexOf("TRIGGER:DANGER") >= 0 || trimmed.indexOf("CMD:CAPTURE_SNAPSHOT") >= 0) {
                 captureIncidentSnapshot();
             }
             bleRxBuffer = "";
@@ -201,7 +203,7 @@ void setupBLE() {
 
     pRxCharacteristic = pService->createCharacteristic(
                           BLE_CHARACTERISTIC_UUID_RX,
-                          BLECharacteristic::PROPERTY_WRITE
+                          BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR
                         );
     pRxCharacteristic->setCallbacks(new BleRxCallbacks());
 
