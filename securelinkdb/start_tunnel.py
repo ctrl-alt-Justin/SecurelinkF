@@ -23,6 +23,36 @@ async def async_main():
     if len(sys.argv) > 1 and sys.argv[1].isdigit():
         port = int(sys.argv[1])
 
+    # Check if Central System server.py is already running on port 8080
+    import urllib.request
+    import json
+    server_running = False
+    try:
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/api/cloud-tunnel")
+        with urllib.request.urlopen(req, timeout=1.5) as resp:
+            data = json.loads(resp.read().decode())
+            server_running = True
+            if data.get("state") == "Connected" and data.get("cloud_tunnel_url"):
+                print("=======================================================================")
+                print("  >>> CENTRAL SYSTEM ACTIVE CLOUDFLARE TUNNEL DETECTED! <<<")
+                print("=======================================================================")
+                print(f"  Public Tunnel URL:  {data['cloud_tunnel_url']}")
+                print("=======================================================================")
+                print("  Central System AI is already running and tunneling to this URL.")
+                print("  Press Ctrl+C to exit.\n")
+                try:
+                    while True:
+                        await asyncio.sleep(2.0)
+                except (KeyboardInterrupt, asyncio.CancelledError):
+                    return
+    except Exception:
+        pass
+
+    if not server_running:
+        print(f"[NOTE] Central System AI Backend (server.py) is not yet detected on port {port}.")
+        print("       The Cloudflare Tunnel will route incoming traffic to http://127.0.0.1:8080.")
+        print("       Start 'python server.py' or open the Desktop Dashboard so requests can be processed.\n")
+
     mgr = CloudflareTunnelManager(port=port)
     if not mgr.is_installed():
         print("[SETUP] cloudflared binary not found!")

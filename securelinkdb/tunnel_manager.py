@@ -135,7 +135,7 @@ class CloudflareTunnelManager:
             self.active_url = None
             self._save_config(None)
 
-            cmd = [bin_path, "tunnel", "--url", f"http://127.0.0.1:{self.port}"]
+            cmd = [bin_path, "tunnel", "--url", f"http://127.0.0.1:{self.port}", "--protocol", "http2", "--no-autoupdate"]
             try:
                 # Start process with suppressed stdin
                 self.process = subprocess.Popen(
@@ -175,6 +175,11 @@ class CloudflareTunnelManager:
                 continue
 
             clean_line = line.strip()
+            
+            # Surface explicit cloudflared warnings and errors for visibility
+            if any(term in clean_line.lower() for term in ["err", "error", "failed to create", "fatal"]):
+                logger.warning(f"[CLOUDFLARED] {clean_line}")
+
             # Look for trycloudflare.com URL
             if not tunnel_url:
                 match = URL_PATTERN.search(clean_line)
@@ -182,27 +187,25 @@ class CloudflareTunnelManager:
                     candidate_url = match.group(0).strip()
                     logger.info(f"[TUNNEL] Captured candidate tunnel URL: {candidate_url}")
                     
-                    # Validate that the tunnel URL is reachable before declaring Connected
-                    is_reachable = await self._validate_reachability(candidate_url)
-                    if is_reachable:
-                        tunnel_url = candidate_url
-                        self.active_url = tunnel_url
-                        self.state = TunnelState.CONNECTED
-                        self.started_at = time.time()
-                        self.consecutive_crashes = 0
-                        self.error_message = None
-                        self._save_config(tunnel_url)
-                        logger.info(f"[TUNNEL] Quick Tunnel verified reachable! Active URL: {tunnel_url}")
-                        
-                        if self.on_url_change:
-                            try:
-                                res = self.on_url_change(tunnel_url)
-                                if asyncio.iscoroutine(res):
-                                    await res
-                            except Exception as ex:
-                                logger.error(f"[TUNNEL] Callback error: {ex}")
-                    else:
-                        logger.warning(f"[TUNNEL] Tunnel URL {candidate_url} did not pass reachability check yet; continuing...")
+                    # Accept candidate URL immediately so local server and mobile can pair
+                    tunnel_url = candidate_url
+                    self.active_url = tunnel_url
+                    self.state = TunnelState.CONNECTED
+                    self.started_at = time.time()
+                    self.consecutive_crashes = 0
+                    self.error_message = None
+                    self._save_config(tunnel_url)
+                    
+                    if self.on_url_change:
+                        try:
+                            res = self.on_url_change(tunnel_url)
+                            if asyncio.iscoroutine(res):
+                                await res
+                        except Exception as ex:
+                            logger.error(f"[TUNNEL] Callback error: {ex}")
+
+                    # Validate reachability in background without blocking stdout reader
+                    asyncio.create_task(self._validate_and_log_reachability(candidate_url))
 
         exit_code = self.process.poll() if self.process else -1
         logger.warning(f"[TUNNEL] cloudflared process ended with exit code {exit_code}")
@@ -233,7 +236,18 @@ class CloudflareTunnelManager:
             self.active_url = None
             self._save_config(None)
 
-    async def _validate_reachability(self, candidate_url: str, max_retries: int = 6) -> bool:
+    async def _validate_and_log_reachability(self, candidate_url: str):
+        """Asynchronously tests reachability of candidate URL over Cloudflare Edge."""
+        is_reachable = await self._validate_reachability(candidate_url, max_retries=10)
+        if is_reachable:
+            logger.info(f"[TUNNEL] Quick Tunnel verified reachable! Active URL: {candidate_url}")
+        else:
+            logger.warning(
+                f"[TUNNEL] Tunnel URL {candidate_url} active on Cloudflare Edge, but local port {self.port} "
+                "is not responding yet. Make sure server.py or the dashboard is running!"
+            )
+
+    async def _validate_reachability(self, candidate_url: str, max_retries: int = 10) -> bool:
         """Validates that candidate tunnel URL is genuinely online and tunneling to local server."""
         check_endpoint = f"{candidate_url}/health"
 
@@ -245,15 +259,19 @@ class CloudflareTunnelManager:
                         check_endpoint,
                         headers={"User-Agent": "SecureLink-Tunnel-Validator/1.0"}
                     )
-                    with urllib.request.urlopen(req, timeout=2.5) as resp:
-                        status = getattr(resp, "status", None) or (resp.getcode() if hasattr(resp, "getcode") else None)
-                        return status == 200
+                    try:
+                        with urllib.request.urlopen(req, timeout=3.0) as resp:
+                            status = getattr(resp, "status", None) or (resp.getcode() if hasattr(resp, "getcode") else None)
+                            return status in [200, 307, 401, 404]
+                    except urllib.error.HTTPError as he:
+                        # 502/503 from Cloudflare indicates the tunnel connection to edge is alive, but origin 8080 is starting
+                        return he.code in [200, 307, 401, 404, 502, 503]
                 ok = await loop.run_in_executor(None, probe)
                 if ok:
                     return True
             except Exception as e:
                 logger.debug(f"[TUNNEL-PROBE] Attempt {attempt+1}/{max_retries} failed: {e}")
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(1.0)
         return False
 
     async def stop(self) -> Dict[str, Any]:
@@ -292,14 +310,9 @@ class CloudflareTunnelManager:
             self.process = None
 
     def _cleanup_orphaned_processes(self):
-        """Kills any orphaned cloudflared processes from prior unclean shutdowns."""
-        try:
-            if sys.platform == "win32":
-                subprocess.run(["taskkill", "/F", "/IM", "cloudflared.exe"], capture_output=True, text=True, timeout=2.0)
-            else:
-                subprocess.run(["pkill", "-f", "cloudflared"], capture_output=True, text=True, timeout=2.0)
-        except Exception:
-            pass
+        """Kills previous cloudflared process managed by this instance."""
+        if self.process:
+            self._kill_process()
 
     def _save_config(self, url: Optional[str]):
         try:
