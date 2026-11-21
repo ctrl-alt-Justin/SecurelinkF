@@ -101,6 +101,27 @@ bool needImmediateHeartbeat = false;
 void onWebSocketEvent(WStype_t type, uint8_t * payload, size_t length);
 void captureIncidentSnapshot();
 
+// Lightweight JSON field extraction utility for memory-constrained ESP32
+String extractJsonField(const String& json, const String& key) {
+    int kIdx = json.indexOf("\"" + key + "\"");
+    if (kIdx < 0) return "";
+    int colIdx = json.indexOf(":", kIdx);
+    if (colIdx < 0) return "";
+    int startQuote = json.indexOf("\"", colIdx);
+    if (startQuote < 0) {
+        int endComma = json.indexOf(",", colIdx);
+        int endBrace = json.indexOf("}", colIdx);
+        int end = (endComma > 0 && endComma < endBrace) ? endComma : endBrace;
+        if (end < 0) end = json.length();
+        String val = json.substring(colIdx + 1, end);
+        val.trim();
+        return val;
+    }
+    int endQuote = json.indexOf("\"", startQuote + 1);
+    if (endQuote < 0) return "";
+    return json.substring(startQuote + 1, endQuote);
+}
+
 void connectWebSocket(const String& host, int port) {
     String cleanHost = host;
     bool isSsl = false;
@@ -253,26 +274,6 @@ void handleBleProvisioning(const String& rxJson) {
     if (rxJson.indexOf("\"provision\"") >= 0) {
         sendBleText("{\"type\":\"provision_received\"}");
         
-        auto extractJsonField = [](const String& json, const String& key) -> String {
-            int kIdx = json.indexOf("\"" + key + "\"");
-            if (kIdx < 0) return "";
-            int colIdx = json.indexOf(":", kIdx);
-            if (colIdx < 0) return "";
-            int startQuote = json.indexOf("\"", colIdx);
-            if (startQuote < 0) {
-                int endComma = json.indexOf(",", colIdx);
-                int endBrace = json.indexOf("}", colIdx);
-                int end = (endComma > 0 && endComma < endBrace) ? endComma : endBrace;
-                if (end < 0) end = json.length();
-                String val = json.substring(colIdx + 1, end);
-                val.trim();
-                return val;
-            }
-            int endQuote = json.indexOf("\"", startQuote + 1);
-            if (endQuote < 0) return "";
-            return json.substring(startQuote + 1, endQuote);
-        };
-
         String newSsid = extractJsonField(rxJson, "ssid");
         String newPass = extractJsonField(rxJson, "password");
         String pCode = extractJsonField(rxJson, "pairing_code");
