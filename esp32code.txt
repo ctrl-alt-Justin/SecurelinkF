@@ -177,6 +177,11 @@ void connectWebSocket(const String& host, int port) {
     String wsPath = String(WS_PATH_PRIMARY) + "?device_id=" + pin_device_id;
     if (pin_device_token.length() > 0) {
         wsPath += "&token=" + pin_device_token;
+        String extraHdrs = "X-Device-Id: " + pin_device_id + "\r\nX-Device-Token: " + pin_device_token + "\r\n";
+        ws.setExtraHeaders(extraHdrs.c_str());
+    } else {
+        String extraHdrs = "X-Device-Id: " + pin_device_id + "\r\n";
+        ws.setExtraHeaders(extraHdrs.c_str());
     }
 
     if (cleanHost.indexOf("trycloudflare.com") >= 0 || port == 443 || isSsl) {
@@ -854,8 +859,13 @@ void onWebSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
             hasPendingWsConnect = false;
             isStreaming = false; // Always clear stale streaming state on connect
             ringTail = (ringHead + RING_BUFFER_SIZE - PRE_ROLL_BYTES) % RING_BUFFER_SIZE;
-            needImmediateHeartbeat = true; // Signal main loop to transmit initial PING cleanly once handshake finishes
-            Serial.println("[WS] Connected to Checkpoint in Standby (VAD Armed)");
+            needImmediateHeartbeat = false; // Heartbeats sent only after authentication handshake succeeds
+            Serial.println("[WS] Connected to Checkpoint. Sending authentication handshake...");
+            if (pin_device_token.length() > 0) {
+                String authPayload = "{\"type\":\"auth\",\"device_id\":\"" + pin_device_id + "\",\"token\":\"" + pin_device_token + "\"}";
+                ws.sendTXT(authPayload);
+                Serial.printf("[WS] Transmitted auth frame for %s\n", pin_device_id.c_str());
+            }
             break;
         case WStype_TEXT:
             if (length > 0) {
@@ -930,23 +940,18 @@ void onWebSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
                     ESP.restart();
                 } else if (msg.indexOf("\"type\":\"auth_ok\"") >= 0) {
                     isDevicePaired = true;
+                    needImmediateHeartbeat = true; // Safe to send heartbeats now
                     Serial.println("[WS-AUTH] WebSocket Authentication Confirmed by Central System!");
                     sendBleText("{\"type\":\"pairing_success\",\"device_id\":\"" + pin_device_id + "\"}");
+                } else if (msg.indexOf("\"type\":\"auth_challenge\"") >= 0) {
+                    if (pin_device_token.length() > 0) {
+                        String authPayload = "{\"type\":\"auth\",\"device_id\":\"" + pin_device_id + "\",\"token\":\"" + pin_device_token + "\"}";
+                        ws.sendTXT(authPayload);
+                        Serial.println("[WS-AUTH] Responded to auth challenge with token frame.");
+                    }
                 } else if (msg.indexOf("\"type\":\"auth_error\"") >= 0) {
                     Serial.println("[WS-AUTH] WebSocket Authentication Rejected by Central System!");
                     sendBleText("{\"type\":\"provision_error\",\"code\":\"ERR_WS_AUTH\",\"message\":\"Central System rejected token\"}");
-                } else if (msg.indexOf("\"type\":\"pairing_success\"") >= 0) {
-                    String token = extractJsonField(msg, "device_token");
-                    if (token.length() > 0) {
-                        prefs.putString("token", token);
-                        pin_device_token = token;
-                        isDevicePaired = true;
-                        Serial.println("[WS-AUTH] Smart Pin token received and stored from Central System!");
-                    }
-                } else if (msg.indexOf("\"type\":\"auth_challenge\"") >= 0) {
-                    if (pin_device_token.length() > 0) {
-                        ws.sendTXT("{\"type\":\"auth\",\"device_id\":\"" + pin_device_id + "\",\"token\":\"" + pin_device_token + "\"}");
-                    }
                 }
             }
             break;
@@ -1898,7 +1903,7 @@ void loop() {
     // --- PIN KEEP-ALIVE & TELEMETRY HEARTBEAT (3.0 seconds) ---
     // Transmits regular keep-alive pings over Wi-Fi WebSocket or BLE Audio Bridge
     static unsigned long lastHeartbeatMs = 0;
-    if (ws.isConnected()) {
+    if (ws.isConnected() && isDevicePaired) {
         if (needImmediateHeartbeat || (millis() - lastHeartbeatMs >= 3000)) {
             needImmediateHeartbeat = false;
             lastHeartbeatMs = millis();

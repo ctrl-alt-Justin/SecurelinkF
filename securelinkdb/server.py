@@ -2208,37 +2208,59 @@ async def pin_websocket_endpoint(websocket: WebSocket):
             is_authenticated = True
 
     if not is_authenticated:
-        # Device did not pass token in query param; give it 3 seconds to send an auth or pairing frame
+        # Prompt device with an auth challenge so it knows to transmit its token frame if query/headers were stripped
         try:
-            auth_msg = await asyncio.wait_for(websocket.receive(), timeout=3.0)
-            if auth_msg.get("type") == "websocket.disconnect":
-                return
-            auth_raw = auth_msg.get("text")
-            if auth_raw:
+            await websocket.send_text(json.dumps({
+                "type": "auth_challenge",
+                "device_id": device_id,
+                "message": "Authentication required. Please send auth frame with token."
+            }))
+        except Exception:
+            pass
+
+        # Allow up to 5.0 seconds and process incoming frames (ignoring early PINGs)
+        t_auth_deadline = time.time() + 5.0
+        while time.time() < t_auth_deadline and not is_authenticated:
+            try:
+                remaining = max(0.5, t_auth_deadline - time.time())
+                auth_msg = await asyncio.wait_for(websocket.receive(), timeout=remaining)
+                if auth_msg.get("type") == "websocket.disconnect":
+                    return
+                auth_raw = auth_msg.get("text")
+                if not auth_raw:
+                    continue
+                # If device transmitted a heartbeat PING before auth frame, tolerate and continue waiting
+                if auth_raw.startswith("PING"):
+                    continue
                 try:
                     auth_json = json.loads(auth_raw)
                     msg_type = auth_json.get("type", "")
                     if msg_type == "auth":
                         auth_tok = auth_json.get("token", "")
                         auth_dev = auth_json.get("device_id", "").strip().upper()
-                        if auth_dev == device_id or not auth_dev:
-                            async with pin_registration_lock:
-                                cleanup_expired_pending_registrations()
-                                if device_id in pending_registrations:
-                                    expected_hash = pending_registrations[device_id].get("token_hash", "")
-                                    if secrets.compare_digest(expected_hash, hash_device_token(auth_tok)):
-                                        is_authenticated = True
-                                        is_pending_promotion = True
-                                        pending_info = pending_registrations[device_id]
-                                elif verify_device_token(device_id, auth_tok):
+                        target_dev = auth_dev if auth_dev else device_id
+                        async with pin_registration_lock:
+                            cleanup_expired_pending_registrations()
+                            if target_dev in pending_registrations:
+                                expected_hash = pending_registrations[target_dev].get("token_hash", "")
+                                if secrets.compare_digest(expected_hash, hash_device_token(auth_tok)):
                                     is_authenticated = True
+                                    is_pending_promotion = True
+                                    device_id = target_dev
+                                    pending_info = pending_registrations[target_dev]
+                                    break
+                            elif verify_device_token(target_dev, auth_tok):
+                                is_authenticated = True
+                                device_id = target_dev
+                                break
                     elif msg_type == "pair" or "pairing_code" in auth_json:
-                        pcode = str(auth_json.get("pairing_code", "")).strip()
+                        pcode = str(auth_json.get("pairing_code", "")).strip().replace(" ", "").replace("-", "")
                         now = time.time()
                         code_info = active_pairing_codes.get(pcode)
                         if code_info and not code_info.get("used", False) and now <= code_info.get("expires_at", 0):
                             code_info["used"] = True
                             code_info["device_id"] = device_id
+                            save_active_pairing_codes()
                             new_token = secrets.token_hex(32)
                             creds = load_device_credentials()
                             creds[device_id] = {
@@ -2275,10 +2297,11 @@ async def pin_websocket_endpoint(websocket: WebSocket):
                                 "device_token": new_token
                             }))
                             print(f"\n[WS-AUTH] Smart Pin '{device_id}' registered and paired live via WebSocket pairing handshake!")
+                            break
                 except Exception:
                     pass
-        except (asyncio.TimeoutError, WebSocketDisconnect, RuntimeError):
-            pass
+            except (asyncio.TimeoutError, WebSocketDisconnect, RuntimeError):
+                break
 
     if not is_authenticated:
         client_ip = websocket.client.host if websocket.client else "unknown"
