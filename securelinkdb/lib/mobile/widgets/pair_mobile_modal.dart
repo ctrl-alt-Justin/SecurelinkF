@@ -80,20 +80,37 @@ class _PairMobileCentralSystemModalState extends State<PairMobileCentralSystemMo
   }
 
   Future<void> _processQrPayload(String raw) async {
+    final trimmed = raw.trim();
+    // Direct 8-digit numeric code scanned
+    if (RegExp(r'^\d{8}$').hasMatch(trimmed)) {
+      await _executePairing(pairingCode: trimmed);
+      return;
+    }
+
     try {
-      final json = jsonDecode(raw) as Map<String, dynamic>;
-      if (json['type'] != 'SECURELINK_MOBILE_PAIR') {
+      final json = jsonDecode(trimmed) as Map<String, dynamic>;
+      final type = json['type']?.toString().toLowerCase() ?? '';
+      if (type.isNotEmpty && !type.contains('pair')) {
         setState(() {
           _errorMessage = 'Invalid QR code. Please scan a SecureLink Central System QR code.';
         });
         return;
       }
 
-      final pairingCode = json['pairing_code']?.toString() ?? '';
-      final sessionId = json['session_id']?.toString();
-      final serverIp = json['server_ip']?.toString();
-      final serverPort = json['server_port'] is int ? json['server_port'] as int : 8080;
-      final cloudTunnel = json['cloud_tunnel_url']?.toString();
+      final pairingCode = (json['pairing_code'] ?? json['code'])?.toString() ?? '';
+      if (pairingCode.isEmpty) {
+        setState(() {
+          _errorMessage = 'QR code does not contain a valid pairing code.';
+        });
+        return;
+      }
+
+      final sessionId = (json['session_id'] ?? json['session'])?.toString();
+      final serverIp = (json['local_ip'] ?? json['server_ip'])?.toString();
+      final serverPort = json['local_port'] is int
+          ? json['local_port'] as int
+          : (json['server_port'] is int ? json['server_port'] as int : 8080);
+      final cloudTunnel = (json['remote_url'] ?? json['cloud_tunnel_url'])?.toString();
 
       await _executePairing(
         pairingCode: pairingCode,
@@ -396,6 +413,34 @@ class _PairMobileCentralSystemModalState extends State<PairMobileCentralSystemMo
                   MobileScanner(
                     controller: _scannerController!,
                     onDetect: _onDetect,
+                    errorBuilder: (context, error) {
+                      return Container(
+                        color: const Color(0xFF131722),
+                        alignment: Alignment.center,
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            const Icon(Icons.videocam_off_rounded, color: Colors.orangeAccent, size: 36),
+                            const SizedBox(height: 8),
+                            Text(
+                              'Camera unavailable: ${error.errorCode.name}',
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(color: Colors.white70, fontSize: 11),
+                            ),
+                            const SizedBox(height: 10),
+                            TextButton.icon(
+                              onPressed: () => _tabController.animateTo(1),
+                              icon: const Icon(Icons.pin_rounded, size: 15),
+                              label: const Text('Use 8-Digit Code Instead'),
+                              style: TextButton.styleFrom(
+                                foregroundColor: const Color(0xFF55E2C0),
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
                   ),
                 // Scanning overlay frame
                 Container(

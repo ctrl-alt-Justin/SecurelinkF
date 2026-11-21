@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import '../services/mobile_server_service.dart';
 import '../services/ble_pin_relay_service.dart';
+import 'pair_mobile_modal.dart';
 
 class MobileDesignSystem {
   // Desktop scaffold & surface colors
@@ -645,6 +646,75 @@ class _ServerHostModalState extends State<ServerHostModal> {
               style: TextStyle(
                 color: Colors.white.withValues(alpha: 0.6),
                 fontSize: 12.5,
+              ),
+            ),
+            const SizedBox(height: 14),
+
+            // Quick QR Pairing Action Card
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  colors: [Color(0xFF0F2B20), Color(0xFF0A1813)],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: MobileDesignSystem.primaryGreenMint.withValues(alpha: 0.45)),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    width: 38,
+                    height: 38,
+                    decoration: BoxDecoration(
+                      color: MobileDesignSystem.primaryGreen.withValues(alpha: 0.25),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Icon(Icons.qr_code_scanner_rounded, color: MobileDesignSystem.primaryGreenMint, size: 22),
+                  ),
+                  const SizedBox(width: 12),
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Instant QR Code Pairing',
+                          style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w800),
+                        ),
+                        SizedBox(height: 2),
+                        Text(
+                          'Scan the dashboard QR code to auto-provision credentials',
+                          style: TextStyle(color: Colors.white70, fontSize: 10),
+                        ),
+                      ],
+                    ),
+                  ),
+                  ElevatedButton(
+                    onPressed: () {
+                      Navigator.pop(context);
+                      showModalBottomSheet(
+                        context: context,
+                        isScrollControlled: true,
+                        backgroundColor: const Color(0xFF0E151A),
+                        shape: const RoundedRectangleBorder(
+                          borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
+                        ),
+                        builder: (_) => PairMobileCentralSystemModal(
+                          service: widget.service,
+                        ),
+                      );
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: MobileDesignSystem.primaryGreen,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(9)),
+                    ),
+                    child: const Text('Scan QR', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700)),
+                  ),
+                ],
               ),
             ),
             const SizedBox(height: 14),

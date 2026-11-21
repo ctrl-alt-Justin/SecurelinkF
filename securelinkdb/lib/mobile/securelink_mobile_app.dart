@@ -67,6 +67,52 @@ class _SecureLinkMobileAppState extends State<SecureLinkMobileApp> {
     _serverService.deployCheckpoint(chk, target: target);
   }
 
+  void _openPairCentralSystem(BuildContext ctx) {
+    showModalBottomSheet(
+      context: ctx,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF0E151A),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
+      ),
+      builder: (bottomSheetCtx) => PairMobileCentralSystemModal(
+        service: _serverService,
+        onPaired: () {
+          if (mounted) setState(() {});
+        },
+      ),
+    );
+  }
+
+  void _openPairPin(BuildContext ctx) {
+    showModalBottomSheet(
+      context: ctx,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF0E151A),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
+      ),
+      builder: (bottomSheetCtx) => PairPinModal(
+        service: _serverService,
+        onPaired: () {
+          if (mounted) setState(() {});
+        },
+      ),
+    );
+  }
+
+  void _openServerHost(BuildContext ctx) {
+    showModalBottomSheet(
+      context: ctx,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF0E151A),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
+      ),
+      builder: (bottomSheetCtx) => ServerHostModal(service: _serverService),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     SystemChrome.setSystemUIOverlayStyle(
@@ -92,9 +138,10 @@ class _SecureLinkMobileAppState extends State<SecureLinkMobileApp> {
         fontFamily: 'Segoe UI',
         useMaterial3: true,
       ),
-      home: Stack(
-        children: [
-          Scaffold(
+      home: Builder(
+        builder: (homeCtx) => Stack(
+          children: [
+            Scaffold(
         appBar: PreferredSize(
           preferredSize: const Size.fromHeight(66),
           child: Container(
@@ -202,25 +249,39 @@ class _SecureLinkMobileAppState extends State<SecureLinkMobileApp> {
                     const SizedBox(width: 5),
 
                     // Pair with Central System (QR Code / 8-Digit Code)
-                    IconButton(
-                      tooltip: 'Pair with Central System (QR / Code)',
-                      padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-                      onPressed: () {
-                        showModalBottomSheet(
-                          context: context,
-                          isScrollControlled: true,
-                          backgroundColor: const Color(0xFF0E151A),
-                          shape: const RoundedRectangleBorder(
-                            borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
+                    Material(
+                      color: Colors.transparent,
+                      child: InkWell(
+                        onTap: () => _openPairCentralSystem(homeCtx),
+                        borderRadius: BorderRadius.circular(10),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                          decoration: BoxDecoration(
+                            color: MobileDesignSystem.primaryGreenMint.withValues(alpha: 0.16),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(
+                              color: MobileDesignSystem.primaryGreenMint.withValues(alpha: 0.45),
+                              width: 1.1,
+                            ),
                           ),
-                          builder: (ctx) => PairMobileCentralSystemModal(
-                            service: _serverService,
-                            onPaired: () => setState(() {}),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.qr_code_scanner_rounded, color: MobileDesignSystem.primaryGreenMint, size: 15),
+                              SizedBox(width: 3.5),
+                              Text(
+                                'QR',
+                                style: TextStyle(
+                                  color: MobileDesignSystem.primaryGreenMint,
+                                  fontSize: 9.5,
+                                  fontWeight: FontWeight.w900,
+                                  letterSpacing: 0.3,
+                                ),
+                              ),
+                            ],
                           ),
-                        );
-                      },
-                      icon: const Icon(Icons.qr_code_scanner_rounded, color: MobileDesignSystem.primaryGreenMint, size: 20),
+                        ),
+                      ),
                     ),
                     const SizedBox(width: 5),
 
@@ -229,37 +290,14 @@ class _SecureLinkMobileAppState extends State<SecureLinkMobileApp> {
                       tooltip: 'Pair Smart Pin',
                       padding: EdgeInsets.zero,
                       constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-                      onPressed: () {
-                        showModalBottomSheet(
-                          context: context,
-                          isScrollControlled: true,
-                          backgroundColor: const Color(0xFF0E151A),
-                          shape: const RoundedRectangleBorder(
-                            borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
-                          ),
-                          builder: (ctx) => PairPinModal(
-                            service: _serverService,
-                            onPaired: () => setState(() {}),
-                          ),
-                        );
-                      },
+                      onPressed: () => _openPairPin(homeCtx),
                       icon: const Icon(Icons.add_link_rounded, color: MobileDesignSystem.primaryGreenMint, size: 20),
                     ),
                     const SizedBox(width: 5),
 
                     // Live Central System Status Indicator
                     GestureDetector(
-                      onTap: () {
-                        showModalBottomSheet(
-                          context: context,
-                          isScrollControlled: true,
-                          backgroundColor: const Color(0xFF0E151A),
-                          shape: const RoundedRectangleBorder(
-                            borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
-                          ),
-                          builder: (ctx) => ServerHostModal(service: _serverService),
-                        );
-                      },
+                      onTap: () => _openServerHost(homeCtx),
                       child: Container(
                         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
                         decoration: BoxDecoration(
@@ -403,6 +441,7 @@ class _SecureLinkMobileAppState extends State<SecureLinkMobileApp> {
             ),
           ),
       ],
+    ),
     ),
   );
 }

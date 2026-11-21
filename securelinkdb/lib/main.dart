@@ -171,7 +171,7 @@ class ServerManager {
       debugPrint('[SERVER] Stopping background AI server process (PID: $pid)...');
       if (Platform.isWindows) {
         try {
-          Process.run('taskkill', ['/F', '/T', '/PID', '$pid']).catchError((_) {});
+          Process.run('taskkill', ['/F', '/T', '/PID', '$pid']).catchError((_) => ProcessResult(0, 0, '', ''));
         } catch (_) {
           try {
             proc?.kill();
@@ -2622,9 +2622,6 @@ class _Header extends StatelessWidget {
                           const SnackBar(content: Text('Copied Cloudflare Tunnel URL!'), duration: Duration(seconds: 1)),
                         );
                       },
-                          const SnackBar(content: Text('Copied Cloudflare Tunnel URL!'), duration: Duration(seconds: 1)),
-                        );
-                      },
                     ),
                   ],
                 ),
@@ -3368,25 +3365,6 @@ class _CloudflareTunnelDialogState extends State<_CloudflareTunnelDialog> {
       ],
     );
   }
-
-  Widget _infoRow(String label, String value) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        SizedBox(
-          width: 155,
-          child: Text(label, style: TextStyle(color: Colors.white.withOpacity(0.55), fontSize: 10)),
-        ),
-        Expanded(
-          child: Text(
-            value,
-            style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w700, fontFamily: 'monospace'),
-          ),
-        ),
-      ],
-    );
-  }
-}
 
   Widget _infoRow(String label, String value) {
     return Row(

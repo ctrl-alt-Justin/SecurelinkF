@@ -3,6 +3,7 @@ import '../models/device_model.dart';
 import '../services/ble_pin_relay_service.dart';
 import '../services/mobile_server_service.dart';
 import '../widgets/mobile_components.dart';
+import '../widgets/pair_mobile_modal.dart';
 
 class PinsOverviewScreen extends StatefulWidget {
   final MobileServerService service;
@@ -79,6 +80,21 @@ class _PinsOverviewScreenState extends State<PinsOverviewScreen> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
       ),
       builder: (ctx) => PairPinModal(
+        service: widget.service,
+        onPaired: () => setState(() {}),
+      ),
+    );
+  }
+
+  void _openPairCentralSystemModal() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF0E151A),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
+      ),
+      builder: (ctx) => PairMobileCentralSystemModal(
         service: widget.service,
         onPaired: () => setState(() {}),
       ),
@@ -1056,16 +1072,17 @@ class _PinsOverviewScreenState extends State<PinsOverviewScreen> {
             const SizedBox(height: 14),
           ],
 
-          // Quick Action Bar: Pair Pin Button & Fleet Toggle
+          // Quick Action Bar: Pair Pin Button, Pair CS Button, & Fleet Toggle
           Row(
             children: [
               Expanded(
+                flex: 6,
                 child: ElevatedButton.icon(
                   onPressed: _openPairModal,
-                  icon: const Icon(Icons.add_link_rounded, size: 17),
+                  icon: const Icon(Icons.add_link_rounded, size: 16),
                   label: const Text(
-                    'Pair Smart Pin',
-                    style: TextStyle(fontWeight: FontWeight.w800, fontSize: 12.5),
+                    'Pair Pin',
+                    style: TextStyle(fontWeight: FontWeight.w800, fontSize: 12),
                   ),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: MobileDesignSystem.primaryGreen,
@@ -1076,23 +1093,41 @@ class _PinsOverviewScreenState extends State<PinsOverviewScreen> {
                   ),
                 ),
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 6),
+              Expanded(
+                flex: 5,
+                child: OutlinedButton.icon(
+                  onPressed: _openPairCentralSystemModal,
+                  icon: const Icon(Icons.qr_code_scanner_rounded, size: 15, color: MobileDesignSystem.primaryGreenMint),
+                  label: const Text(
+                    'Pair CS',
+                    style: TextStyle(fontWeight: FontWeight.w800, fontSize: 11.5, color: MobileDesignSystem.primaryGreenMint),
+                  ),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: MobileDesignSystem.primaryGreenMint,
+                    side: BorderSide(color: MobileDesignSystem.primaryGreenMint.withValues(alpha: 0.5)),
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 6),
               OutlinedButton.icon(
                 onPressed: () {
                   setState(() => _viewAllFleet = !_viewAllFleet);
                 },
                 icon: Icon(
                   _viewAllFleet ? Icons.person_rounded : Icons.hub_rounded,
-                  size: 15,
+                  size: 14,
                 ),
                 label: Text(
-                  _viewAllFleet ? 'My Pins' : 'All Fleet (${widget.service.allDevices.length})',
-                  style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 11),
+                  _viewAllFleet ? 'My' : 'Fleet (${widget.service.allDevices.length})',
+                  style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 10.5),
                 ),
                 style: OutlinedButton.styleFrom(
                   foregroundColor: Colors.white70,
                   side: BorderSide(color: Colors.white.withValues(alpha: 0.15)),
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                 ),
               ),
@@ -1286,6 +1321,26 @@ class _PinsOverviewScreenState extends State<PinsOverviewScreen> {
                         padding: const EdgeInsets.symmetric(vertical: 14),
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                         elevation: 4,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+
+                  // Pair Central System (QR Code) Button
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: _openPairCentralSystemModal,
+                      icon: const Icon(Icons.qr_code_scanner_rounded, size: 18),
+                      label: const Text(
+                        'Pair Phone with Central System (Scan QR Code)',
+                        style: TextStyle(fontWeight: FontWeight.w800, fontSize: 13),
+                      ),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: MobileDesignSystem.primaryGreenMint,
+                        side: const BorderSide(color: MobileDesignSystem.primaryGreenMint),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                        padding: const EdgeInsets.symmetric(vertical: 13),
                       ),
                     ),
                   ),
