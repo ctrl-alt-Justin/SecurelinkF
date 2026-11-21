@@ -23,5 +23,17 @@
     "connection_type": "local",
     "paired_ip": "127.0.0.1",
     "revoked_at": "2026-11-22 03:53:16"
+  },
+  "MOBILE-6069": {
+    "device_id": "MOBILE-6069",
+    "device_name": "Mobile Companion (E-6069)",
+    "user_name": "Teacher / Student",
+    "role": "Responder",
+    "token_hash": "4481301d073ea061ef4a3cd2d4942107e968d7219830cbc292007df5f221b54b",
+    "paired_at": "2026-11-22 04:05:02",
+    "revoked": false,
+    "last_seen": "2026-11-22 04:07:28",
+    "connection_type": "remote",
+    "paired_ip": "136.158.25.176"
   }
 }
