@@ -338,18 +338,22 @@ void handleBleProvisioning(const String& rxJson) {
         // Contact Central System POST /api/pin/register with HTTPS if remote
         HTTPClient http;
         bool isRemoteHttps = (srvUrl.startsWith("https://") || targetHost.indexOf("trycloudflare.com") >= 0 || targetPort == 443);
+        if (isRemoteHttps && (targetPort == 8080 || targetPort <= 0)) {
+            targetPort = 443;
+        }
         String regUrl = (isRemoteHttps ? "https://" : "http://") + targetHost + (isRemoteHttps ? "" : (":" + String(targetPort))) + "/api/pin/register";
         Serial.printf("[BLE-PROV] Contacting registration endpoint: %s\n", regUrl.c_str());
 
+        WiFiClientSecure secureClient;
+        WiFiClient plainClient;
         if (isRemoteHttps) {
-            WiFiClientSecure secureClient;
             secureClient.setInsecure(); // Quick Tunnel TLS verification
             http.begin(secureClient, regUrl);
         } else {
-            http.begin(regUrl);
+            http.begin(plainClient, regUrl);
         }
         http.addHeader("Content-Type", "application/json");
-        http.setTimeout(8000);
+        http.setTimeout(10000);
 
         String regPayload = "{\"device_id\":\"" + pin_device_id + "\",\"pairing_code\":\"" + pCode + "\",\"firmware_version\":\"2.1\",\"mac\":\"" + pin_mac_address + "\"}";
         int httpCode = http.POST(regPayload);
@@ -713,14 +717,29 @@ void onWebSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
                     prefs.remove("pass");
                     prefs.remove("ssid2");
                     prefs.remove("pass2");
+                    prefs.remove("token");
                     wifi_ssid = "";
                     wifi_pass = "";
                     wifi_ssid2 = "";
                     wifi_pass2 = "";
+                    pin_device_token = "";
+                    isDevicePaired = false;
                     ws.disconnect();
                     delay(500);
                     Serial.println("[SYS] Rebooting into Setup Portal...");
                     ESP.restart();
+                } else if (msg.indexOf("\"type\":\"pairing_success\"") >= 0) {
+                    String token = extractJsonField(msg, "device_token");
+                    if (token.length() > 0) {
+                        prefs.putString("token", token);
+                        pin_device_token = token;
+                        isDevicePaired = true;
+                        Serial.println("[WS-AUTH] Smart Pin token received and stored from Central System!");
+                    }
+                } else if (msg.indexOf("\"type\":\"auth_challenge\"") >= 0) {
+                    if (pin_device_token.length() > 0) {
+                        ws.sendTXT("{\"type\":\"auth\",\"device_id\":\"" + pin_device_id + "\",\"token\":\"" + pin_device_token + "\"}");
+                    }
                 }
             }
             break;
@@ -858,6 +877,9 @@ void startConfigPortal() {
         html += "<label>Server Port</label>";
         html += "<input type='number' name='port' value='" + String(server_port) + "' required>";
         
+        html += "<label>Central System Pairing Code <span class='badge'>Optional</span></label>";
+        html += "<input type='text' name='pcode' placeholder='e.g. 969884 (from Central System Dashboard)' maxlength='6'>";
+        
         html += "<button type='submit' class='btn'>Save & Reboot</button>";
         html += "</form>";
         
@@ -884,18 +906,23 @@ void startConfigPortal() {
         String new_ssid = webServer.arg("ssid");
         String new_pass = webServer.arg("pass");
         String new_server = webServer.arg("server");
+        String new_pcode = webServer.arg("pcode");
         int new_port = webServer.arg("port").toInt();
         if (new_port <= 0) new_port = 8080;
 
         new_ssid.trim();
         new_pass.trim();
         new_server.trim();
+        new_pcode.trim();
 
         if (new_ssid.length() > 0) {
             prefs.putString("ssid", new_ssid);
             prefs.putString("pass", new_pass);
             prefs.putString("server", new_server);
             prefs.putInt("port", new_port);
+            if (new_pcode.length() == 6) {
+                prefs.putString("pcode_pending", new_pcode);
+            }
 
             wifi_ssid = new_ssid;
             wifi_pass = new_pass;
@@ -986,6 +1013,15 @@ void startConfigPortal() {
 
 void discoverCheckpoint() {
     if (hasActiveStream || hasPendingWsConnect || ws.isConnected() || wifiConnectInProgress) return;
+
+    if (!isDevicePaired || pin_device_token.length() == 0) {
+        static unsigned long lastUnpairedLog = 0;
+        if (millis() - lastUnpairedLog > 10000) {
+            lastUnpairedLog = millis();
+            Serial.printf("[WS] Pin '%s' connected to Wi-Fi but unpaired (no token). Awaiting pairing via Mobile BLE or Setup Portal.\n", pin_device_id.c_str());
+        }
+        return;
+    }
 
     if (WiFi.status() != WL_CONNECTED) {
         wifiConnectInProgress = true;
@@ -1105,17 +1141,23 @@ void handleSerialCommands() {
         String cmd = Serial.readStringUntil('\n');
         cmd.trim();
         if (cmd.startsWith("SET_WIFI:") || cmd.startsWith("CONFIG_WIFI:")) {
-            // Format: SET_WIFI:<ssid>:<pass>:<server_ip>:<port>
+            // Format: SET_WIFI:<ssid>:<pass>:<server_ip>:<port>[:<pairing_code>]
             int p1 = cmd.indexOf(':');
             int p2 = cmd.indexOf(':', p1 + 1);
             int p3 = cmd.indexOf(':', p2 + 1);
             int p4 = cmd.indexOf(':', p3 + 1);
+            int p5 = (p4 > 0) ? cmd.indexOf(':', p4 + 1) : -1;
             if (p1 > 0 && p2 > 0) {
                 String n_ssid = cmd.substring(p1 + 1, p2);
                 String n_pass = cmd.substring(p2 + 1, p3 > 0 ? p3 : cmd.length());
                 String n_server = p3 > 0 ? cmd.substring(p3 + 1, p4 > 0 ? p4 : cmd.length()) : server_host;
-                int n_port = p4 > 0 ? cmd.substring(p4 + 1).toInt() : server_port;
+                int n_port = p4 > 0 ? cmd.substring(p4 + 1, p5 > 0 ? p5 : cmd.length()).toInt() : server_port;
                 if (n_port <= 0) n_port = 8080;
+                String n_pcode = p5 > 0 ? cmd.substring(p5 + 1) : "";
+                n_pcode.trim();
+                if (n_pcode.length() == 6) {
+                    prefs.putString("pcode_pending", n_pcode);
+                }
 
                 // If primary Wi-Fi is changing, save previous as secondary roaming backup
                 if (wifi_ssid.length() > 0 && wifi_ssid != n_ssid) {
@@ -1353,6 +1395,39 @@ void setup() {
 
     if (connected) {
         WiFi.setSleep(false); // Disable modem sleep: keeps TCP socket open and eliminates Windows WinError 121 timeouts
+        if (!isDevicePaired && prefs.isKey("pcode_pending")) {
+            String pendingCode = prefs.getString("pcode_pending", "");
+            prefs.remove("pcode_pending");
+            if (pendingCode.length() == 6) {
+                Serial.printf("[PROV] Found pending pairing code '%s'. Registering with Central System...\n", pendingCode.c_str());
+                HTTPClient http;
+                bool isRemoteHttps = (server_host.indexOf("trycloudflare.com") >= 0 || server_port == 443);
+                String regUrl = (isRemoteHttps ? "https://" : "http://") + server_host + (isRemoteHttps ? "" : (":" + String(server_port))) + "/api/pin/register";
+                WiFiClientSecure secClient;
+                WiFiClient stdClient;
+                if (isRemoteHttps) {
+                    secClient.setInsecure();
+                    http.begin(secClient, regUrl);
+                } else {
+                    http.begin(stdClient, regUrl);
+                }
+                http.addHeader("Content-Type", "application/json");
+                http.setTimeout(10000);
+                String regPayload = "{\"device_id\":\"" + pin_device_id + "\",\"pairing_code\":\"" + pendingCode + "\",\"firmware_version\":\"2.1\",\"mac\":\"" + pin_mac_address + "\"}";
+                int hCode = http.POST(regPayload);
+                String hResp = http.getString();
+                http.end();
+                if (hCode == 200 && hResp.indexOf("\"status\":\"success\"") >= 0) {
+                    String token = extractJsonField(hResp, "device_token");
+                    if (token.length() > 0) {
+                        prefs.putString("token", token);
+                        pin_device_token = token;
+                        isDevicePaired = true;
+                        Serial.println("[PROV] Smart Pin successfully registered from pending pairing code!");
+                    }
+                }
+            }
+        }
         discoverCheckpoint();
     } else if (wifi_ssid.length() == 0) {
         // BLE Onboarding is active: do not block in captive portal!
@@ -1429,8 +1504,8 @@ void loop() {
             hasPendingWsConnect = false;
             cachedServerIP = server_host; 
         }
-        // Auto-reconnect to checkpoint server on standby so streaming is instantaneous
-        if (!ws.isConnected() && !hasPendingWsConnect && cachedServerIP != "" && !wifiConnectInProgress) {
+        // Auto-reconnect to checkpoint server on standby so streaming is instantaneous (only if device is paired)
+        if (!ws.isConnected() && !hasPendingWsConnect && cachedServerIP != "" && !wifiConnectInProgress && isDevicePaired && pin_device_token.length() > 0) {
             static unsigned long lastWsRetry = 0;
             if (millis() - lastWsRetry > 3000) {
                 lastWsRetry = millis();

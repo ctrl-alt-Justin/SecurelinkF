@@ -8391,6 +8391,7 @@ class _PinSetupDialogState extends State<_PinSetupDialog> with SingleTickerProvi
         'pass': _passController.text.trim(),
         'server_ip': _serverIpController.text.trim(),
         'server_port': int.tryParse(_serverPortController.text.trim()) ?? 8080,
+        if (_pairingCode != null && _pairingCode!.isNotEmpty) 'pairing_code': _pairingCode,
       }));
       final resp = await req.close();
       final body = await resp.transform(utf8.decoder).join();

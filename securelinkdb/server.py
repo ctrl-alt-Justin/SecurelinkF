@@ -727,8 +727,13 @@ async def provision_pin_serial(payload: dict):
         time.sleep(0.3)
         ser.reset_input_buffer()
 
-        cmd = f"SET_WIFI:{ssid}:{password}:{server_ip}:{server_port}\n"
-        print(f"[PROVISION] Sending command to Pin: SET_WIFI:{ssid}:****:{server_ip}:{server_port}")
+        pcode = str(payload.get("pairing_code", "")).strip()
+        if pcode:
+            cmd = f"SET_WIFI:{ssid}:{password}:{server_ip}:{server_port}:{pcode}\n"
+            print(f"[PROVISION] Sending command to Pin with pairing code: SET_WIFI:{ssid}:****:{server_ip}:{server_port}:{pcode}")
+        else:
+            cmd = f"SET_WIFI:{ssid}:{password}:{server_ip}:{server_port}\n"
+            print(f"[PROVISION] Sending command to Pin: SET_WIFI:{ssid}:****:{server_ip}:{server_port}")
         ser.write(cmd.encode("utf-8"))
         ser.flush()
 
@@ -1906,18 +1911,60 @@ async def pin_websocket_endpoint(websocket: WebSocket):
 
     if device_id in creds and device_token and verify_device_token(device_id, device_token):
         is_authenticated = True
-    elif device_id in creds and not device_token:
-        # Device did not pass token in query param; give it 3 seconds to send an auth frame
+    elif not is_authenticated:
+        # Device did not pass token in query param; give it 3 seconds to send an auth or pairing frame
         try:
             auth_raw = await asyncio.wait_for(websocket.receive_text(), timeout=3.0)
             try:
                 auth_json = json.loads(auth_raw)
-                if auth_json.get("type") == "auth":
+                msg_type = auth_json.get("type", "")
+                if msg_type == "auth" and device_id in creds:
                     auth_tok = auth_json.get("token", "")
                     auth_dev = auth_json.get("device_id", "").strip().upper()
                     if (auth_dev == device_id or not auth_dev) and verify_device_token(device_id, auth_tok):
                         is_authenticated = True
                         await websocket.send_text(json.dumps({"type": "auth_ok", "status": "authenticated"}))
+                elif msg_type == "pair" or "pairing_code" in auth_json:
+                    pcode = str(auth_json.get("pairing_code", "")).strip()
+                    now = time.time()
+                    code_info = active_pairing_codes.get(pcode)
+                    if code_info and not code_info.get("used", False) and now <= code_info.get("expires_at", 0):
+                        code_info["used"] = True
+                        code_info["device_id"] = device_id
+                        new_token = secrets.token_hex(32)
+                        creds[device_id] = {
+                            "token_hash": hash_device_token(new_token),
+                            "registered_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "fw_version": auth_json.get("firmware_version", "2.1"),
+                            "mac": auth_json.get("mac", ""),
+                            "pairing_code_used": pcode,
+                        }
+                        save_device_credentials(creds)
+                        dev_record = registered_devices.get(device_id, {})
+                        dev_record.update({
+                            "id": device_id,
+                            "online": True,
+                            "battery": dev_record.get("battery", 100),
+                            "state": "CONNECTED",
+                            "network": "Campus Wi-Fi",
+                            "lastSeen": "Just paired",
+                            "paired": True,
+                        })
+                        registered_devices[device_id] = dev_record
+                        await broadcast_to_ui({
+                            "event_type": "pin_registered",
+                            "device_id": device_id,
+                            "device": dev_record,
+                            "timestamp": datetime.now().strftime("%H:%M:%S")
+                        })
+                        is_authenticated = True
+                        await websocket.send_text(json.dumps({
+                            "type": "pairing_success",
+                            "status": "authenticated",
+                            "device_id": device_id,
+                            "device_token": new_token
+                        }))
+                        print(f"\n[WS-AUTH] Smart Pin '{device_id}' registered and paired live via WebSocket pairing handshake!")
             except Exception:
                 pass
         except asyncio.TimeoutError:

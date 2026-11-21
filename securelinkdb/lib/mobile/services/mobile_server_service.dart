@@ -1339,7 +1339,9 @@ class MobileServerService extends ChangeNotifier {
     await relay.requestDeviceInfo();
     await Future.delayed(const Duration(milliseconds: 350));
 
-    final targetServerUrl = 'http://$host:$port';
+    // Provide the active Central System base URL (Cloudflare HTTPS or LAN HTTP)
+    final targetServerUrl = baseHttpUrl;
+    debugPrint('[BLE-PROV] Using Central System URL for Pin: $targetServerUrl');
     onProgress?.call('Transmitting Wi-Fi & Pairing Code to Pin...', 0.45);
 
     final completer = Completer<Map<String, dynamic>>();
