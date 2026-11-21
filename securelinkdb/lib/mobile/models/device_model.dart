@@ -11,6 +11,10 @@ class DeviceStatus {
   final int rssi;
   final String estRuntime;
   final String? ipAddress;
+  final String? connectionSource;
+  final bool bleProximity;
+  final String? relayedBy;
+  final String? lastBleSeen;
 
   const DeviceStatus({
     required this.id,
@@ -23,6 +27,10 @@ class DeviceStatus {
     this.rssi = -62,
     this.estRuntime = '6h 30m',
     this.ipAddress,
+    this.connectionSource,
+    this.bleProximity = false,
+    this.relayedBy,
+    this.lastBleSeen,
   });
 
   factory DeviceStatus.fromJson(Map<String, dynamic> json) {
@@ -43,6 +51,10 @@ class DeviceStatus {
       rssi: json['rssi'] as int? ?? -62,
       estRuntime: json['estRuntime'] as String? ?? runtime,
       ipAddress: json['ip'] as String?,
+      connectionSource: json['connection_source'] as String?,
+      bleProximity: json['ble_proximity'] as bool? ?? false,
+      relayedBy: json['relayed_by'] as String?,
+      lastBleSeen: json['last_ble_seen'] as String?,
     );
   }
 
@@ -57,6 +69,10 @@ class DeviceStatus {
     'rssi': rssi,
     'estRuntime': estRuntime,
     'ip': ipAddress,
+    'connection_source': connectionSource,
+    'ble_proximity': bleProximity,
+    'relayed_by': relayedBy,
+    'last_ble_seen': lastBleSeen,
   };
 
   DeviceStatus copyWith({
@@ -70,6 +86,10 @@ class DeviceStatus {
     int? rssi,
     String? estRuntime,
     String? ipAddress,
+    String? connectionSource,
+    bool? bleProximity,
+    String? relayedBy,
+    String? lastBleSeen,
   }) {
     return DeviceStatus(
       id: id ?? this.id,
@@ -82,6 +102,10 @@ class DeviceStatus {
       rssi: rssi ?? this.rssi,
       estRuntime: estRuntime ?? this.estRuntime,
       ipAddress: ipAddress ?? this.ipAddress,
+      connectionSource: connectionSource ?? this.connectionSource,
+      bleProximity: bleProximity ?? this.bleProximity,
+      relayedBy: relayedBy ?? this.relayedBy,
+      lastBleSeen: lastBleSeen ?? this.lastBleSeen,
     );
   }
 

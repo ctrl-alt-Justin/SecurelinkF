@@ -5,7 +5,6 @@ import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
-import 'package:web_socket_channel/web_socket_channel.dart';
 import 'mobile_server_service.dart';
 
 enum BleRelayState {
@@ -37,9 +36,6 @@ class BlePinRelayService extends ChangeNotifier {
   BluetoothCharacteristic? _rxCharacteristic;
   StreamSubscription? _txSubscription;
   StreamSubscription? _connectionStateSub;
-
-  WebSocketChannel? _relayWsChannel;
-  bool _isRelayWsConnected = false;
 
   BleRelayState _state = BleRelayState.disconnected;
   String _statusMessage = 'BLE Bridge Disconnected';
@@ -252,8 +248,11 @@ class BlePinRelayService extends ChangeNotifier {
       _statusMessage = 'BLE Audio Bridge ACTIVE with $_pinnedDeviceId';
       notifyListeners();
 
-      // Ensure relay WebSocket is connected to Central System
-      _ensureRelayWebSocket();
+      // Notify MobileServerService of BLE connection presence
+      MobileServerService().reportBleProximity(
+        pinId: _pinnedDeviceId,
+        rssi: -50,
+      );
 
       return true;
     } catch (e) {
@@ -264,44 +263,8 @@ class BlePinRelayService extends ChangeNotifier {
     }
   }
 
-  void _ensureRelayWebSocket() {
-    if (_isRelayWsConnected && _relayWsChannel != null) return;
-
-    try {
-      final s = MobileServerService();
-      final targetId = _pinnedDeviceId.isNotEmpty ? _pinnedDeviceId : 'PIN-BLE';
-      final uri = s.getPinWsUri(targetId);
-      debugPrint('[BLE-RELAY] Connecting Pin WebSocket to: $uri');
-      _relayWsChannel = WebSocketChannel.connect(uri);
-
-      _relayWsChannel!.ready.then((_) {
-        _isRelayWsConnected = true;
-        debugPrint('[BLE-RELAY] Pin WebSocket connected for $targetId!');
-      }).catchError((e) {
-        _isRelayWsConnected = false;
-        debugPrint('[BLE-RELAY] Pin WebSocket connection refused: $e');
-      });
-
-      _relayWsChannel!.stream.listen(
-        (msg) {
-          debugPrint('[BLE-RELAY] Server response: $msg');
-        },
-        onError: (err) {
-          _isRelayWsConnected = false;
-        },
-        onDone: () {
-          _isRelayWsConnected = false;
-        },
-      );
-    } catch (e) {
-      debugPrint('[BLE-RELAY] Socket setup error: $e');
-    }
-  }
-
   void _handleIncomingBleData(List<int> bytes) {
     if (bytes.isEmpty) return;
-
-    _ensureRelayWebSocket();
 
     // 1. If currently in Snapshot Assembly mode, treat incoming packets as binary JPEG slices
     if (_isReceivingSnapshot) {
@@ -317,15 +280,15 @@ class BlePinRelayService extends ChangeNotifier {
         final completedJpeg = _snapshotBuilder.takeBytes();
         _isReceivingSnapshot = false;
         _expectedSnapshotBytes = 0;
-        debugPrint('[BLE-SNAP] Snapshot fully assembled (${completedJpeg.length} bytes). Transmitting to Cloudflare Tunnel...');
+        debugPrint('[BLE-SNAP] Snapshot fully assembled (${completedJpeg.length} bytes). Relaying through Mobile Companion session...');
 
         try {
-          _relayWsChannel?.sink.add(completedJpeg);
-          debugPrint('[BLE-SNAP] Completed JPEG forwarded over active WebSocket!');
+          MobileServerService().relayBleSnapshot(_pinnedDeviceId, completedJpeg);
+          debugPrint('[BLE-SNAP] Completed JPEG relayed over Mobile Companion WebSocket!');
           _statusMessage = 'Relayed Incident Snapshot (${(completedJpeg.length / 1024).toStringAsFixed(1)} KB)';
           notifyListeners();
         } catch (e) {
-          debugPrint('[BLE-SNAP] Error sending JPEG to server: $e');
+          debugPrint('[BLE-SNAP] Error relaying JPEG to server: $e');
         }
       } else {
         // Set safety timeout in case BLE packets drop mid-transfer
@@ -369,7 +332,7 @@ class BlePinRelayService extends ChangeNotifier {
     } catch (_) {}
 
     if (isAsciiText) {
-      debugPrint('[BLE-RELAY] Forwarding Command: $textMsg');
+      debugPrint('[BLE-RELAY] Relaying Command: $textMsg');
       if (textMsg.startsWith('SNAP:')) {
         // Enter Snapshot Receiving Mode
         final declaredLen = int.tryParse(textMsg.substring(5).trim()) ?? 0;
@@ -380,12 +343,8 @@ class BlePinRelayService extends ChangeNotifier {
         _statusMessage = 'Receiving Camera Snapshot ($declaredLen B)...';
         notifyListeners();
 
-        // Forward the SNAP:<len> header to Central System / Cloudflare Tunnel
-        try {
-          _relayWsChannel?.sink.add(textMsg);
-        } catch (e) {
-          debugPrint('[BLE-RELAY] Error sending SNAP header to CS: $e');
-        }
+        // Forward SNAP command through Mobile Companion session
+        MobileServerService().relayBleCommand(_pinnedDeviceId, textMsg);
 
         // Set safety timeout (8 seconds)
         _snapshotTimeoutTimer?.cancel();
@@ -403,6 +362,7 @@ class BlePinRelayService extends ChangeNotifier {
         _state = BleRelayState.connected;
         _statusMessage = 'Relayed Incident Audio Stream Complete';
         notifyListeners();
+        MobileServerService().relayBleCommand(_pinnedDeviceId, textMsg);
       } else if (textMsg.startsWith('PING:')) {
         final parts = textMsg.split(':');
         int? rssi;
@@ -412,18 +372,16 @@ class BlePinRelayService extends ChangeNotifier {
         if (parts.length >= 3) batt = int.tryParse(parts[2]);
         if (parts.length >= 4) mv = int.tryParse(parts[3]);
         if (_pinnedDeviceId.isNotEmpty) {
-          MobileServerService().updatePinTelemetryFromBle(
+          MobileServerService().reportBleProximity(
             pinId: _pinnedDeviceId,
             rssi: rssi ?? -55,
             battery: batt,
             batteryMv: mv,
           );
         }
-      }
-      try {
-        _relayWsChannel?.sink.add(textMsg);
-      } catch (e) {
-        debugPrint('[BLE-RELAY] Error sending text to CS: $e');
+        MobileServerService().relayBleCommand(_pinnedDeviceId, textMsg);
+      } else {
+        MobileServerService().relayBleCommand(_pinnedDeviceId, textMsg);
       }
     } else {
       // Binary PCM Audio chunk from ESP32
@@ -433,11 +391,7 @@ class BlePinRelayService extends ChangeNotifier {
       _statusMessage = 'Relaying Voice to Server (${(_relayedBytesTotal / 1024).toStringAsFixed(1)} KB)';
       notifyListeners();
 
-      try {
-        _relayWsChannel?.sink.add(Uint8List.fromList(bytes));
-      } catch (e) {
-        debugPrint('[BLE-RELAY] Error forwarding audio to CS: $e');
-      }
+      MobileServerService().relayBleAudio(_pinnedDeviceId, bytes);
     }
   }
 
@@ -451,9 +405,9 @@ class BlePinRelayService extends ChangeNotifier {
     _connectedDevice = null;
     _txCharacteristic = null;
     _rxCharacteristic = null;
-    _relayWsChannel?.sink.close();
-    _relayWsChannel = null;
-    _isRelayWsConnected = false;
+    if (_pinnedDeviceId.isNotEmpty) {
+      MobileServerService().reportBleDisconnected(_pinnedDeviceId);
+    }
     _state = BleRelayState.disconnected;
     _statusMessage = 'BLE Bridge Disconnected';
     _pinnedDeviceId = '';

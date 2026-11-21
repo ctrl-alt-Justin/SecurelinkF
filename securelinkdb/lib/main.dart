@@ -639,6 +639,10 @@ class DeviceStatus {
   final int cpuMhz;
   final int rssi;
   final String estRuntime;
+  final String? connectionSource;
+  final bool bleProximity;
+  final String? relayedBy;
+  final String? lastBleSeen;
 
   const DeviceStatus({
     required this.id,
@@ -650,6 +654,10 @@ class DeviceStatus {
     this.cpuMhz = 160,
     this.rssi = -62,
     this.estRuntime = '6h 30m',
+    this.connectionSource,
+    this.bleProximity = false,
+    this.relayedBy,
+    this.lastBleSeen,
   });
 
   factory DeviceStatus.fromJson(Map<String, dynamic> json) {
@@ -669,6 +677,42 @@ class DeviceStatus {
       cpuMhz: json['cpuMhz'] ?? 160,
       rssi: json['rssi'] ?? -62,
       estRuntime: json['estRuntime'] ?? runtime,
+      connectionSource: json['connection_source'] as String?,
+      bleProximity: json['ble_proximity'] as bool? ?? false,
+      relayedBy: json['relayed_by'] as String?,
+      lastBleSeen: json['last_ble_seen'] as String?,
+    );
+  }
+
+  DeviceStatus copyWith({
+    String? id,
+    bool? online,
+    int? battery,
+    String? state,
+    String? network,
+    String? lastSeen,
+    int? cpuMhz,
+    int? rssi,
+    String? estRuntime,
+    String? connectionSource,
+    bool? bleProximity,
+    String? relayedBy,
+    String? lastBleSeen,
+  }) {
+    return DeviceStatus(
+      id: id ?? this.id,
+      online: online ?? this.online,
+      battery: battery ?? this.battery,
+      state: state ?? this.state,
+      network: network ?? this.network,
+      lastSeen: lastSeen ?? this.lastSeen,
+      cpuMhz: cpuMhz ?? this.cpuMhz,
+      rssi: rssi ?? this.rssi,
+      estRuntime: estRuntime ?? this.estRuntime,
+      connectionSource: connectionSource ?? this.connectionSource,
+      bleProximity: bleProximity ?? this.bleProximity,
+      relayedBy: relayedBy ?? this.relayedBy,
+      lastBleSeen: lastBleSeen ?? this.lastBleSeen,
     );
   }
 }
@@ -1006,13 +1050,14 @@ class _DashboardShellState extends State<DashboardShell> with WindowListener {
     );
   }
 
-  void _openPairMobileDialog() {
+  void _openPairMobileDialog({Map<String, dynamic>? initialPendingRequest}) {
     showDialog(
       context: context,
       builder: (ctx) => _PairMobileDialog(
         primaryIp: primaryIp,
         cloudTunnelUrl: cloudTunnelUrl,
         initialPendingRequests: pendingMobileRequests,
+        initialPendingRequest: initialPendingRequest,
         onApprove: (sid, approved, role, user) {
           _approveMobileDevice(sid, approved, role, user);
         },
@@ -1021,6 +1066,10 @@ class _DashboardShellState extends State<DashboardShell> with WindowListener {
         },
       ),
     );
+  }
+
+  void _openReviewMobileDialog(Map<String, dynamic> requestData) {
+    _openPairMobileDialog(initialPendingRequest: requestData);
   }
 
   void toggleHarmfulWordsOnly() {
@@ -1290,7 +1339,7 @@ class _DashboardShellState extends State<DashboardShell> with WindowListener {
                     action: SnackBarAction(
                       label: 'Review',
                       textColor: const Color(0xFF55E2C0),
-                      onPressed: _openPairMobileDialog,
+                      onPressed: () => _openReviewMobileDialog(data),
                     ),
                     duration: const Duration(seconds: 5),
                   ),
@@ -5041,6 +5090,26 @@ class _DeviceCard extends StatelessWidget {
             children: [
               _StatusPill(online: device.online, state: device.state),
               const SizedBox(width: 8),
+              if (device.bleProximity) ...[
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF38BDF8).withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(7),
+                    border: Border.all(color: const Color(0xFF38BDF8).withOpacity(0.3)),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.bluetooth_connected_rounded, size: 10, color: Color(0xFF38BDF8)),
+                      const SizedBox(width: 3),
+                      Text('BLE Relay (${device.relayedBy ?? "Phone"})',
+                          style: const TextStyle(fontSize: 7.5, fontWeight: FontWeight.w700, color: Color(0xFF38BDF8))),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+              ],
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
                 decoration: BoxDecoration(color: const Color(0xFF7F6CFF).withOpacity(0.10), borderRadius: BorderRadius.circular(7), border: Border.all(color: const Color(0xFF7F6CFF).withOpacity(0.18))),
@@ -7496,6 +7565,7 @@ class _PairMobileDialog extends StatefulWidget {
   final String primaryIp;
   final String? cloudTunnelUrl;
   final List<Map<String, dynamic>> initialPendingRequests;
+  final Map<String, dynamic>? initialPendingRequest;
   final void Function(String sessionId, bool approved, String role, String user) onApprove;
   final VoidCallback onRefreshFleet;
 
@@ -7504,6 +7574,7 @@ class _PairMobileDialog extends StatefulWidget {
     required this.primaryIp,
     required this.cloudTunnelUrl,
     required this.initialPendingRequests,
+    this.initialPendingRequest,
     required this.onApprove,
     required this.onRefreshFleet,
   });
@@ -7532,8 +7603,23 @@ class _PairMobileDialogState extends State<_PairMobileDialog> {
   @override
   void initState() {
     super.initState();
-    _userCtrl = TextEditingController(text: 'Campus Staff');
-    _createPairingSession();
+    final pendingReq = widget.initialPendingRequest ??
+        (widget.initialPendingRequests.isNotEmpty ? widget.initialPendingRequests.first : null);
+
+    if (pendingReq != null) {
+      _sessionState = 'pending_approval';
+      _pendingData = pendingReq;
+      _sessionId = pendingReq['session_id'];
+      _isLoading = false;
+      final dName = pendingReq['device_name'] ?? 'Mobile Device';
+      _userCtrl = TextEditingController(text: pendingReq['user_name'] ?? 'User of $dName');
+      _pollTimer = Timer.periodic(const Duration(milliseconds: 1800), (timer) {
+        _pollStatus();
+      });
+    } else {
+      _userCtrl = TextEditingController(text: 'Campus Staff');
+      _createPairingSession();
+    }
   }
 
   @override
@@ -7609,13 +7695,16 @@ class _PairMobileDialogState extends State<_PairMobileDialog> {
       if (res.statusCode == 200) {
         final body = await res.transform(utf8.decoder).join();
         final json = jsonDecode(body);
-        final st = json['status'] as String? ?? '';
-        if (st == 'pending_approval' && _sessionState != 'pending_approval' && mounted) {
+        final st = (json['state'] as String? ?? json['status'] as String? ?? '').toLowerCase();
+        final devInfo = json['device_info'] as Map<String, dynamic>? ?? json;
+        if (st == 'pending_approval' && mounted) {
           setState(() {
             _sessionState = 'pending_approval';
-            _pendingData = json;
-            final dName = json['device_name'] ?? 'Mobile Device';
-            _userCtrl.text = 'User of $dName';
+            _pendingData = devInfo;
+            final dName = devInfo['device_name'] ?? 'Mobile Device';
+            if (_userCtrl.text.isEmpty || _userCtrl.text == 'Campus Staff') {
+              _userCtrl.text = devInfo['user_name'] ?? 'User of $dName';
+            }
           });
         } else if (st == 'approved' && _sessionState != 'approved' && mounted) {
           setState(() => _sessionState = 'approved');

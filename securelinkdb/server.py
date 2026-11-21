@@ -271,6 +271,7 @@ def init_registered_devices_from_credentials():
 TUNNEL_CONFIG_FILE = os.path.join(BASE_DIR, "tunnel_config.json")
 current_cloud_tunnel_url: Optional[str] = None
 active_mobile_clients: Dict[WebSocket, dict] = {}
+relayed_audio_accumulators: Dict[str, bytearray] = {}
 recent_incidents: collections.deque = collections.deque(maxlen=50)
 
 async def _on_tunnel_url_changed(new_url: Optional[str]):
@@ -1260,24 +1261,31 @@ async def mobile_websocket_endpoint(websocket: WebSocket):
 
     if not is_authenticated:
         try:
-            raw_auth = await asyncio.wait_for(websocket.receive_text(), timeout=3.0)
-            try:
-                auth_data = json.loads(raw_auth)
-                if auth_data.get("type") == "auth":
-                    device_id = auth_data.get("device_id", "").strip().upper()
-                    token = auth_data.get("token", "").strip()
-                    is_authenticated, device_info = mobile_pairing_mgr.verify_mobile_token(device_id, token)
-                    if is_authenticated:
-                        await websocket.send_text(json.dumps({"type": "auth_ok", "status": "authenticated"}))
-            except Exception:
-                pass
-        except asyncio.TimeoutError:
+            auth_event = await asyncio.wait_for(websocket.receive(), timeout=3.0)
+            if auth_event.get("type") == "websocket.disconnect":
+                return
+            raw_auth = auth_event.get("text")
+            if raw_auth:
+                try:
+                    auth_data = json.loads(raw_auth)
+                    if auth_data.get("type") == "auth":
+                        device_id = auth_data.get("device_id", "").strip().upper()
+                        token = auth_data.get("token", "").strip()
+                        is_authenticated, device_info = mobile_pairing_mgr.verify_mobile_token(device_id, token)
+                        if is_authenticated:
+                            await websocket.send_text(json.dumps({"type": "auth_ok", "status": "authenticated"}))
+                except Exception:
+                    pass
+        except (asyncio.TimeoutError, WebSocketDisconnect, RuntimeError):
             pass
 
     if not is_authenticated or not device_info:
         client_ip = websocket.client.host if websocket.client else "unknown"
         print(f"\n[WS-MOBILE-AUTH] Unauthorized mobile connection rejected for '{device_id}' from {client_ip}.")
-        await websocket.close(code=4401, reason="Unauthorized mobile device")
+        try:
+            await websocket.close(code=4401, reason="Unauthorized mobile device")
+        except Exception:
+            pass
         return
 
     # Determine connection type (remote via Cloudflare tunnel vs local LAN)
@@ -1327,7 +1335,18 @@ async def mobile_websocket_endpoint(websocket: WebSocket):
 
     try:
         while True:
-            data = await websocket.receive_text()
+            try:
+                event_msg = await websocket.receive()
+            except (WebSocketDisconnect, RuntimeError):
+                break
+
+            if event_msg.get("type") == "websocket.disconnect":
+                break
+
+            data = event_msg.get("text")
+            if not data:
+                continue
+
             if data == "ping":
                 await websocket.send_text(json.dumps({"event_type": "pong"}))
                 continue
@@ -1335,7 +1354,129 @@ async def mobile_websocket_endpoint(websocket: WebSocket):
             try:
                 msg = json.loads(data)
                 mtype = msg.get("event_type") or msg.get("type")
-                if mtype in ("TRIGGER:DANGER", "CMD:CAPTURE_SNAPSHOT"):
+
+                # 1. BLE Relay: Presence and telemetry from nearby Smart Pins
+                if mtype == "ble_relay_presence":
+                    pin_id = str(msg.get("pin_id", "")).strip().upper()
+                    if pin_id:
+                        if pin_id not in registered_devices:
+                            registered_devices[pin_id] = {
+                                "id": pin_id,
+                                "online": False,
+                                "battery": msg.get("battery", 100),
+                                "state": "STANDBY",
+                                "network": "Campus Wi-Fi",
+                                "lastSeen": "Discovered via BLE Relay",
+                                "cpuMhz": 160,
+                                "rssi": msg.get("rssi", -60),
+                                "estRuntime": "--",
+                                "paired": True,
+                            }
+                        dev_record = registered_devices[pin_id]
+                        dev_record["ble_proximity"] = True
+                        dev_record["relayed_by"] = device_id
+                        dev_record["last_ble_seen"] = datetime.now().strftime("%H:%M:%S")
+                        if "battery" in msg:
+                            dev_record["battery"] = int(msg["battery"])
+                        if "battery_mv" in msg:
+                            dev_record["batteryMv"] = int(msg["battery_mv"])
+                        if "rssi" in msg:
+                            dev_record["rssi"] = int(msg["rssi"])
+
+                        await broadcast_to_ui({
+                            "event_type": "pin_ble_relayed",
+                            "pin_id": pin_id,
+                            "relayed_by": device_id,
+                            "device": dev_record,
+                            "timestamp": datetime.now().strftime("%H:%M:%S")
+                        })
+
+                # 2. BLE Relay: BLE Disconnection notification
+                elif mtype == "ble_relay_disconnect":
+                    pin_id = str(msg.get("pin_id", "")).strip().upper()
+                    if pin_id in registered_devices:
+                        registered_devices[pin_id]["ble_proximity"] = False
+                        registered_devices[pin_id]["last_ble_seen"] = f"BLE Disconnected at {datetime.now().strftime('%H:%M:%S')}"
+                        # Note: Direct Wi-Fi status online remains completely unaffected!
+                        await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[pin_id]})
+
+                # 3. BLE Relay: Text command (e.g. STREAM_END, PING, etc.)
+                elif mtype == "ble_relay_command":
+                    pin_id = str(msg.get("pin_id", "")).strip().upper()
+                    cmd = str(msg.get("command", "")).strip()
+                    if pin_id and cmd:
+                        if cmd in ("STREAM_END", "STREAM_STOP"):
+                            acc = relayed_audio_accumulators.get(pin_id)
+                            if acc and len(acc) >= 4800:
+                                final_pcm = bytes(acc)
+                                relayed_audio_accumulators[pin_id] = bytearray()
+                                asyncio.create_task(handle_completed_audio(pin_id, final_pcm, websocket, source="MOBILE_BLE_RELAY", relayed_by=device_id))
+                            elif acc:
+                                relayed_audio_accumulators[pin_id] = bytearray()
+                        elif cmd.startswith("PING:"):
+                            parts = cmd.split(":")
+                            if len(parts) >= 2 and pin_id in registered_devices:
+                                try:
+                                    registered_devices[pin_id]["rssi"] = int(parts[1])
+                                except Exception:
+                                    pass
+                            if len(parts) >= 3 and pin_id in registered_devices:
+                                try:
+                                    registered_devices[pin_id]["battery"] = int(parts[2])
+                                except Exception:
+                                    pass
+
+                # 4. BLE Relay: Raw PCM audio chunks
+                elif mtype == "ble_relay_audio":
+                    pin_id = str(msg.get("pin_id", "")).strip().upper()
+                    b64_data = msg.get("pcm_base64", "")
+                    if pin_id and b64_data:
+                        raw_pcm = base64.b64decode(b64_data)
+                        acc = relayed_audio_accumulators.setdefault(pin_id, bytearray())
+                        acc.extend(raw_pcm)
+                        if registered_devices.get(pin_id, {}).get("state") != "STREAMING AUDIO (BLE RELAY)":
+                            if pin_id in registered_devices:
+                                registered_devices[pin_id]["state"] = "STREAMING AUDIO (BLE RELAY)"
+                                registered_devices[pin_id]["ble_proximity"] = True
+                                registered_devices[pin_id]["relayed_by"] = device_id
+                                await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[pin_id]})
+                        if len(acc) >= 192000:
+                            chunk = bytes(acc[:192000])
+                            relayed_audio_accumulators[pin_id] = bytearray(acc[192000 - 32000:])
+                            asyncio.create_task(handle_completed_audio(pin_id, chunk, websocket, source="MOBILE_BLE_RELAY", relayed_by=device_id))
+
+                # 5. BLE Relay: Camera snapshot
+                elif mtype == "ble_relay_snapshot":
+                    pin_id = str(msg.get("pin_id", "")).strip().upper()
+                    b64_jpeg = msg.get("jpeg_base64", "")
+                    if pin_id and b64_jpeg:
+                        jpeg_bytes = base64.b64decode(b64_jpeg)
+                        snap_id = f"snap_relayed_{pin_id}_{int(time.time())}.jpg"
+                        snap_path = os.path.join(SNAPSHOTS_RECORDINGS_DIR, snap_id)
+                        with open(snap_path, "wb") as sf:
+                            sf.write(jpeg_bytes)
+                        latest_incident_id = registered_devices.get(pin_id, {}).get("latest_incident_id", "")
+                        primary_ip = get_primary_ip()
+                        active_tunnel = get_active_tunnel_url()
+                        base_url = active_tunnel if active_tunnel else f"http://{primary_ip}:8080"
+                        snapshot_url = f"{base_url}/recordings/snapshots/{snap_id}"
+                        local_url = f"http://127.0.0.1:8080/recordings/snapshots/{snap_id}"
+                        lan_url = f"http://{primary_ip}:8080/recordings/snapshots/{snap_id}"
+                        await broadcast_to_ui({
+                            "event_type": "snapshot_ready",
+                            "device_id": pin_id,
+                            "incident_id": latest_incident_id,
+                            "snapshot_file": snap_id,
+                            "snapshot_url": snapshot_url,
+                            "local_url": local_url,
+                            "lan_url": lan_url,
+                            "source": "MOBILE_BLE_RELAY",
+                            "relayed_by": device_id,
+                            "timestamp": datetime.now().strftime("%H:%M:%S")
+                        })
+
+                # 6. Dashboard commands
+                elif mtype in ("TRIGGER:DANGER", "CMD:CAPTURE_SNAPSHOT"):
                     user_role = device_info.get("role", "Teacher")
                     if user_role.lower() != "student":
                         print(f"[WS-MOBILE] Hardware command '{mtype}' authorized from {device_id} ({user_role}). Relaying to pins...")
@@ -1765,15 +1906,26 @@ def save_wav(pcm_bytes: bytes, filepath: str):
 # Prevents concurrent thread race conditions, CUDA memory corruption, and out-of-memory errors
 ai_inference_lock = asyncio.Lock()
 
-async def handle_completed_audio(device_id: str, pcm_bytes: bytes, websocket: WebSocket):
+async def handle_completed_audio(
+    device_id: str,
+    pcm_bytes: bytes,
+    websocket: WebSocket,
+    source: str = "ESP32_DIRECT",
+    relayed_by: Optional[str] = None
+):
     """Processes accumulated speech audio buffer, runs Faster-Whisper + BERT, and updates UI."""
     if len(pcm_bytes) < 4800: # Less than 150ms
         if device_id in registered_devices:
             now_str = datetime.now().strftime("%H:%M:%S")
-            is_still_connected = any(d_id == device_id for d_id in active_pins.values())
-            registered_devices[device_id]["online"] = is_still_connected
-            registered_devices[device_id]["state"] = "VAD ARMED" if is_still_connected else "OFFLINE"
-            registered_devices[device_id]["lastSeen"] = f"Active at {now_str}" if is_still_connected else f"Disconnected at {now_str}"
+            if source == "ESP32_DIRECT":
+                is_still_connected = any(d_id == device_id for d_id in active_pins.values())
+                registered_devices[device_id]["online"] = is_still_connected
+                registered_devices[device_id]["state"] = "VAD ARMED" if is_still_connected else "OFFLINE"
+                registered_devices[device_id]["lastSeen"] = f"Active at {now_str}" if is_still_connected else f"Disconnected at {now_str}"
+            else:
+                if registered_devices[device_id].get("state") in ("ANALYZING SPEECH", "STREAMING AUDIO (BLE RELAY)"):
+                    registered_devices[device_id]["state"] = "STANDBY"
+                registered_devices[device_id]["last_ble_seen"] = f"Relayed speech at {now_str}"
             await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
         return
 
@@ -1783,8 +1935,11 @@ async def handle_completed_audio(device_id: str, pcm_bytes: bytes, websocket: We
 
     if device_id in registered_devices:
         registered_devices[device_id]["state"] = "ANALYZING SPEECH"
-        registered_devices[device_id]["online"] = True
-        registered_devices[device_id]["lastSeen"] = "Whisper inferencing..."
+        if source == "ESP32_DIRECT":
+            registered_devices[device_id]["online"] = True
+            registered_devices[device_id]["lastSeen"] = "Whisper inferencing..."
+        else:
+            registered_devices[device_id]["last_ble_seen"] = "Relayed Whisper inferencing..."
         await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
 
     async with ai_inference_lock:
@@ -1794,7 +1949,7 @@ async def handle_completed_audio(device_id: str, pcm_bytes: bytes, websocket: We
 
         if result.status == TranscriptionStatus.TRANSCRIBED and result.transcript:
             transcript = result.transcript
-            print(f"[FINAL TRANSCRIPT] ({device_id} in {infer_dur:.2f}s, dur={dur_sec:.2f}s, peak={audio_peak:.2f}) -> \"{transcript}\"")
+            print(f"[FINAL TRANSCRIPT] ({device_id} via {source} in {infer_dur:.2f}s, dur={dur_sec:.2f}s, peak={audio_peak:.2f}) -> \"{transcript}\"")
             score, category = context_engine.evaluate(transcript, device_id=device_id, transcription_result=result)
             is_danger = score >= 8.0
 
@@ -1805,19 +1960,35 @@ async def handle_completed_audio(device_id: str, pcm_bytes: bytes, websocket: We
                 print(f"[FILTER] Ignored conversational speech under 'Harmful Words Only' mode: \"{transcript}\" (cat={category}, score={score})")
                 if device_id in registered_devices:
                     now_str = datetime.now().strftime("%H:%M:%S")
-                    is_still_connected = any(d_id == device_id for d_id in active_pins.values())
-                    registered_devices[device_id]["online"] = is_still_connected
-                    registered_devices[device_id]["state"] = "VAD ARMED" if is_still_connected else "OFFLINE"
-                    registered_devices[device_id]["lastSeen"] = f"Filtered benign speech at {now_str}" if is_still_connected else f"Disconnected at {now_str}"
+                    if source == "ESP32_DIRECT":
+                        is_still_connected = any(d_id == device_id for d_id in active_pins.values())
+                        registered_devices[device_id]["online"] = is_still_connected
+                        registered_devices[device_id]["state"] = "VAD ARMED" if is_still_connected else "OFFLINE"
+                        registered_devices[device_id]["lastSeen"] = f"Filtered benign speech at {now_str}" if is_still_connected else f"Disconnected at {now_str}"
+                    else:
+                        if registered_devices[device_id].get("state") == "ANALYZING SPEECH":
+                            registered_devices[device_id]["state"] = "STANDBY"
+                        registered_devices[device_id]["last_ble_seen"] = f"Filtered benign speech at {now_str}"
                     await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
                 return
 
             if is_danger:
-                print(f"[THREAT] DANGER grade detected! Dispatching TRIGGER:DANGER to {device_id}...")
-                try:
-                    await websocket.send_text("TRIGGER:DANGER")
-                except Exception as e:
-                    print(f"[THREAT] Error sending TRIGGER:DANGER: {e}")
+                print(f"[THREAT] DANGER grade detected! Dispatching TRIGGER:DANGER to {device_id} (source: {source})...")
+                if source == "MOBILE_BLE_RELAY":
+                    try:
+                        await websocket.send_text(json.dumps({
+                            "event_type": "trigger_danger",
+                            "type": "trigger_danger",
+                            "pin_id": device_id
+                        }))
+                    except Exception as e:
+                        print(f"[THREAT] Error notifying mobile relay: {e}")
+                else:
+                    try:
+                        await websocket.send_text("TRIGGER:DANGER")
+                    except Exception as e:
+                        print(f"[THREAT] Error sending direct TRIGGER:DANGER: {e}")
+
                 for pin_ws, p_id in list(active_pins.items()):
                     if p_id == device_id and pin_ws != websocket:
                         try:
@@ -1832,7 +2003,7 @@ async def handle_completed_audio(device_id: str, pcm_bytes: bytes, websocket: We
                 registered_devices[device_id] = {
                     "latest_incident_id": incident_id,
                     "state": "ANALYZING SPEECH",
-                    "online": True
+                    "online": (source == "ESP32_DIRECT")
                 }
 
             wav_filename = f"{incident_id}.wav"
@@ -1857,28 +2028,32 @@ async def handle_completed_audio(device_id: str, pcm_bytes: bytes, websocket: We
                 "lan_audio_url": f"http://{primary_ip}:8080/recordings/audio/{wav_filename}",
                 "audio_file": wav_filename,
                 "video": is_danger,
-                "duration": f"00:{max(1, int(dur_sec)):02d}"
+                "duration": f"00:{max(1, int(dur_sec)):02d}",
+                "source": source,
+                "relayed_by": relayed_by,
             }
             recent_incidents.append(incident_payload)
             await broadcast_to_ui(incident_payload)
         else:
             transcript = ""
-            print(f"[ASR] ({device_id} in {infer_dur:.2f}s) Audio ({dur_sec:.2f}s, peak={audio_peak:.2f}) -> Status: {result.status.value}, Reason: {result.reason}")
+            print(f"[ASR] ({device_id} via {source} in {infer_dur:.2f}s) Audio ({dur_sec:.2f}s, peak={audio_peak:.2f}) -> Status: {result.status.value}, Reason: {result.reason}")
 
     if device_id in registered_devices:
         now_str = datetime.now().strftime("%H:%M:%S")
-        is_still_connected = any(d_id == device_id for d_id in active_pins.values())
-        registered_devices[device_id]["online"] = is_still_connected
-        
-        # FIX: Only reset to VAD ARMED if a new audio stream hasn't already started
-        if registered_devices[device_id].get("state") == "ANALYZING SPEECH":
-            registered_devices[device_id]["state"] = "VAD ARMED" if is_still_connected else "OFFLINE"
-            
-        if is_still_connected:
-            registered_devices[device_id]["lastSeen"] = f'Heard: "{transcript[:25]}..."' if transcript else f"Active at {now_str}"
+        if source == "ESP32_DIRECT":
+            is_still_connected = any(d_id == device_id for d_id in active_pins.values())
+            registered_devices[device_id]["online"] = is_still_connected
+            if registered_devices[device_id].get("state") == "ANALYZING SPEECH":
+                registered_devices[device_id]["state"] = "VAD ARMED" if is_still_connected else "OFFLINE"
+            if is_still_connected:
+                registered_devices[device_id]["lastSeen"] = f'Heard: "{transcript[:25]}..."' if transcript else f"Active at {now_str}"
+            else:
+                registered_devices[device_id]["lastSeen"] = f"Disconnected at {now_str}"
         else:
-            registered_devices[device_id]["lastSeen"] = f"Disconnected at {now_str}"
-            
+            if registered_devices[device_id].get("state") == "ANALYZING SPEECH":
+                registered_devices[device_id]["state"] = "STANDBY"
+            registered_devices[device_id]["last_ble_seen"] = f"Relayed speech finished at {now_str}"
+
         await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
 
 # =========================================================================
@@ -1888,7 +2063,7 @@ async def handle_completed_audio(device_id: str, pcm_bytes: bytes, websocket: We
 async def pin_websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     
-    # Consistent device ID: prioritize explicit query param (?device_id=PIN-001) or header (for BLE relay & Cloudflare Tunnel)
+    # Consistent device ID: prioritize explicit query param (?device_id=PIN-001) or header (for Cloudflare Tunnel)
     explicit_dev_id = websocket.query_params.get("device_id") or websocket.headers.get("x-device-id")
     if explicit_dev_id:
         device_id = explicit_dev_id.strip().upper()
@@ -1902,7 +2077,6 @@ async def pin_websocket_endpoint(websocket: WebSocket):
             client_host = websocket.client.host if (websocket.client and websocket.client.host) else "001"
             pin_suffix = client_host.split(".")[-1].zfill(3) if "." in client_host else "001"
             device_id = f"PIN-{pin_suffix}"
-    active_pins[websocket] = device_id
     
     # Authenticate device using cryptographically registered token
     device_token = websocket.query_params.get("token") or websocket.headers.get("x-device-token")
@@ -1914,69 +2088,78 @@ async def pin_websocket_endpoint(websocket: WebSocket):
     elif not is_authenticated:
         # Device did not pass token in query param; give it 3 seconds to send an auth or pairing frame
         try:
-            auth_raw = await asyncio.wait_for(websocket.receive_text(), timeout=3.0)
-            try:
-                auth_json = json.loads(auth_raw)
-                msg_type = auth_json.get("type", "")
-                if msg_type == "auth" and device_id in creds:
-                    auth_tok = auth_json.get("token", "")
-                    auth_dev = auth_json.get("device_id", "").strip().upper()
-                    if (auth_dev == device_id or not auth_dev) and verify_device_token(device_id, auth_tok):
-                        is_authenticated = True
-                        await websocket.send_text(json.dumps({"type": "auth_ok", "status": "authenticated"}))
-                elif msg_type == "pair" or "pairing_code" in auth_json:
-                    pcode = str(auth_json.get("pairing_code", "")).strip()
-                    now = time.time()
-                    code_info = active_pairing_codes.get(pcode)
-                    if code_info and not code_info.get("used", False) and now <= code_info.get("expires_at", 0):
-                        code_info["used"] = True
-                        code_info["device_id"] = device_id
-                        new_token = secrets.token_hex(32)
-                        creds[device_id] = {
-                            "token_hash": hash_device_token(new_token),
-                            "registered_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            "fw_version": auth_json.get("firmware_version", "2.1"),
-                            "mac": auth_json.get("mac", ""),
-                            "pairing_code_used": pcode,
-                        }
-                        save_device_credentials(creds)
-                        dev_record = registered_devices.get(device_id, {})
-                        dev_record.update({
-                            "id": device_id,
-                            "online": True,
-                            "battery": dev_record.get("battery", 100),
-                            "state": "CONNECTED",
-                            "network": "Campus Wi-Fi",
-                            "lastSeen": "Just paired",
-                            "paired": True,
-                        })
-                        registered_devices[device_id] = dev_record
-                        await broadcast_to_ui({
-                            "event_type": "pin_registered",
-                            "device_id": device_id,
-                            "device": dev_record,
-                            "timestamp": datetime.now().strftime("%H:%M:%S")
-                        })
-                        is_authenticated = True
-                        await websocket.send_text(json.dumps({
-                            "type": "pairing_success",
-                            "status": "authenticated",
-                            "device_id": device_id,
-                            "device_token": new_token
-                        }))
-                        print(f"\n[WS-AUTH] Smart Pin '{device_id}' registered and paired live via WebSocket pairing handshake!")
-            except Exception:
-                pass
-        except asyncio.TimeoutError:
+            auth_msg = await asyncio.wait_for(websocket.receive(), timeout=3.0)
+            if auth_msg.get("type") == "websocket.disconnect":
+                return
+            auth_raw = auth_msg.get("text")
+            if auth_raw:
+                try:
+                    auth_json = json.loads(auth_raw)
+                    msg_type = auth_json.get("type", "")
+                    if msg_type == "auth" and device_id in creds:
+                        auth_tok = auth_json.get("token", "")
+                        auth_dev = auth_json.get("device_id", "").strip().upper()
+                        if (auth_dev == device_id or not auth_dev) and verify_device_token(device_id, auth_tok):
+                            is_authenticated = True
+                            await websocket.send_text(json.dumps({"type": "auth_ok", "status": "authenticated"}))
+                    elif msg_type == "pair" or "pairing_code" in auth_json:
+                        pcode = str(auth_json.get("pairing_code", "")).strip()
+                        now = time.time()
+                        code_info = active_pairing_codes.get(pcode)
+                        if code_info and not code_info.get("used", False) and now <= code_info.get("expires_at", 0):
+                            code_info["used"] = True
+                            code_info["device_id"] = device_id
+                            new_token = secrets.token_hex(32)
+                            creds[device_id] = {
+                                "token_hash": hash_device_token(new_token),
+                                "registered_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                "fw_version": auth_json.get("firmware_version", "2.1"),
+                                "mac": auth_json.get("mac", ""),
+                                "pairing_code_used": pcode,
+                            }
+                            save_device_credentials(creds)
+                            dev_record = registered_devices.get(device_id, {})
+                            dev_record.update({
+                                "id": device_id,
+                                "online": True,
+                                "connection_source": "ESP32_DIRECT",
+                                "battery": dev_record.get("battery", 100),
+                                "state": "CONNECTED",
+                                "network": "Campus Wi-Fi",
+                                "lastSeen": "Just paired",
+                                "paired": True,
+                            })
+                            registered_devices[device_id] = dev_record
+                            await broadcast_to_ui({
+                                "event_type": "pin_registered",
+                                "device_id": device_id,
+                                "device": dev_record,
+                                "timestamp": datetime.now().strftime("%H:%M:%S")
+                            })
+                            is_authenticated = True
+                            await websocket.send_text(json.dumps({
+                                "type": "pairing_success",
+                                "status": "authenticated",
+                                "device_id": device_id,
+                                "device_token": new_token
+                            }))
+                            print(f"\n[WS-AUTH] Smart Pin '{device_id}' registered and paired live via WebSocket pairing handshake!")
+                except Exception:
+                    pass
+        except (asyncio.TimeoutError, WebSocketDisconnect, RuntimeError):
             pass
 
     if not is_authenticated:
         client_ip = websocket.client.host if websocket.client else "unknown"
         print(f"\n[WS-AUTH] Unauthorized connection rejected for '{device_id}' from {client_ip} (missing, unregistered, or invalid device token).")
-        active_pins.pop(websocket, None)
-        await websocket.close(code=4401, reason="Unauthorized device token")
+        try:
+            await websocket.close(code=4401, reason="Unauthorized device token")
+        except Exception:
+            pass
         return
     else:
+        # CRITICAL: Register into active_pins ONLY after authentication succeeds!
+        active_pins[websocket] = device_id
         print(f"[WS-AUTH] Smart Pin '{device_id}' authenticated successfully.")
 
     pending_cfg = None
@@ -2003,13 +2186,15 @@ async def pin_websocket_endpoint(websocket: WebSocket):
     registered_devices[device_id] = {
         "id": device_id,
         "online": True,
+        "connection_source": "ESP32_DIRECT",
         "battery": prev_batt,
         "state": "VAD ARMED",
         "network": pending_cfg["ssid"] if pending_cfg else prev_net,
         "lastSeen": "Just now",
         "cpuMhz": 160,
         "rssi": -60,
-        "estRuntime": prev_runtime
+        "estRuntime": prev_runtime,
+        "paired": True,
     }
     
     await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
@@ -2197,10 +2382,12 @@ async def pin_websocket_endpoint(websocket: WebSocket):
         if websocket in active_pins:
             del active_pins[websocket]
 
-        # MARK PIN AS OFFLINE IMMEDIATELY UPON DISCONNECT OR TIMEOUT
-        if device_id in registered_devices:
+        # MARK PIN AS OFFLINE ONLY IF NO OTHER DIRECT SOCKET EXISTS FOR THIS PIN
+        is_still_online = any(d_id == device_id for d_id in active_pins.values())
+        if not is_still_online and device_id in registered_devices:
             now_str = datetime.now().strftime("%H:%M:%S")
             registered_devices[device_id]["online"] = False
+            registered_devices[device_id]["connection_source"] = None
             registered_devices[device_id]["state"] = "OFFLINE"
             registered_devices[device_id]["lastSeen"] = f"Disconnected at {now_str}"
             await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})

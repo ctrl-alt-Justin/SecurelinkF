@@ -122,6 +122,40 @@ String extractJsonField(const String& json, const String& key) {
     return json.substring(startQuote + 1, endQuote);
 }
 
+// --- ISRG Root X1 Trust Anchor (Let's Encrypt / Cloudflare Edge TLS verification) ---
+static const char root_ca_isrg_x1[] PROGMEM =
+"-----BEGIN CERTIFICATE-----\n"
+"MIIFazCCA1OgAwIBAgIRAIIQz7DSQONZRGPgu2OCiwAwDQYJKoZIhvcNAQELBQAw\n"
+"TzELMAkGA1UEBhMCVVMxKTAnBgNVBAoTIEludGVybmV0IFNlY3VyaXR5IFJlc2Vh\n"
+"cmNoIEdyb3VwMRUwEwYDVQQDEwxJU1JHIFJvb3QgWDEwHhcNMTUwNjA0MTEwNDM4\n"
+"WhcNMzUwNjA0MTEwNDM4WjBPMQswCQYDVQQGEwJVUzEpMCcGA1UEChMgSW50ZXJu\n"
+"ZXQgU2VjdXJpdHkgUmVzZWFyY2ggR3JvdXAxFTATBgNVBAMTDElTUkcgUm9vdCBY\n"
+"MTCCAiIwDQYJKoZIhvcNAQEBBQADggIPADCCAgoCggIBAK3oJHP0FDfzm54rVygc\n"
+"h77ct984kIxuPOZXoHj3dcKi/vVqbvY0174gC0vcdfz7dHz827/NF2qoi5KI2fry\n"
+"kRN10/83qHox69745Cciv4Q901JhE1354Babx6wino23efC8CK8/482+35OwEXlF\n"
+"zy306vRsCoi244jcOKeTr0Mt64vCCDbiHNTzV5CHnodFwit9CC8Xhx94gcVlsvtN\n"
+"9WBfe0LrspTgkTZYN3nqBPxOMkp5VgtJgnUyFa8nyyreW49F0229aTqNqAXPQUTd\n"
+"9FA305aqCfJWMWHoEyN4SmKASaxNTFLrVDQtZKz+acwf+2852ZahLqdrvoZ3U436\n"
+"5I11mKoNrmhMrboeixzvCTmA6fTHBL9546UuGV349QMbR98BKGo+48rhkg8QgU3z\n"
+"i3sMrJSpPRqDYhGWORR5Nek/eq0GFOMPrnHIMSTINGZYhAlspO62uNEyB9642Xu4\n"
+"LqKN73S3Y05UjzXY2PO4U474NQb/a+/EuwN64w8fdv8ApGbOtUK26cz54qwCEKPR\n"
+"Oc3wdgOzFgcndLomUnUoJBprSkCaCo6V465U27uGWCFi0AUt0b7qwRWCnxg7SvPV\n"
+"fqRclOnx3TQDgktkwv6UmsUNU6zsQ/8TsSrg3apnRmx57Cd4y07Y7Z906E44jup9\n"
+"W61bN34E/pdS+5BN0cxKIT3NAgMBAAGjQjBAMA4GA1UdDwEB/wQEAwIBBjAPBgNV\n"
+"HRMBAf8EBTADAQH/MB0GA1UdDgQWBBR5tFnme7bl5AFzgAjGi1m05CwWDzANBgkq\n"
+"hkiG9w0BAQsFAAOCAgEAVR9Yqbyhurqw4ugDBmlDfTReukRktOnq2CUWJS9nm1AW\n"
+"wv9p6LFBlPTTxliHAhXNnXO44vzEN4822beDK5tu2070gAILdn5PNPCFF165pSnK\n"
+"RqgnnERxPnEm0yp46znZNnq44KPdkWIdZmsxhKle3td200Ph9WXqmUceae88UT8r\n"
+"NUIhnLpCMrP+pTVxgIOflGnITspgWTx08abZAWL1W32Tu5evauNZXrxhUtxE1HA7\n"
+"jh5FJ25iU40JYAUV3lYZYeEDgLXB3aDGIGxtIbCcqo9xVIQRnw5ponsWuMw42dKZ\n"
+"ukpkOKqv4foSkHpQaSairCHUCmNUiKWNU0AbgKWTDLHaoDun00G53x/Wmm88ObOw\n"
+"bi881NuLi86fPK0qsPchE07JZGQm+EI44uhXHCo8RgPBBE5m/iYT9uAGT0P9OggE\n"
+"CmGMARES48944XJ3xW/RfZwc5vwsf9ZSxKiCeORK7lL8g9RBLFqh52yssOCT48Yq\n"
+"MbOkNZ50PBfZAL5NZ0Nu140sVunHN90N272Dn778m5q83fii8m5gkChX3LuokcL1\n"
+"OWQYZWh8HHibsKEJKlaMAeqM11bQ58VO7kZDLHTHdm8vTEpNBB+8UZwuzblDYGky\n"
+"SzDxbi75EPHnII37888jbpeAdv204SGHgTpsSpzxFwnEEAXG50P55G5RzQByVmA=\n"
+"-----END CERTIFICATE-----\n";
+
 void connectWebSocket(const String& host, int port) {
     String cleanHost = host;
     bool isSsl = false;
@@ -146,10 +180,10 @@ void connectWebSocket(const String& host, int port) {
     }
 
     if (cleanHost.indexOf("trycloudflare.com") >= 0 || port == 443 || isSsl) {
-        Serial.printf("[WS] Connecting via WSS/SSL to %s:443%s\n", cleanHost.c_str(), wsPath.c_str());
+        Serial.printf("[WS] Connecting via WSS/SSL to %s:443%s [token=%s]\n", cleanHost.c_str(), WS_PATH_PRIMARY, pin_device_token.length() > 0 ? "AUTHENTICATED" : "NONE");
         ws.beginSSL(cleanHost.c_str(), 443, wsPath.c_str());
     } else {
-        Serial.printf("[WS] Connecting via WS to %s:%d%s\n", cleanHost.c_str(), port, wsPath.c_str());
+        Serial.printf("[WS] Connecting via WS to %s:%d%s [token=%s]\n", cleanHost.c_str(), port, WS_PATH_PRIMARY, pin_device_token.length() > 0 ? "AUTHENTICATED" : "NONE");
         ws.begin(cleanHost.c_str(), port, wsPath.c_str());
     }
     ws.onEvent(onWebSocketEvent);
@@ -348,7 +382,7 @@ void handleBleProvisioning(const String& rxJson) {
         WiFiClientSecure secureClient;
         WiFiClient plainClient;
         if (isRemoteHttps) {
-            secureClient.setInsecure(); // Quick Tunnel TLS verification
+            secureClient.setCACert(root_ca_isrg_x1); // Validate Let's Encrypt / Cloudflare Edge TLS certificates
             http.begin(secureClient, regUrl);
         } else {
             http.begin(plainClient, regUrl);
@@ -1399,15 +1433,15 @@ void setup() {
         if (!isDevicePaired && prefs.isKey("pcode_pending")) {
             String pendingCode = prefs.getString("pcode_pending", "");
             prefs.remove("pcode_pending");
-            if (pendingCode.length() == 6) {
-                Serial.printf("[PROV] Found pending pairing code '%s'. Registering with Central System...\n", pendingCode.c_str());
+            if (pendingCode.length() >= 6) {
+                Serial.printf("[PROV] Found pending pairing code. Registering with Central System...\n");
                 HTTPClient http;
                 bool isRemoteHttps = (server_host.indexOf("trycloudflare.com") >= 0 || server_port == 443);
                 String regUrl = (isRemoteHttps ? "https://" : "http://") + server_host + (isRemoteHttps ? "" : (":" + String(server_port))) + "/api/pin/register";
                 WiFiClientSecure secClient;
                 WiFiClient stdClient;
                 if (isRemoteHttps) {
-                    secClient.setInsecure();
+                    secClient.setCACert(root_ca_isrg_x1);
                     http.begin(secClient, regUrl);
                 } else {
                     http.begin(stdClient, regUrl);

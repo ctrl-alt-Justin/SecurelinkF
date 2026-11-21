@@ -10,6 +10,17 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import '../models/device_model.dart';
 import 'ble_pin_relay_service.dart';
 
+enum MobileConnectionState {
+  notPaired,
+  pairingPending,
+  paired,
+  connecting,
+  connected,
+  disconnected,
+  authenticationFailed,
+  revoked,
+}
+
 class IncidentReport {
   final String id;
   final String deviceId;
@@ -140,6 +151,7 @@ class MobileServerService extends ChangeNotifier {
   static const FlutterSecureStorage _secureStorage = FlutterSecureStorage();
 
   // --- Connection State ---
+  MobileConnectionState _connectionState = MobileConnectionState.notPaired;
   WebSocketChannel? _channel;
   Timer? _pingTimer;
   Timer? _reconnectTimer;
@@ -173,6 +185,7 @@ class MobileServerService extends ChangeNotifier {
   String get userRole => _userRole;
   bool get isPaired => _authToken != null && _authToken!.isNotEmpty;
   String? get authToken => _authToken;
+  MobileConnectionState get connectionState => _connectionState;
 
   bool get isConnected => _isConnected;
   bool get isConnecting => _isConnecting;
@@ -218,12 +231,8 @@ class MobileServerService extends ChangeNotifier {
   Uri getUiWsUri() => Uri.parse('$baseWsUrl/ui');
   Uri getMobileWsUri() {
     final devId = Uri.encodeComponent(_mobileId);
-    final tokParam = (_authToken != null && _authToken!.isNotEmpty)
-        ? '&token=${Uri.encodeComponent(_authToken!)}'
-        : '';
-    return Uri.parse('$baseWsUrl/mobile?device_id=$devId$tokParam');
+    return Uri.parse('$baseWsUrl/mobile?device_id=$devId');
   }
-  Uri getPinWsUri([String deviceId = 'PIN-001']) => Uri.parse('$baseWsUrl/?device_id=$deviceId');
   Uri getApiUri(String path) => Uri.parse('$baseHttpUrl/api$path');
 
   void setCloudTunnelUrl(String? url, {bool enable = true}) {
@@ -307,16 +316,37 @@ class MobileServerService extends ChangeNotifier {
       _csName = prefs.getString('cs_name') ?? 'SecureLink Campus Central System';
       _cloudTunnelUrl = prefs.getString('cloud_tunnel_url');
       _useCloudTunnel = prefs.getBool('use_cloud_tunnel') ?? false;
-      _mobileId = prefs.getString('mobile_id') ?? 'MOBILE-${DateTime.now().millisecondsSinceEpoch % 10000}';
+      String? savedMobId = prefs.getString('mobile_id');
+      if (savedMobId == null || savedMobId.isEmpty) {
+        final randSuffix = (DateTime.now().millisecondsSinceEpoch % 9000 + 1000).toString();
+        _mobileId = 'MOB-$randSuffix';
+        await prefs.setString('mobile_id', _mobileId);
+      } else {
+        _mobileId = savedMobId;
+      }
       _userName = prefs.getString('user_name') ?? 'Teacher / Student';
       _userRole = prefs.getString('user_role') ?? 'Teacher';
 
-      // Load cryptographic mobile authentication token from FlutterSecureStorage
+      // Load cryptographic mobile authentication token exclusively from FlutterSecureStorage
       try {
         _authToken = await _secureStorage.read(key: 'mobile_auth_token');
       } catch (_) {}
+      // Migrate legacy plaintext token if present
       if (_authToken == null || _authToken!.isEmpty) {
-        _authToken = prefs.getString('mobile_auth_token');
+        final legacyTok = prefs.getString('mobile_auth_token');
+        if (legacyTok != null && legacyTok.isNotEmpty) {
+          _authToken = legacyTok;
+          try {
+            await _secureStorage.write(key: 'mobile_auth_token', value: legacyTok);
+          } catch (_) {}
+          await prefs.remove('mobile_auth_token');
+        }
+      }
+
+      if (_authToken != null && _authToken!.isNotEmpty) {
+        _connectionState = MobileConnectionState.paired;
+      } else {
+        _connectionState = MobileConnectionState.notPaired;
       }
 
       final savedPins = prefs.getStringList('paired_pins') ?? [];
@@ -383,13 +413,13 @@ class MobileServerService extends ChangeNotifier {
       await prefs.setStringList('paired_pins', _pairedPinIds.toList());
       await prefs.setString('pin_aliases', jsonEncode(_pinAliases));
 
-      // Persist authentication token securely
+      // Persist authentication token exclusively in FlutterSecureStorage (never plaintext SharedPreferences)
       if (_authToken != null && _authToken!.isNotEmpty) {
         try {
           await _secureStorage.write(key: 'mobile_auth_token', value: _authToken!);
         } catch (_) {}
-        await prefs.setString('mobile_auth_token', _authToken!);
       }
+      await prefs.remove('mobile_auth_token');
 
       // Persist paired devices cache so pins stay on phone even when offline
       final pairedMap = <String, dynamic>{};
@@ -415,6 +445,7 @@ class MobileServerService extends ChangeNotifier {
     _authToken = token.trim();
     _mobileId = deviceId.trim();
     _csId = csId.trim();
+    _connectionState = MobileConnectionState.paired;
     if (serverIp != null && serverIp.isNotEmpty) _host = serverIp.trim();
     if (serverPort != null && serverPort > 0) _port = serverPort;
     if (cloudTunnelUrl != null && cloudTunnelUrl.isNotEmpty) {
@@ -427,13 +458,17 @@ class MobileServerService extends ChangeNotifier {
 
   Future<void> clearAuthCredentials() async {
     _authToken = null;
+    _connectionState = MobileConnectionState.notPaired;
+    _channel?.sink.close();
+    _channel = null;
+    _isConnected = false;
+    _isConnecting = false;
     try {
       await _secureStorage.delete(key: 'mobile_auth_token');
     } catch (_) {}
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('mobile_auth_token');
     notifyListeners();
-    reconnect();
   }
 
   void setUserProfile({required String name, required String role}) {
@@ -659,7 +694,17 @@ class MobileServerService extends ChangeNotifier {
 
   Future<void> connect() async {
     if (_isConnecting) return;
+    if (!isPaired) {
+      _isConnecting = false;
+      _isConnected = false;
+      _connectionState = MobileConnectionState.notPaired;
+      _statusMessage = 'Not paired. Please pair with Central System.';
+      notifyListeners();
+      return;
+    }
+
     _isConnecting = true;
+    _connectionState = MobileConnectionState.connecting;
     _statusMessage = 'Resolving connection to Central System...';
     notifyListeners();
 
@@ -679,7 +724,7 @@ class MobileServerService extends ChangeNotifier {
       }
     }
 
-    final wsUri = isPaired ? getMobileWsUri() : getUiWsUri();
+    final wsUri = getMobileWsUri();
     _statusMessage = 'Connecting to Central System (${_useCloudTunnel ? "Remote Tunnel" : "Local Wi-Fi"})...';
     notifyListeners();
 
@@ -691,30 +736,37 @@ class MobileServerService extends ChangeNotifier {
       _channel = WebSocketChannel.connect(wsUri);
 
       _channel!.ready.then((_) {
-        _isConnected = true;
-        _isConnecting = false;
-        _statusMessage = 'Synced with Central System ($csId @ ${_useCloudTunnel ? activeTunnelHost : "$_host:$_port"})';
-        notifyListeners();
-        _fetchDevicesRest();
-        _fetchCheckpointsRest();
-        _fetchCloudTunnelRest();
+        debugPrint('[MOBILE-WS] Socket connected. Transmitting authentication frame...');
+        // Send initial auth frame with mobileId and authToken (not in URL)
+        try {
+          _channel?.sink.add(jsonEncode({
+            'type': 'auth',
+            'device_id': _mobileId,
+            'token': _authToken,
+          }));
+        } catch (_) {}
         _startHeartbeat();
         _startNetworkSwitchWatchdog();
-        _syncWithCentralSystem();
       }).catchError((err) {
+        _connectionState = MobileConnectionState.disconnected;
         _handleDisconnect('Connection refused by CS ($err)');
       });
 
       _channel!.stream.listen(
         (data) {
-          _isConnected = true;
-          _isConnecting = false;
           _onMessageReceived(data);
         },
-        onError: (err) => _handleDisconnect('Socket error: $err'),
-        onDone: () => _handleDisconnect('Central System disconnected'),
+        onError: (err) {
+          _connectionState = MobileConnectionState.disconnected;
+          _handleDisconnect('Socket error: $err');
+        },
+        onDone: () {
+          _connectionState = MobileConnectionState.disconnected;
+          _handleDisconnect('Central System disconnected');
+        },
       );
     } catch (e) {
+      _connectionState = MobileConnectionState.disconnected;
       _handleDisconnect('Failed: $e');
     }
   }
@@ -740,15 +792,25 @@ class MobileServerService extends ChangeNotifier {
   void _handleDisconnect(String reason) {
     _isConnected = false;
     _isConnecting = false;
+    if (_connectionState != MobileConnectionState.authenticationFailed &&
+        _connectionState != MobileConnectionState.revoked &&
+        _connectionState != MobileConnectionState.notPaired) {
+      _connectionState = MobileConnectionState.disconnected;
+    }
     _statusMessage = reason;
     _pingTimer?.cancel();
     _networkFallbackTimer?.cancel();
     notifyListeners();
 
-    _reconnectTimer?.cancel();
-    _reconnectTimer = Timer(const Duration(seconds: 4), () {
-      if (!_isConnected) connect();
-    });
+    if (isPaired &&
+        _connectionState != MobileConnectionState.authenticationFailed &&
+        _connectionState != MobileConnectionState.revoked &&
+        _connectionState != MobileConnectionState.notPaired) {
+      _reconnectTimer?.cancel();
+      _reconnectTimer = Timer(const Duration(seconds: 4), () {
+        if (!_isConnected) connect();
+      });
+    }
   }
 
   void _startHeartbeat() {
@@ -788,6 +850,8 @@ class MobileServerService extends ChangeNotifier {
     String? preferredRole,
     String? customDeviceName,
   }) async {
+    _connectionState = MobileConnectionState.pairingPending;
+    notifyListeners();
     final cleanCode = pairingCode.replaceAll(RegExp(r'[\s-]'), '').trim();
     final targetHost = (serverIp != null && serverIp.isNotEmpty) ? serverIp.trim() : _host;
     final targetPort = (serverPort != null && serverPort > 0) ? serverPort : _port;
@@ -906,9 +970,41 @@ class MobileServerService extends ChangeNotifier {
   void _onMessageReceived(dynamic rawData) {
     try {
       final json = jsonDecode(rawData.toString());
-      final eventType = json['event_type'];
+      final eventType = json['event_type'] ?? json['type'];
+
+      if (eventType == 'auth_ok') {
+        _isConnected = true;
+        _isConnecting = false;
+        _connectionState = MobileConnectionState.connected;
+        _statusMessage = 'Authenticated with $csId';
+        _fetchDevicesRest();
+        _fetchCheckpointsRest();
+        _fetchCloudTunnelRest();
+        _syncWithCentralSystem();
+        notifyListeners();
+        return;
+      }
+
+      if (eventType == 'unauthorized' || json['type'] == 'unauthorized') {
+        _connectionState = MobileConnectionState.authenticationFailed;
+        _handleDisconnect('Authorization rejected: Device token invalid');
+        return;
+      }
+
+      if (eventType == 'device_revoked' || json['type'] == 'device_revoked') {
+        _connectionState = MobileConnectionState.revoked;
+        clearAuthCredentials();
+        return;
+      }
+
+      if (eventType == 'trigger_danger') {
+        BlePinRelayService().sendCommandToPin('TRIGGER:DANGER');
+      }
 
       if (eventType == 'mobile_sync_init') {
+        _isConnected = true;
+        _isConnecting = false;
+        _connectionState = MobileConnectionState.connected;
         _csId = json['cs_id'] ?? _csId;
         _csName = json['name'] ?? _csName;
         if (json['role'] != null) _userRole = json['role'];
@@ -1232,16 +1328,114 @@ class MobileServerService extends ChangeNotifier {
 
     _devices[cleanId] = DeviceStatus(
       id: cleanId,
-      online: true,
+      online: existing?.online ?? false, // Preserve direct Wi-Fi online status strictly
       battery: bat,
-      state: 'VAD ARMED',
-      network: 'BLE Audio Bridge',
-      lastSeen: 'Active over BLE just now',
-      cpuMhz: 160,
+      state: existing?.state ?? 'VAD ARMED',
+      network: existing?.network ?? 'BLE Audio Bridge',
+      lastSeen: existing?.lastSeen ?? 'Active over BLE',
+      cpuMhz: existing?.cpuMhz ?? 160,
       rssi: rssi,
       estRuntime: bat > 0 ? '${hours}h ${mins.toString().padLeft(2, '0')}m' : '--',
+      bleProximity: true,
+      relayedBy: _mobileId,
+      lastBleSeen: 'Active over BLE just now',
     );
     notifyListeners();
+  }
+
+  void reportBleProximity({
+    required String pinId,
+    required int rssi,
+    int? battery,
+    int? batteryMv,
+  }) {
+    updatePinTelemetryFromBle(
+      pinId: pinId,
+      rssi: rssi,
+      battery: battery,
+      batteryMv: batteryMv,
+    );
+
+    if (_isConnected && _channel != null) {
+      try {
+        _channel!.sink.add(jsonEncode({
+          'event_type': 'ble_relay_presence',
+          'pin_id': pinId.trim().toUpperCase(),
+          'mobile_id': _mobileId,
+          'rssi': rssi,
+          if (battery != null) 'battery': battery,
+          if (batteryMv != null) 'battery_mv': batteryMv,
+          'timestamp': DateTime.now().toIso8601String(),
+        }));
+      } catch (e) {
+        debugPrint('[RELAY-ERR] Failed to send ble_relay_presence: $e');
+      }
+    }
+  }
+
+  void relayBleAudio(String pinId, List<int> pcmBytes) {
+    if (!_isConnected || _channel == null || pcmBytes.isEmpty) return;
+    try {
+      _channel!.sink.add(jsonEncode({
+        'event_type': 'ble_relay_audio',
+        'pin_id': pinId.trim().toUpperCase(),
+        'mobile_id': _mobileId,
+        'pcm_base64': base64Encode(pcmBytes),
+      }));
+    } catch (e) {
+      debugPrint('[RELAY-ERR] Failed to relay audio: $e');
+    }
+  }
+
+  void relayBleSnapshot(String pinId, Uint8List jpegBytes) {
+    if (!_isConnected || _channel == null || jpegBytes.isEmpty) return;
+    try {
+      _channel!.sink.add(jsonEncode({
+        'event_type': 'ble_relay_snapshot',
+        'pin_id': pinId.trim().toUpperCase(),
+        'mobile_id': _mobileId,
+        'jpeg_base64': base64Encode(jpegBytes),
+        'byte_length': jpegBytes.length,
+        'timestamp': DateTime.now().toIso8601String(),
+      }));
+    } catch (e) {
+      debugPrint('[RELAY-ERR] Failed to relay snapshot: $e');
+    }
+  }
+
+  void relayBleCommand(String pinId, String command) {
+    if (!_isConnected || _channel == null) return;
+    try {
+      _channel!.sink.add(jsonEncode({
+        'event_type': 'ble_relay_command',
+        'pin_id': pinId.trim().toUpperCase(),
+        'mobile_id': _mobileId,
+        'command': command,
+      }));
+    } catch (e) {
+      debugPrint('[RELAY-ERR] Failed to relay command: $e');
+    }
+  }
+
+  void reportBleDisconnected(String pinId) {
+    final cleanId = pinId.trim().toUpperCase();
+    if (_devices.containsKey(cleanId)) {
+      _devices[cleanId] = _devices[cleanId]!.copyWith(
+        bleProximity: false,
+        lastBleSeen: 'BLE Disconnected',
+      );
+      notifyListeners();
+    }
+    if (_isConnected && _channel != null) {
+      try {
+        _channel!.sink.add(jsonEncode({
+          'event_type': 'ble_relay_disconnect',
+          'pin_id': cleanId,
+          'mobile_id': _mobileId,
+          'timestamp': DateTime.now().toIso8601String(),
+        }));
+      } catch (_) {}
+    }
   }
 
   /// Unpairs a pin from this mobile device
