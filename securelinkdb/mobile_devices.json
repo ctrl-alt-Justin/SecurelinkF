@@ -4,8 +4,8 @@
     "device_name": "Dr. Mendoza Galaxy S24",
     "user_name": "Dr. Mendoza",
     "role": "Admin",
-    "token_hash": "147ac2e9b78fa2f7e171507bcfeb068eacbf5bfa5204e10c594b96ffc8d2c51d",
-    "paired_at": "2026-11-22 02:33:44",
+    "token_hash": "59874a88bf4ed1b41bc0c1a8cd5a2bb9be21870dd884d8b0d90067c3788f1511",
+    "paired_at": "2026-11-22 03:00:14",
     "revoked": false,
     "last_seen": "Just paired",
     "connection_type": "local",
@@ -16,12 +16,12 @@
     "device_name": "Lost Phone",
     "user_name": "Lost User",
     "role": "Student",
-    "token_hash": "fdf8747268a8590bbb7a860c30840dc6908bdcf31872f22f1096126d34210188",
-    "paired_at": "2026-11-22 02:33:44",
+    "token_hash": "a5605e26c949da80781267f094d06ec9506f419cfb18b826994266c8dd9e1bcd",
+    "paired_at": "2026-11-22 03:00:14",
     "revoked": true,
     "last_seen": "Just paired",
     "connection_type": "local",
     "paired_ip": "127.0.0.1",
-    "revoked_at": "2026-11-22 02:33:44"
+    "revoked_at": "2026-11-22 03:00:14"
   }
 }
