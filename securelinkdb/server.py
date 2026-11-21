@@ -1422,6 +1422,10 @@ async def startup_event():
     # Launch background recording retention cleaner (30-day default)
     asyncio.create_task(periodic_recordings_cleanup())
 
+    # Launch Cloudflare Quick Tunnel automatically on startup for mobile synchronization
+    print("[TUNNEL] Auto-starting Cloudflare Quick Tunnel for cellular/mobile sync...")
+    asyncio.create_task(tunnel_mgr.start())
+
     print("[SYS] WebSocket Server active on port 8080 (UI: /ui | Pins: / | Mobile: /mobile)")
     print("[SYS] Ready for connections!\n")
 

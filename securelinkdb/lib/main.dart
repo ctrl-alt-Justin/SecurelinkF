@@ -127,37 +127,55 @@ class ServerManager {
   }
 
   static (String, List<String>, String)? _findServerTargets() {
+    String pythonExe = 'python';
+    if (Platform.isWindows) {
+      final knownPython = r'C:\Users\Admin\AppData\Local\Programs\Python\Python312\python.exe';
+      if (File(knownPython).existsSync()) {
+        pythonExe = knownPython;
+      }
+    }
+
     // 1. Check next to current executable (Production build: server.exe)
     final exeDir = File(Platform.resolvedExecutable).parent.path;
     if (File('$exeDir/server.exe').existsSync()) {
       return ('$exeDir/server.exe', <String>[], exeDir);
     }
-
-    // 2. Check next to executable for server.py
     if (File('$exeDir/server.py').existsSync()) {
-      return ('python', ['server.py'], exeDir);
+      return (pythonExe, ['server.py'], exeDir);
     }
 
-    // 3. Check current working directory
+    // 2. Walk up directory tree from executable location (up to 6 levels)
+    var searchDir = Directory(exeDir);
+    for (int i = 0; i < 6; i++) {
+      if (File('${searchDir.path}/server.py').existsSync()) {
+        return (pythonExe, ['server.py'], searchDir.path);
+      }
+      if (File('${searchDir.path}/securelinkdb/server.py').existsSync()) {
+        return (pythonExe, ['server.py'], '${searchDir.path}/securelinkdb');
+      }
+      final parent = searchDir.parent;
+      if (parent.path == searchDir.path) break;
+      searchDir = parent;
+    }
+
+    // 3. Check current working directory & parents
     final currentDir = Directory.current.path;
     if (File('$currentDir/server.py').existsSync()) {
-      return ('python', ['server.py'], currentDir);
+      return (pythonExe, ['server.py'], currentDir);
     }
-
-    // 4. Check 'securelinkdb' subfolder or parent folder
     if (File('$currentDir/securelinkdb/server.py').existsSync()) {
-      return ('python', ['server.py'], '$currentDir/securelinkdb');
+      return (pythonExe, ['server.py'], '$currentDir/securelinkdb');
     }
 
     final parentDir = Directory.current.parent.path;
     if (File('$parentDir/securelinkdb/server.py').existsSync()) {
-      return ('python', ['server.py'], '$parentDir/securelinkdb');
+      return (pythonExe, ['server.py'], '$parentDir/securelinkdb');
     }
 
-    // 5. Fallback workspace directory
+    // 4. Fallback workspace directory
     const fallbackPath = r'd:\Flutter Securelink Dashboard\securelinkdb';
     if (File('$fallbackPath\\server.py').existsSync()) {
-      return ('python', ['server.py'], fallbackPath);
+      return (pythonExe, ['server.py'], fallbackPath);
     }
 
     return null;
@@ -1057,6 +1075,7 @@ class _DashboardShellState extends State<DashboardShell> with WindowListener {
     });
     if (await ServerManager.isAlive()) {
       _connectToServer();
+      _startCloudTunnel();
     } else {
       _handleDisconnect();
     }
@@ -1077,6 +1096,8 @@ class _DashboardShellState extends State<DashboardShell> with WindowListener {
             setState(() => isServerConnected = true);
           }
           _dismissSplashScreen();
+          _startCloudTunnel();
+          fetchNetworkAndTunnelInfo();
         }
         try {
           _uiChannel?.sink.add('ping');
