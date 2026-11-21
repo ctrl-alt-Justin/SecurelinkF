@@ -198,40 +198,164 @@ class BleServerCallbacks: public BLEServerCallbacks {
     }
     void onDisconnect(BLEServer* pServer) override {
         bleClientConnected = false;
+        bleRxBuffer = "";
         Serial.println("[BLE] Mobile Companion Disconnected.");
     }
 };
 
-void handleBleProvisioning(const String& rxJson);
+struct BleProvisionRequest {
+    char ssid[64];
+    char password[64];
+    char pairing_code[32];
+    char server_url[128];
+};
 
+static QueueHandle_t bleProvisionQueue = nullptr;
+static SemaphoreHandle_t bleTxMutex = nullptr;
+static volatile bool isBleProvisioningActive = false;
 static String bleRxBuffer = "";
-static constexpr size_t MAX_BLE_RX_BUFFER = 1024;
+static unsigned long lastBleRxChunkTime = 0;
+static constexpr size_t MAX_BLE_RX_BUFFER = 2048;
+
+void sendBleText(const String& txt) {
+    if (!pTxCharacteristic || !bleClientConnected) return;
+    if (bleTxMutex != nullptr) {
+        if (xSemaphoreTake(bleTxMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+            return;
+        }
+    }
+    pTxCharacteristic->setValue((uint8_t*)txt.c_str(), txt.length());
+    pTxCharacteristic->notify();
+    if (bleTxMutex != nullptr) {
+        xSemaphoreGive(bleTxMutex);
+    }
+}
+
+bool isCompleteJsonObject(const String& str) {
+    if (str.length() < 2) return false;
+    if (!str.startsWith("{") || !str.endsWith("}")) return false;
+    int depth = 0;
+    bool inQuotes = false;
+    bool escape = false;
+    for (size_t i = 0; i < str.length(); i++) {
+        char c = str.charAt(i);
+        if (escape) {
+            escape = false;
+            continue;
+        }
+        if (c == '\\') {
+            escape = true;
+            continue;
+        }
+        if (c == '\"') {
+            inQuotes = !inQuotes;
+            continue;
+        }
+        if (!inQuotes) {
+            if (c == '{') depth++;
+            else if (c == '}') {
+                depth--;
+                if (depth == 0 && i < str.length() - 1) {
+                    return false;
+                }
+            }
+        }
+    }
+    return (depth == 0);
+}
+
+// Forward declarations
+void bleProvisionWorkerTask(void* param);
 
 class BleRxCallbacks: public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic *pCharacteristic) override {
         String chunk = pCharacteristic->getValue().c_str();
         if (chunk.length() == 0) return;
 
-        // Security requirement: Never log raw BLE provisioning payload, pairing code, or passwords
+        unsigned long now = millis();
+        // Discard stale partial fragments if idle for > 4 seconds
+        if (bleRxBuffer.length() > 0 && (now - lastBleRxChunkTime > 4000)) {
+            Serial.println("[BLE-RX] Clearing stale partial buffer after timeout.");
+            bleRxBuffer = "";
+        }
+        lastBleRxChunkTime = now;
+
         Serial.printf("[BLE-RX] Received fragment (%d bytes)\n", chunk.length());
 
         if (bleRxBuffer.length() + chunk.length() > MAX_BLE_RX_BUFFER) {
-            bleRxBuffer = ""; // Safety guard: purge on overflow
+            Serial.println("[BLE-RX] Buffer overflow! Discarding.");
+            bleRxBuffer = "";
         }
         bleRxBuffer += chunk;
 
-        // Check if message is a full JSON object or hardware trigger command
         String trimmed = bleRxBuffer;
         trimmed.trim();
-        if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
-            String fullJson = trimmed;
-            bleRxBuffer = "";
-            handleBleProvisioning(fullJson);
-        } else if (trimmed == "TRIGGER:DANGER" || trimmed == "CMD:CAPTURE_SNAPSHOT") {
+
+        if (trimmed == "TRIGGER:DANGER" || trimmed == "CMD:CAPTURE_SNAPSHOT") {
             Serial.println("[BLE] Snapshot trigger received over BLE! Capturing...");
             bleRxBuffer = "";
             captureIncidentSnapshot();
-        } else if (!trimmed.startsWith("{")) {
+            return;
+        }
+
+        if (trimmed.startsWith("{")) {
+            if (isCompleteJsonObject(trimmed)) {
+                String fullJson = trimmed;
+                bleRxBuffer = "";
+
+                // 1. Device Info Query
+                if (fullJson.indexOf("get_device_info") >= 0) {
+                    String infoMsg = "{\"type\":\"device_info\",\"device_id\":\"" + pin_device_id + 
+                                     "\",\"mac\":\"" + pin_mac_address + 
+                                     "\",\"fw_version\":\"2.1\",\"paired\":" + (isDevicePaired ? "true" : "false") + "}";
+                    Serial.printf("[BLE-PROV] Replying with device info: %s\n", infoMsg.c_str());
+                    sendBleText(infoMsg);
+                    return;
+                }
+
+                // 2. Wi-Fi & Pairing Provisioning Command: Enqueue to dedicated worker task!
+                if (fullJson.indexOf("\"provision\"") >= 0) {
+                    // Send immediate non-blocking ACK
+                    sendBleText("{\"type\":\"provision_received\"}");
+                    Serial.println("[BLE-PROV] Provisioning command received and acknowledged to phone.");
+
+                    if (isBleProvisioningActive) {
+                        Serial.println("[BLE-PROV] Provisioning already in progress. Rejecting concurrent attempt.");
+                        sendBleText("{\"type\":\"provision_error\",\"code\":\"ERR_BUSY\",\"message\":\"Provisioning task is already in progress\"}");
+                        return;
+                    }
+
+                    String newSsid = extractJsonField(fullJson, "ssid");
+                    String newPass = extractJsonField(fullJson, "password");
+                    String pCode = extractJsonField(fullJson, "pairing_code");
+                    String srvUrl = extractJsonField(fullJson, "server_url");
+
+                    if (newSsid.length() == 0 || pCode.length() == 0) {
+                        sendBleText("{\"type\":\"provision_error\",\"code\":\"ERR_INVALID_PARAMS\",\"message\":\"SSID and pairing_code required\"}");
+                        return;
+                    }
+
+                    BleProvisionRequest req;
+                    memset(&req, 0, sizeof(req));
+                    strncpy(req.ssid, newSsid.c_str(), sizeof(req.ssid) - 1);
+                    strncpy(req.password, newPass.c_str(), sizeof(req.password) - 1);
+                    strncpy(req.pairing_code, pCode.c_str(), sizeof(req.pairing_code) - 1);
+                    strncpy(req.server_url, srvUrl.c_str(), sizeof(req.server_url) - 1);
+
+                    if (bleProvisionQueue != nullptr) {
+                        if (xQueueSend(bleProvisionQueue, &req, 0) == pdTRUE) {
+                            Serial.println("[BLE-PROV] Provisioning parameters enqueued to worker task.");
+                        } else {
+                            sendBleText("{\"type\":\"provision_error\",\"code\":\"ERR_QUEUE_FULL\",\"message\":\"Could not enqueue provisioning request\"}");
+                        }
+                    } else {
+                        sendBleText("{\"type\":\"provision_error\",\"code\":\"ERR_INTERNAL\",\"message\":\"Provisioning queue not initialized\"}");
+                    }
+                    return;
+                }
+            }
+            // Incomplete JSON fragment, continue buffering...
+        } else {
             if (trimmed.indexOf("TRIGGER:DANGER") >= 0 || trimmed.indexOf("CMD:CAPTURE_SNAPSHOT") >= 0) {
                 captureIncidentSnapshot();
             }
@@ -239,6 +363,174 @@ class BleRxCallbacks: public BLECharacteristicCallbacks {
         }
     }
 };
+
+void bleProvisionWorkerTask(void* param) {
+    BleProvisionRequest req;
+    while (true) {
+        if (xQueueReceive(bleProvisionQueue, &req, portMAX_DELAY) == pdTRUE) {
+            isBleProvisioningActive = true;
+            String newSsid = String(req.ssid);
+            String newPass = String(req.password);
+            String pCode = String(req.pairing_code);
+            String srvUrl = String(req.server_url);
+
+            Serial.printf("\n[BLE-PROV-TASK] Provisioning worker running for SSID: '%s'\n", newSsid.c_str());
+            sendBleText("{\"type\":\"wifi_connecting\",\"ssid\":\"" + newSsid + "\"}");
+
+            // Attempt STA connection
+            WiFi.disconnect(true);
+            vTaskDelay(pdMS_TO_TICKS(100));
+            WiFi.mode(WIFI_STA);
+            WiFi.begin(newSsid.c_str(), newPass.c_str());
+
+            unsigned long tStart = millis();
+            bool wifiOk = false;
+            while (millis() - tStart < 12000) {
+                vTaskDelay(pdMS_TO_TICKS(150));
+                if (WiFi.status() == WL_CONNECTED) {
+                    wifiOk = true;
+                    break;
+                }
+            }
+
+            if (!wifiOk) {
+                Serial.println("[BLE-PROV-TASK] Wi-Fi connection timed out or credentials rejected!");
+                sendBleText("{\"type\":\"provision_error\",\"code\":\"ERR_WIFI_AUTH\",\"message\":\"Could not connect to Wi-Fi network\"}");
+                isBleProvisioningActive = false;
+                continue;
+            }
+
+            String localIp = WiFi.localIP().toString();
+            Serial.printf("[BLE-PROV-TASK] Wi-Fi connected! Smart Pin IP: %s\n", localIp.c_str());
+            sendBleText("{\"type\":\"wifi_connected\",\"ip\":\"" + localIp + "\"}");
+            sendBleText("{\"type\":\"registration_pending\"}");
+
+            // Parse target host & port
+            String targetHost = server_host;
+            int targetPort = server_port;
+            if (srvUrl.length() > 0) {
+                String clean = srvUrl;
+                if (clean.startsWith("http://")) clean = clean.substring(7);
+                else if (clean.startsWith("https://")) clean = clean.substring(8);
+                int colonIdx = clean.indexOf(":");
+                int slashIdx = clean.indexOf("/");
+                if (colonIdx > 0) {
+                    targetHost = clean.substring(0, colonIdx);
+                    int endPort = (slashIdx > colonIdx) ? slashIdx : clean.length();
+                    targetPort = clean.substring(colonIdx + 1, endPort).toInt();
+                    if (targetPort <= 0) targetPort = 8080;
+                } else if (slashIdx > 0) {
+                    targetHost = clean.substring(0, slashIdx);
+                } else {
+                    targetHost = clean;
+                }
+            }
+
+            // Contact Central System POST /api/pin/register with HTTPS if remote
+            HTTPClient http;
+            bool isRemoteHttps = (srvUrl.startsWith("https://") || targetHost.indexOf("trycloudflare.com") >= 0 || targetPort == 443);
+            if (isRemoteHttps && (targetPort == 8080 || targetPort <= 0)) {
+                targetPort = 443;
+            }
+            String regUrl = (isRemoteHttps ? "https://" : "http://") + targetHost + (isRemoteHttps ? "" : (":" + String(targetPort))) + "/api/pin/register";
+            Serial.printf("[BLE-PROV-TASK] Contacting registration endpoint: %s\n", regUrl.c_str());
+
+            WiFiClientSecure secureClient;
+            WiFiClient plainClient;
+            if (isRemoteHttps) {
+                secureClient.setCACert(root_ca_isrg_x1);
+                http.begin(secureClient, regUrl);
+            } else {
+                http.begin(plainClient, regUrl);
+            }
+            http.addHeader("Content-Type", "application/json");
+            http.setTimeout(10000);
+
+            String regPayload = "{\"device_id\":\"" + pin_device_id + "\",\"pairing_code\":\"" + pCode + "\",\"firmware_version\":\"2.1\",\"mac\":\"" + pin_mac_address + "\"}";
+            int httpCode = http.POST(regPayload);
+            String httpResp = http.getString();
+            http.end();
+
+            Serial.printf("[BLE-PROV-TASK] Central System HTTP response code: %d\n", httpCode);
+
+            if (httpCode != 200 || httpResp.indexOf("\"status\":\"success\"") < 0) {
+                String errMsg = "Pairing code rejected or invalid";
+                if (httpResp.indexOf("\"message\":\"") >= 0) {
+                    errMsg = extractJsonField(httpResp, "message");
+                }
+                sendBleText("{\"type\":\"provision_error\",\"code\":\"ERR_PAIRING_CODE\",\"message\":\"" + errMsg + "\"}");
+                isBleProvisioningActive = false;
+                continue;
+            }
+
+            String token = extractJsonField(httpResp, "device_token");
+            if (token.length() < 16) {
+                sendBleText("{\"type\":\"provision_error\",\"code\":\"ERR_INVALID_TOKEN\",\"message\":\"Central System returned invalid token\"}");
+                isBleProvisioningActive = false;
+                continue;
+            }
+
+            // Save persistent credentials to NVS Preferences
+            prefs.putString("ssid", newSsid);
+            prefs.putString("pass", newPass);
+            prefs.putString("server", targetHost);
+            prefs.putInt("port", targetPort);
+            prefs.putString("token", token);
+
+            // Verify persistence by reading back
+            String readBackToken = prefs.getString("token", "");
+            if (readBackToken != token || readBackToken.length() == 0) {
+                Serial.println("[BLE-PROV-TASK] NVS save verification failed!");
+                sendBleText("{\"type\":\"provision_error\",\"code\":\"ERR_NVS_FAILED\",\"message\":\"Failed to persist device token to flash memory\"}");
+                isBleProvisioningActive = false;
+                continue;
+            }
+
+            wifi_ssid = newSsid;
+            wifi_pass = newPass;
+            server_host = targetHost;
+            server_port = targetPort;
+            pin_device_token = token;
+            cachedServerIP = targetHost;
+            Serial.println("[BLE-PROV-TASK] Token and Wi-Fi credentials persisted to NVS.");
+
+            // Connect authenticated WebSocket to Central System
+            Serial.println("[BLE-PROV-TASK] Connecting to Central System WebSocket for authentication...");
+            WiFi.setSleep(false);
+            if (ws.isConnected()) {
+                ws.disconnect();
+                vTaskDelay(pdMS_TO_TICKS(200));
+            }
+            connectWebSocket(server_host, server_port);
+
+            // Wait up to 10 seconds for WebSocket connection & authentication confirmation
+            unsigned long authWaitStart = millis();
+            bool authConfirmed = false;
+            while (millis() - authWaitStart < 10000) {
+                vTaskDelay(pdMS_TO_TICKS(150));
+                if (isDevicePaired && ws.isConnected()) {
+                    authConfirmed = true;
+                    break;
+                }
+            }
+
+            if (authConfirmed) {
+                Serial.println("[BLE-PROV-TASK] Smart Pin successfully authenticated over WebSocket!");
+                sendBleText("{\"type\":\"pairing_success\",\"device_id\":\"" + pin_device_id + "\"}");
+            } else {
+                Serial.println("[BLE-PROV-TASK] WebSocket authentication did not confirm within timeout.");
+                if (ws.isConnected()) {
+                    isDevicePaired = true;
+                    sendBleText("{\"type\":\"pairing_success\",\"device_id\":\"" + pin_device_id + "\"}");
+                } else {
+                    sendBleText("{\"type\":\"provision_error\",\"code\":\"ERR_WS_AUTH\",\"message\":\"WebSocket authentication failed or timed out\"}");
+                }
+            }
+
+            isBleProvisioningActive = false;
+        }
+    }
+}
 
 void setupBLE() {
     Serial.printf("[BLE] Starting Nordic UART BLE Service ('%s')...\n", ble_device_name.c_str());
@@ -270,6 +562,19 @@ void setupBLE() {
     pAdvertising->setMinPreferred(0x06);
     pAdvertising->setMinPreferred(0x12);
     BLEDevice::startAdvertising();
+
+    bleTxMutex = xSemaphoreCreateMutex();
+    bleProvisionQueue = xQueueCreate(2, sizeof(BleProvisionRequest));
+    xTaskCreatePinnedToCore(
+        bleProvisionWorkerTask,
+        "bleProvTask",
+        8192,
+        NULL,
+        1,
+        NULL,
+        0
+    );
+
     Serial.printf("[BLE] Advertising active as '%s'! Ready for Mobile Companion onboarding.\n", ble_device_name.c_str());
 }
 
@@ -284,154 +589,6 @@ bool sendBleChunk(const uint8_t* data, size_t len) {
         delay(3);
     }
     return (sent == len);
-}
-
-void sendBleText(const String& txt) {
-    if (!pTxCharacteristic || !bleClientConnected) return;
-    pTxCharacteristic->setValue((uint8_t*)txt.c_str(), txt.length());
-    pTxCharacteristic->notify();
-}
-
-// --- SECURE BLE ONBOARDING & PROVISIONING HANDLER ---
-void handleBleProvisioning(const String& rxJson) {
-    // 1. Device Info Query
-    if (rxJson.indexOf("get_device_info") >= 0) {
-        String infoMsg = "{\"type\":\"device_info\",\"device_id\":\"" + pin_device_id + 
-                         "\",\"mac\":\"" + pin_mac_address + 
-                         "\",\"fw_version\":\"2.1\",\"paired\":" + (isDevicePaired ? "true" : "false") + "}";
-        Serial.printf("[BLE-PROV] Replying with device info: %s\n", infoMsg.c_str());
-        sendBleText(infoMsg);
-        return;
-    }
-
-    // 2. Wi-Fi & Pairing Provisioning Command
-    if (rxJson.indexOf("\"provision\"") >= 0) {
-        sendBleText("{\"type\":\"provision_received\"}");
-        
-        String newSsid = extractJsonField(rxJson, "ssid");
-        String newPass = extractJsonField(rxJson, "password");
-        String pCode = extractJsonField(rxJson, "pairing_code");
-        String srvUrl = extractJsonField(rxJson, "server_url");
-
-        if (newSsid.length() == 0 || pCode.length() == 0) {
-            sendBleText("{\"type\":\"provision_error\",\"code\":\"ERR_INVALID_PARAMS\",\"message\":\"SSID and pairing_code required\"}");
-            return;
-        }
-
-        // Security requirement: Never log raw pairing code or Wi-Fi password
-        Serial.printf("\n[BLE-PROV] Provisioning command received for SSID: '%s'\n", newSsid.c_str());
-        sendBleText("{\"type\":\"wifi_connecting\",\"ssid\":\"" + newSsid + "\"}");
-
-        // Attempt STA connection
-        WiFi.disconnect(true);
-        delay(100);
-        WiFi.mode(WIFI_STA);
-        WiFi.begin(newSsid.c_str(), newPass.c_str());
-
-        unsigned long tStart = millis();
-        bool wifiOk = false;
-        while (millis() - tStart < 12000) {
-            delay(150);
-            if (WiFi.status() == WL_CONNECTED) {
-                wifiOk = true;
-                break;
-            }
-        }
-
-        if (!wifiOk) {
-            Serial.println("[BLE-PROV] Wi-Fi connection timed out or credentials rejected!");
-            sendBleText("{\"type\":\"provision_error\",\"code\":\"ERR_WIFI_AUTH\",\"message\":\"Could not connect to Wi-Fi network\"}");
-            return;
-        }
-
-        String localIp = WiFi.localIP().toString();
-        Serial.printf("[BLE-PROV] Wi-Fi connected! Smart Pin IP: %s\n", localIp.c_str());
-        sendBleText("{\"type\":\"wifi_connected\",\"ip\":\"" + localIp + "\"}");
-        sendBleText("{\"type\":\"pairing_pending\"}");
-
-        // Parse target host & port
-        String targetHost = server_host;
-        int targetPort = server_port;
-        if (srvUrl.length() > 0) {
-            String clean = srvUrl;
-            if (clean.startsWith("http://")) clean = clean.substring(7);
-            else if (clean.startsWith("https://")) clean = clean.substring(8);
-            int colonIdx = clean.indexOf(":");
-            int slashIdx = clean.indexOf("/");
-            if (colonIdx > 0) {
-                targetHost = clean.substring(0, colonIdx);
-                int endPort = (slashIdx > colonIdx) ? slashIdx : clean.length();
-                targetPort = clean.substring(colonIdx + 1, endPort).toInt();
-                if (targetPort <= 0) targetPort = 8080;
-            } else if (slashIdx > 0) {
-                targetHost = clean.substring(0, slashIdx);
-            } else {
-                targetHost = clean;
-            }
-        }
-
-        // Contact Central System POST /api/pin/register with HTTPS if remote
-        HTTPClient http;
-        bool isRemoteHttps = (srvUrl.startsWith("https://") || targetHost.indexOf("trycloudflare.com") >= 0 || targetPort == 443);
-        if (isRemoteHttps && (targetPort == 8080 || targetPort <= 0)) {
-            targetPort = 443;
-        }
-        String regUrl = (isRemoteHttps ? "https://" : "http://") + targetHost + (isRemoteHttps ? "" : (":" + String(targetPort))) + "/api/pin/register";
-        Serial.printf("[BLE-PROV] Contacting registration endpoint: %s\n", regUrl.c_str());
-
-        WiFiClientSecure secureClient;
-        WiFiClient plainClient;
-        if (isRemoteHttps) {
-            secureClient.setCACert(root_ca_isrg_x1); // Validate Let's Encrypt / Cloudflare Edge TLS certificates
-            http.begin(secureClient, regUrl);
-        } else {
-            http.begin(plainClient, regUrl);
-        }
-        http.addHeader("Content-Type", "application/json");
-        http.setTimeout(10000);
-
-        String regPayload = "{\"device_id\":\"" + pin_device_id + "\",\"pairing_code\":\"" + pCode + "\",\"firmware_version\":\"2.1\",\"mac\":\"" + pin_mac_address + "\"}";
-        int httpCode = http.POST(regPayload);
-        String httpResp = http.getString();
-        http.end();
-
-        // Security requirement: Never log raw tokens in serial output
-        Serial.printf("[BLE-PROV] Central System HTTP response code: %d\n", httpCode);
-
-        if (httpCode == 200 && httpResp.indexOf("\"status\":\"success\"") >= 0) {
-            String token = extractJsonField(httpResp, "device_token");
-            if (token.length() > 0) {
-                // Save persistent credentials to NVS Preferences
-                prefs.putString("ssid", newSsid);
-                prefs.putString("pass", newPass);
-                prefs.putString("server", targetHost);
-                prefs.putInt("port", targetPort);
-                prefs.putString("token", token);
-
-                wifi_ssid = newSsid;
-                wifi_pass = newPass;
-                server_host = targetHost;
-                server_port = targetPort;
-                pin_device_token = token;
-                isDevicePaired = true;
-
-                Serial.println("[BLE-PROV] Smart Pin successfully registered and paired with Central System!");
-                sendBleText("{\"type\":\"pairing_success\",\"device_id\":\"" + pin_device_id + "\"}");
-
-                // Immediately initiate authenticated WebSocket connection
-                WiFi.setSleep(false);
-                connectWebSocket(server_host, server_port);
-                return;
-            }
-        }
-
-        // Error during registration
-        String errMsg = "Pairing code rejected or invalid";
-        if (httpResp.indexOf("\"message\":\"") >= 0) {
-            errMsg = extractJsonField(httpResp, "message");
-        }
-        sendBleText("{\"type\":\"provision_error\",\"code\":\"ERR_PAIRING_CODE\",\"message\":\"" + errMsg + "\"}");
-    }
 }
 
 // --- DUAL-CORE AUDIO ENGINE & PSRAM RING BUFFER ---
@@ -763,6 +920,13 @@ void onWebSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
                     delay(500);
                     Serial.println("[SYS] Rebooting into Setup Portal...");
                     ESP.restart();
+                } else if (msg.indexOf("\"type\":\"auth_ok\"") >= 0) {
+                    isDevicePaired = true;
+                    Serial.println("[WS-AUTH] WebSocket Authentication Confirmed by Central System!");
+                    sendBleText("{\"type\":\"pairing_success\",\"device_id\":\"" + pin_device_id + "\"}");
+                } else if (msg.indexOf("\"type\":\"auth_error\"") >= 0) {
+                    Serial.println("[WS-AUTH] WebSocket Authentication Rejected by Central System!");
+                    sendBleText("{\"type\":\"provision_error\",\"code\":\"ERR_WS_AUTH\",\"message\":\"Central System rejected token\"}");
                 } else if (msg.indexOf("\"type\":\"pairing_success\"") >= 0) {
                     String token = extractJsonField(msg, "device_token");
                     if (token.length() > 0) {
@@ -1456,9 +1620,13 @@ void setup() {
                     String token = extractJsonField(hResp, "device_token");
                     if (token.length() > 0) {
                         prefs.putString("token", token);
-                        pin_device_token = token;
-                        isDevicePaired = true;
-                        Serial.println("[PROV] Smart Pin successfully registered from pending pairing code!");
+                        String readBack = prefs.getString("token", "");
+                        if (readBack == token && token.length() > 0) {
+                            pin_device_token = token;
+                            Serial.println("[PROV] Smart Pin token registered & verified in NVS. Connecting WebSocket to authenticate...");
+                        } else {
+                            Serial.println("[PROV] ERROR: Failed to persist device token to flash memory!");
+                        }
                     }
                 }
             }

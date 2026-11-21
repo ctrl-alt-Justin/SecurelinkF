@@ -17,6 +17,54 @@ enum BleRelayState {
 
 /// BLE Audio Bridge & Cellular Data Relay Service
 ///
+class BleSendResult {
+  final bool success;
+  final String? errorCode;
+  final String? errorMessage;
+  final int negotiatedMtu;
+  final int payloadLength;
+  final int totalChunks;
+  final int? failedChunkIndex;
+
+  const BleSendResult({
+    required this.success,
+    this.errorCode,
+    this.errorMessage,
+    this.negotiatedMtu = 23,
+    this.payloadLength = 0,
+    this.totalChunks = 0,
+    this.failedChunkIndex,
+  });
+
+  factory BleSendResult.ok({
+    required int negotiatedMtu,
+    required int payloadLength,
+    required int totalChunks,
+  }) => BleSendResult(
+    success: true,
+    negotiatedMtu: negotiatedMtu,
+    payloadLength: payloadLength,
+    totalChunks: totalChunks,
+  );
+
+  factory BleSendResult.error({
+    required String code,
+    required String message,
+    int negotiatedMtu = 23,
+    int payloadLength = 0,
+    int totalChunks = 0,
+    int? failedChunkIndex,
+  }) => BleSendResult(
+    success: false,
+    errorCode: code,
+    errorMessage: message,
+    negotiatedMtu: negotiatedMtu,
+    payloadLength: payloadLength,
+    totalChunks: totalChunks,
+    failedChunkIndex: failedChunkIndex,
+  );
+}
+
 /// Connects to Seeed Studio XIAO ESP32S3 smart pins over Nordic UART Service (NUS).
 /// When enterprise Wi-Fi or AP client isolation blocks the ESP32 from reaching the server,
 /// this service receives raw 16kHz PCM audio chunks over BLE and transparently forwards
@@ -34,6 +82,7 @@ class BlePinRelayService extends ChangeNotifier {
   BluetoothDevice? _connectedDevice;
   BluetoothCharacteristic? _txCharacteristic;
   BluetoothCharacteristic? _rxCharacteristic;
+  BleSendResult? lastSendResult;
   StreamSubscription? _txSubscription;
   StreamSubscription? _connectionStateSub;
 
@@ -440,76 +489,123 @@ class BlePinRelayService extends ChangeNotifier {
     return s == t || (s.length >= 8 && t.length >= 8 && s.startsWith(t.substring(0, 8)));
   }
 
-  Future<bool> _writeChunkWithFallback(BluetoothCharacteristic c, List<int> chunk) async {
-    final canWriteWithResponse = c.properties.write;
-    final canWriteWithoutResponse = c.properties.writeWithoutResponse;
-
-    // Default to write with response if supported, otherwise write without response
-    bool preferWithoutResponse = !canWriteWithResponse && canWriteWithoutResponse;
-    try {
-      await c.write(chunk, withoutResponse: preferWithoutResponse);
-      return true;
-    } catch (e) {
-      debugPrint('[BLE-WRITE] Write with withoutResponse=$preferWithoutResponse failed ($e), trying alternate mode...');
-      try {
-        await c.write(chunk, withoutResponse: !preferWithoutResponse);
-        return true;
-      } catch (e2) {
-        debugPrint('[BLE-WRITE] Alternate write mode also failed: $e2');
-        return false;
-      }
+  Future<BleSendResult> sendBleJsonDetailed(Map<String, dynamic> jsonMap) async {
+    if (_connectedDevice == null) {
+      final res = BleSendResult.error(
+        code: 'ERR_BLE_NOT_CONNECTED',
+        message: 'Smart Pin is not connected over BLE.',
+      );
+      lastSendResult = res;
+      return res;
     }
-  }
-
-  Future<bool> sendBleJson(Map<String, dynamic> jsonMap) async {
-    if (_rxCharacteristic == null || _connectedDevice == null) {
-      debugPrint('[BLE-TX] Cannot transmit JSON: rxCharacteristic=$_rxCharacteristic, device=$_connectedDevice');
-      return false;
+    if (_rxCharacteristic == null) {
+      final res = BleSendResult.error(
+        code: 'ERR_RX_CHAR_NOT_FOUND',
+        message: 'Nordic UART RX characteristic was not discovered on the device.',
+      );
+      lastSendResult = res;
+      return res;
     }
+
+    final c = _rxCharacteristic!;
+    final canWriteWithResp = c.properties.write;
+    final canWriteWithoutResp = c.properties.writeWithoutResponse;
+
+    if (!canWriteWithResp && !canWriteWithoutResp) {
+      final res = BleSendResult.error(
+        code: 'ERR_UNSUPPORTED_WRITE_PROPERTY',
+        message: 'RX characteristic does not support write or writeWithoutResponse.',
+      );
+      lastSendResult = res;
+      return res;
+    }
+
+    // Respect characteristic write properties.
+    // Prefer write-with-response for reliable command reception if supported, otherwise write-without-response.
+    final bool withoutResp = !canWriteWithResp;
+
     try {
       final jsonStr = jsonEncode(jsonMap);
       final bytes = utf8.encode(jsonStr);
-      debugPrint('[BLE-TX] Transmitting JSON (${bytes.length} bytes) to pin: $jsonStr');
 
-      // Determine safe chunk size based on negotiated MTU (reserve 3 bytes for ATT header)
-      int maxChunk = 20; // Safe BLE default across all phones & stacks
-      if (_connectedDevice != null) {
-        final currentMtu = _connectedDevice!.mtuNow;
-        if (currentMtu > 23) {
-          maxChunk = (currentMtu - 3).clamp(20, 240);
-        }
+      // Determine chunk size based on negotiated MTU (reserve 3 bytes for ATT header)
+      int maxChunk = 20;
+      final currentMtu = _connectedDevice!.mtuNow;
+      if (currentMtu > 23) {
+        maxChunk = (currentMtu - 3).clamp(20, 240);
       }
+      final totalChunks = (bytes.length + maxChunk - 1) ~/ maxChunk;
 
-      for (int i = 0; i < bytes.length; i += maxChunk) {
+      // Security requirement: Never log raw JSON or credentials
+      debugPrint('[BLE-TX] Transmitting payload (${bytes.length} bytes in $totalChunks chunks, MTU=$currentMtu, withoutResp=$withoutResp)');
+
+      for (int i = 0, chunkIdx = 0; i < bytes.length; i += maxChunk, chunkIdx++) {
         final end = (i + maxChunk < bytes.length) ? i + maxChunk : bytes.length;
         final chunk = bytes.sublist(i, end);
-        final ok = await _writeChunkWithFallback(_rxCharacteristic!, chunk);
-        if (!ok) {
-          debugPrint('[BLE-TX] Failed to write chunk $i..$end of ${bytes.length} bytes');
-          return false;
+        try {
+          await c.write(chunk, withoutResponse: withoutResp);
+        } catch (e) {
+          // Only attempt alternate mode if the characteristic property explicitly supports it!
+          bool alternateSucceeded = false;
+          if (canWriteWithResp && canWriteWithoutResp) {
+            try {
+              await c.write(chunk, withoutResponse: !withoutResp);
+              alternateSucceeded = true;
+            } catch (_) {}
+          }
+          if (!alternateSucceeded) {
+            final errMsg = 'BLE write failed at chunk $chunkIdx/$totalChunks (bytes $i..$end of ${bytes.length}, MTU: $currentMtu): $e';
+            debugPrint('[BLE-TX] $errMsg');
+            final res = BleSendResult.error(
+              code: 'ERR_BLE_WRITE_FAILED',
+              message: errMsg,
+              negotiatedMtu: currentMtu,
+              payloadLength: bytes.length,
+              totalChunks: totalChunks,
+              failedChunkIndex: chunkIdx,
+            );
+            lastSendResult = res;
+            return res;
+          }
         }
         if (end < bytes.length) {
           await Future.delayed(const Duration(milliseconds: 25));
         }
       }
-      return true;
+
+      final res = BleSendResult.ok(
+        negotiatedMtu: currentMtu,
+        payloadLength: bytes.length,
+        totalChunks: totalChunks,
+      );
+      lastSendResult = res;
+      return res;
     } catch (e) {
-      debugPrint('[BLE-TX] Error sending JSON to pin: $e');
-      return false;
+      final res = BleSendResult.error(
+        code: 'ERR_BLE_TX_EXCEPTION',
+        message: 'Exception transmitting BLE payload: $e',
+      );
+      lastSendResult = res;
+      return res;
     }
+  }
+
+  Future<bool> sendBleJson(Map<String, dynamic> jsonMap) async {
+    final res = await sendBleJsonDetailed(jsonMap);
+    return res.success;
   }
 
   Future<bool> requestDeviceInfo() async {
     return sendBleJson({'type': 'get_device_info'});
   }
 
-  Future<bool> sendProvisioningCommand({
+  Future<BleSendResult> sendProvisioningCommand({
     required String ssid,
     required String password,
     required String pairingCode,
     required String serverUrl,
   }) async {
-    return sendBleJson({
+    return sendBleJsonDetailed({
       'type': 'provision',
       'version': 1,
       'ssid': ssid,

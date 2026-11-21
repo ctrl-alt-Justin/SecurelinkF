@@ -219,6 +219,38 @@ DEVICE_CREDENTIALS_FILE = os.path.join(BASE_DIR, "device_credentials.json")
 active_pairing_codes: Dict[str, Dict[str, Any]] = {}  # code -> {"created_at": float, "expires_at": float, "used": bool, "device_id": str | None}
 pairing_code_rate_limit: Dict[str, List[float]] = {}  # ip -> list of timestamps
 
+class PinRegistrationState:
+    UNREGISTERED = "UNREGISTERED"
+    PENDING = "PENDING"
+    PAIRED = "PAIRED"
+    OFFLINE = "OFFLINE"
+    AUTHENTICATION_FAILED = "AUTHENTICATION_FAILED"
+
+PENDING_REGISTRATION_TIMEOUT = 90.0  # seconds
+pending_registrations: Dict[str, Dict[str, Any]] = {}  # in-memory pending registrations awaiting WS authentication
+pin_registration_lock = asyncio.Lock()
+
+def cleanup_expired_pending_registrations():
+    now = time.time()
+    expired = [k for k, v in list(pending_registrations.items()) if now > v.get("expires_at", 0)]
+    for k in expired:
+        print(f"[PAIRING] Pending registration for '{k}' expired after {int(PENDING_REGISTRATION_TIMEOUT)}s without WebSocket authentication.")
+        pending_registrations.pop(k, None)
+
+def get_device_registration_state(device_id: str) -> str:
+    clean_id = device_id.strip().upper()
+    if clean_id in registered_devices and registered_devices[clean_id].get("paired", False):
+        if any(d_id == clean_id for d_id in active_pins.values()):
+            return PinRegistrationState.PAIRED
+        return PinRegistrationState.OFFLINE
+    cleanup_expired_pending_registrations()
+    if clean_id in pending_registrations:
+        return PinRegistrationState.PENDING
+    creds = load_device_credentials()
+    if clean_id in creds:
+        return PinRegistrationState.OFFLINE
+    return PinRegistrationState.UNREGISTERED
+
 def load_device_credentials() -> Dict[str, Any]:
     if os.path.exists(DEVICE_CREDENTIALS_FILE):
         try:
@@ -985,6 +1017,7 @@ async def generate_pairing_code_api(payload: Optional[dict] = None):
 @app.get("/api/pairing-code/status/{code}")
 async def get_pairing_code_status(code: str):
     """Pollable endpoint for dashboard to check pairing progress for a specific code."""
+    cleanup_expired_pending_registrations()
     code_data = active_pairing_codes.get(code.strip())
     now = time.time()
     if not code_data:
@@ -994,21 +1027,33 @@ async def get_pairing_code_status(code: str):
             "message": "Pairing code not found or expired.",
             "valid": False,
             "used": False,
+            "paired": False,
+            "pending": False,
             "device_id": None,
         }
     is_expired = now > code_data.get("expires_at", 0)
+    dev_id = code_data.get("device_id")
+    is_paired = bool(dev_id and dev_id in registered_devices and registered_devices[dev_id].get("paired", False))
+    is_pending = bool(dev_id and dev_id in pending_registrations)
+
     return {
         "status": "success",
         "valid": not is_expired and not code_data.get("used", False),
         "expired": is_expired,
         "used": code_data.get("used", False),
-        "device_id": code_data.get("device_id"),
+        "paired": is_paired,
+        "pending": is_pending,
+        "device_id": dev_id,
         "remaining_seconds": max(0, int(code_data.get("expires_at", 0) - now))
     }
 
 @app.post("/api/pin/register")
 async def register_pin_api(payload: dict):
-    """Validates single-use pairing code, binds hardware device ID, issues 32-byte secret token, and saves credentials."""
+    """
+    Validates single-use pairing code and creates a temporary pending registration.
+    The device is NOT marked paired or added to registered_devices until it
+    connects to the physical pin WebSocket endpoint and proves token ownership.
+    """
     device_id = str(payload.get("device_id", "")).strip().upper()
     pairing_code = str(payload.get("pairing_code", "")).strip()
     fw_version = str(payload.get("firmware_version", "2.1")).strip()
@@ -1022,73 +1067,52 @@ async def register_pin_api(payload: dict):
         }
 
     now = time.time()
-    code_info = active_pairing_codes.get(pairing_code)
-    if not code_info or code_info.get("used", False) or now > code_info.get("expires_at", 0):
-        # Security requirement: Never log raw pairing codes
-        print(f"\n[PAIRING-ERR] Registration rejected for '{device_id}': Invalid, already used, or expired pairing code.")
-        return {
-            "status": "error",
-            "code": "ERR_INVALID_CODE",
-            "message": "Pairing code is invalid, already used, or expired."
+
+    async with pin_registration_lock:
+        cleanup_expired_pending_registrations()
+        code_info = active_pairing_codes.get(pairing_code)
+        if not code_info or code_info.get("used", False) or now > code_info.get("expires_at", 0):
+            # Security requirement: Never log raw pairing codes
+            print(f"\n[PAIRING-ERR] Registration rejected for '{device_id}': Invalid, already used, or expired pairing code.")
+            return {
+                "status": "error",
+                "code": "ERR_INVALID_CODE",
+                "message": "Pairing code is invalid, already used, or expired."
+            }
+
+        # Consume single-use code immediately
+        code_info["used"] = True
+        code_info["device_id"] = device_id
+
+        # Generate cryptographically secure 32-byte hex credential token
+        device_token = secrets.token_hex(32)
+        token_hash = hash_device_token(device_token)
+
+        # Store in pending registrations (in-memory ONLY with expiration)
+        # Note: Do NOT add to registered_devices or device_credentials.json yet!
+        # Do NOT broadcast pin_registered to the dashboard until authenticated WebSocket connection!
+        pending_registrations[device_id] = {
+            "device_id": device_id,
+            "token_hash": token_hash,
+            "pairing_code": pairing_code,
+            "fw_version": fw_version,
+            "mac": mac,
+            "created_at": now,
+            "expires_at": now + PENDING_REGISTRATION_TIMEOUT,
+            "state": PinRegistrationState.PENDING,
         }
 
-    # Consume single-use code immediately
-    code_info["used"] = True
-    code_info["device_id"] = device_id
-
-    # Generate cryptographically secure 32-byte hex credential token
-    device_token = secrets.token_hex(32)
-    token_hash = hash_device_token(device_token)
-
-    # Persist in device_credentials.json
-    creds = load_device_credentials()
-    creds[device_id] = {
-        "token_hash": token_hash,
-        "registered_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "fw_version": fw_version,
-        "mac": mac,
-        "pairing_code_used": pairing_code,
-    }
-    save_device_credentials(creds)
-
-    # Update or add in-memory fleet record
-    dev_record = registered_devices.get(device_id, {})
-    dev_record.update({
-        "id": device_id,
-        "online": False,
-        "battery": dev_record.get("battery", 100),
-        "state": "PAIRING SUCCESS",
-        "network": "Campus Wi-Fi",
-        "lastSeen": "Just registered",
-        "cpuMhz": 160,
-        "rssi": -60,
-        "estRuntime": "--",
-        "paired": True,
-        "mac": mac,
-        "fwVersion": fw_version
-    })
-    registered_devices[device_id] = dev_record
-
-    print(f"\n[PAIRING] Smart Pin '{device_id}' registered successfully! Token hash persisted.")
-
-    # Broadcast real-time registration event to Dashboard & Mobile Companions
-    await broadcast_to_ui({
-        "event_type": "pin_registered",
-        "device_id": device_id,
-        "mac": mac,
-        "fw_version": fw_version,
-        "device": dev_record,
-        "timestamp": datetime.now().strftime("%H:%M:%S")
-    })
+    print(f"\n[PAIRING-PENDING] Smart Pin '{device_id}' issued pending registration (expires in {int(PENDING_REGISTRATION_TIMEOUT)}s). Awaiting WebSocket authentication.")
 
     return {
         "status": "success",
+        "registration_state": PinRegistrationState.PENDING,
         "device_id": device_id,
         "device_token": device_token,
         "cs_id": "CS-CAMPUS-01",
         "server_ip": get_primary_ip(),
         "server_port": 8080,
-        "message": f"Device {device_id} successfully paired with Central System."
+        "message": f"Pending registration issued for {device_id}. Connect to WebSocket to complete pairing."
     }
 
 @app.get("/api/devices/paired")
@@ -1358,20 +1382,9 @@ async def mobile_websocket_endpoint(websocket: WebSocket):
                 # 1. BLE Relay: Presence and telemetry from nearby Smart Pins
                 if mtype == "ble_relay_presence":
                     pin_id = str(msg.get("pin_id", "")).strip().upper()
-                    if pin_id:
-                        if pin_id not in registered_devices:
-                            registered_devices[pin_id] = {
-                                "id": pin_id,
-                                "online": False,
-                                "battery": msg.get("battery", 100),
-                                "state": "STANDBY",
-                                "network": "Campus Wi-Fi",
-                                "lastSeen": "Discovered via BLE Relay",
-                                "cpuMhz": 160,
-                                "rssi": msg.get("rssi", -60),
-                                "estRuntime": "--",
-                                "paired": True,
-                            }
+                    # CRITICAL: Do NOT create or register a physical ESP32 from a mobile BLE relay!
+                    # Only update proximity and telemetry if the pin is already legitimately registered.
+                    if pin_id and pin_id in registered_devices:
                         dev_record = registered_devices[pin_id]
                         dev_record["ble_proximity"] = True
                         dev_record["relayed_by"] = device_id
@@ -2080,12 +2093,24 @@ async def pin_websocket_endpoint(websocket: WebSocket):
     
     # Authenticate device using cryptographically registered token
     device_token = websocket.query_params.get("token") or websocket.headers.get("x-device-token")
-    creds = load_device_credentials()
+    now = time.time()
     is_authenticated = False
+    is_pending_promotion = False
+    pending_info = None
 
-    if device_id in creds and device_token and verify_device_token(device_id, device_token):
-        is_authenticated = True
-    elif not is_authenticated:
+    async with pin_registration_lock:
+        cleanup_expired_pending_registrations()
+        if device_id in pending_registrations:
+            pending_entry = pending_registrations[device_id]
+            expected_hash = pending_entry.get("token_hash", "")
+            if device_token and secrets.compare_digest(expected_hash, hash_device_token(device_token)):
+                is_authenticated = True
+                is_pending_promotion = True
+                pending_info = pending_entry
+        elif verify_device_token(device_id, device_token or ""):
+            is_authenticated = True
+
+    if not is_authenticated:
         # Device did not pass token in query param; give it 3 seconds to send an auth or pairing frame
         try:
             auth_msg = await asyncio.wait_for(websocket.receive(), timeout=3.0)
@@ -2096,12 +2121,20 @@ async def pin_websocket_endpoint(websocket: WebSocket):
                 try:
                     auth_json = json.loads(auth_raw)
                     msg_type = auth_json.get("type", "")
-                    if msg_type == "auth" and device_id in creds:
+                    if msg_type == "auth":
                         auth_tok = auth_json.get("token", "")
                         auth_dev = auth_json.get("device_id", "").strip().upper()
-                        if (auth_dev == device_id or not auth_dev) and verify_device_token(device_id, auth_tok):
-                            is_authenticated = True
-                            await websocket.send_text(json.dumps({"type": "auth_ok", "status": "authenticated"}))
+                        if auth_dev == device_id or not auth_dev:
+                            async with pin_registration_lock:
+                                cleanup_expired_pending_registrations()
+                                if device_id in pending_registrations:
+                                    expected_hash = pending_registrations[device_id].get("token_hash", "")
+                                    if secrets.compare_digest(expected_hash, hash_device_token(auth_tok)):
+                                        is_authenticated = True
+                                        is_pending_promotion = True
+                                        pending_info = pending_registrations[device_id]
+                                elif verify_device_token(device_id, auth_tok):
+                                    is_authenticated = True
                     elif msg_type == "pair" or "pairing_code" in auth_json:
                         pcode = str(auth_json.get("pairing_code", "")).strip()
                         now = time.time()
@@ -2110,6 +2143,7 @@ async def pin_websocket_endpoint(websocket: WebSocket):
                             code_info["used"] = True
                             code_info["device_id"] = device_id
                             new_token = secrets.token_hex(32)
+                            creds = load_device_credentials()
                             creds[device_id] = {
                                 "token_hash": hash_device_token(new_token),
                                 "registered_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -2153,14 +2187,74 @@ async def pin_websocket_endpoint(websocket: WebSocket):
         client_ip = websocket.client.host if websocket.client else "unknown"
         print(f"\n[WS-AUTH] Unauthorized connection rejected for '{device_id}' from {client_ip} (missing, unregistered, or invalid device token).")
         try:
+            await websocket.send_text(json.dumps({
+                "type": "auth_error",
+                "code": "ERR_AUTH_FAILED",
+                "state": PinRegistrationState.AUTHENTICATION_FAILED,
+                "message": "Unauthorized or expired device token"
+            }))
             await websocket.close(code=4401, reason="Unauthorized device token")
         except Exception:
             pass
         return
-    else:
-        # CRITICAL: Register into active_pins ONLY after authentication succeeds!
-        active_pins[websocket] = device_id
-        print(f"[WS-AUTH] Smart Pin '{device_id}' authenticated successfully.")
+
+    # If this was promoted from pending registration, atomically promote now!
+    if is_pending_promotion:
+        async with pin_registration_lock:
+            pending_entry = pending_registrations.pop(device_id, pending_info)
+            if pending_entry:
+                creds = load_device_credentials()
+                creds[device_id] = {
+                    "token_hash": pending_entry["token_hash"],
+                    "registered_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "fw_version": pending_entry.get("fw_version", "2.1"),
+                    "mac": pending_entry.get("mac", ""),
+                    "pairing_code_used": pending_entry.get("pairing_code", ""),
+                }
+                save_device_credentials(creds)
+
+                dev_record = registered_devices.get(device_id, {})
+                dev_record.update({
+                    "id": device_id,
+                    "online": True,
+                    "connection_source": "ESP32_DIRECT",
+                    "battery": dev_record.get("battery", 100),
+                    "state": "VAD ARMED",
+                    "network": "Campus Wi-Fi",
+                    "lastSeen": "Just paired & authenticated",
+                    "cpuMhz": 160,
+                    "rssi": -60,
+                    "estRuntime": "--",
+                    "paired": True,
+                    "mac": pending_entry.get("mac", ""),
+                    "fwVersion": pending_entry.get("fw_version", "2.1"),
+                })
+                registered_devices[device_id] = dev_record
+
+                print(f"\n[PAIRING-PROMOTED] Smart Pin '{device_id}' PROMOTED to PAIRED! Verified via physical WebSocket.")
+
+                # Broadcast real-time registration event to Dashboard & Mobile Companions
+                await broadcast_to_ui({
+                    "event_type": "pin_registered",
+                    "device_id": device_id,
+                    "mac": dev_record.get("mac", ""),
+                    "fw_version": dev_record.get("fwVersion", "2.1"),
+                    "device": dev_record,
+                    "timestamp": datetime.now().strftime("%H:%M:%S")
+                })
+
+    # Register into active_pins ONLY after authentication succeeds!
+    active_pins[websocket] = device_id
+    print(f"[WS-AUTH] Smart Pin '{device_id}' authenticated successfully.")
+    try:
+        await websocket.send_text(json.dumps({
+            "type": "auth_ok",
+            "status": "authenticated",
+            "device_id": device_id,
+            "state": PinRegistrationState.PAIRED
+        }))
+    except Exception:
+        pass
 
     pending_cfg = None
     if device_id in pending_wifi_configs:

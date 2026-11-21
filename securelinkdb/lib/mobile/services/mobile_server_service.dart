@@ -1363,8 +1363,8 @@ class MobileServerService extends ChangeNotifier {
           'pin_id': pinId.trim().toUpperCase(),
           'mobile_id': _mobileId,
           'rssi': rssi,
-          if (battery != null) 'battery': battery,
-          if (batteryMv != null) 'battery_mv': batteryMv,
+          'battery': ?battery,
+          'battery_mv': ?batteryMv,
           'timestamp': DateTime.now().toIso8601String(),
         }));
       } catch (e) {
@@ -1555,18 +1555,20 @@ class MobileServerService extends ChangeNotifier {
       final type = event['type'];
       debugPrint('[BLE-WIZARD] Provisioning event: $event');
 
-      if (type == 'wifi_connecting') {
+      if (type == 'provision_received') {
+        onProgress?.call('Smart Pin received parameters. Initializing...', 0.50);
+      } else if (type == 'wifi_connecting') {
         onProgress?.call('Smart Pin connecting to "${event['ssid'] ?? ssid}"...', 0.60);
       } else if (type == 'wifi_connected') {
         onProgress?.call('Wi-Fi connected (${event['ip'] ?? 'LAN'}). Validating pairing code with Central System...', 0.75);
-      } else if (type == 'pairing_pending') {
+      } else if (type == 'registration_pending' || type == 'pairing_pending') {
         onProgress?.call('Central System verifying single-use code...', 0.85);
       } else if (type == 'pairing_success') {
         timeoutTimer.cancel();
         sub?.cancel();
         final devId = (event['device_id'] ?? relay.pinnedDeviceId).toString().toUpperCase();
         await pairPin(devId, alias: alias, method: 'BLE Cryptographic Pairing');
-        onProgress?.call('Pairing successful! Pin authenticated.', 1.0);
+        onProgress?.call('Pairing successful! Pin authenticated with Central System.', 1.0);
         if (!completer.isCompleted) {
           completer.complete({
             'success': true,
@@ -1577,11 +1579,21 @@ class MobileServerService extends ChangeNotifier {
       } else if (type == 'provision_error') {
         timeoutTimer.cancel();
         sub?.cancel();
-        final errMsg = event['message'] ?? 'Provisioning failed';
+        final errCode = event['code'] as String? ?? 'ERR_UNKNOWN';
+        String errMsg = event['message'] as String? ?? 'Provisioning failed';
+        if (errCode == 'ERR_WIFI_AUTH') {
+          errMsg = 'Wi-Fi Connection Failed: Pin could not connect to "${event['ssid'] ?? ssid}". Check network SSID and password.';
+        } else if (errCode == 'ERR_PAIRING_CODE') {
+          errMsg = 'Pairing Code Rejected: ${event['message'] ?? 'Invalid or expired code.'}';
+        } else if (errCode == 'ERR_NVS_FAILED') {
+          errMsg = 'Hardware Storage Error: Smart Pin failed to save credentials to flash memory.';
+        } else if (errCode == 'ERR_WS_AUTH') {
+          errMsg = 'WebSocket Authentication Failed: Central System rejected pin credentials.';
+        }
         if (!completer.isCompleted) {
           completer.complete({
             'success': false,
-            'code': event['code'] ?? 'ERR_UNKNOWN',
+            'code': errCode,
             'error': errMsg,
           });
         }
@@ -1589,17 +1601,21 @@ class MobileServerService extends ChangeNotifier {
     });
 
     // Send provisioning JSON command over BLE RX
-    final sent = await relay.sendProvisioningCommand(
+    final sendResult = await relay.sendProvisioningCommand(
       ssid: ssid,
       password: password,
       pairingCode: pairingCode,
       serverUrl: targetServerUrl,
     );
 
-    if (!sent) {
+    if (!sendResult.success) {
       timeoutTimer.cancel();
       sub.cancel();
-      return {'success': false, 'error': 'Could not transmit provisioning command over BLE.'};
+      return {
+        'success': false,
+        'code': sendResult.errorCode ?? 'ERR_BLE_WRITE',
+        'error': 'BLE Transmission Failed: ${sendResult.errorMessage ?? "Could not write to RX characteristic"}',
+      };
     }
 
     return completer.future;

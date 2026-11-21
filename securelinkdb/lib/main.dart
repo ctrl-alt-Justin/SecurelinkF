@@ -8376,13 +8376,19 @@ class _PinSetupDialogState extends State<_PinSetupDialog> with SingleTickerProvi
             if (pollResp.statusCode == 200) {
               final pollBody = await pollResp.transform(utf8.decoder).join();
               final pollData = jsonDecode(pollBody) as Map<String, dynamic>;
-              if (pollData['used'] == true) {
+              if (pollData['paired'] == true) {
                 timer.cancel();
                 _pairingTimer?.cancel();
                 if (mounted) {
                   setState(() {
                     _isPairingSuccessful = true;
                     _pairedDeviceId = pollData['device_id'] as String? ?? 'Smart Pin';
+                  });
+                }
+              } else if (pollData['pending'] == true) {
+                if (mounted) {
+                  setState(() {
+                    _statusMessage = 'Pin credentials issued. Awaiting physical WebSocket authentication...';
                   });
                 }
               }
