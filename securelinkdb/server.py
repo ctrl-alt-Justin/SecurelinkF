@@ -9,7 +9,10 @@ import struct
 import subprocess
 import time
 import wave
+from dataclasses import dataclass, field
 from datetime import datetime
+from enum import Enum
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import scipy.signal as signal
@@ -47,6 +50,30 @@ if torch.cuda.is_available():
 # Suppress verbose websocket protocol logs
 logging.getLogger("websockets.server").setLevel(logging.CRITICAL)
 logging.getLogger("websockets.protocol").setLevel(logging.CRITICAL)
+
+
+class TranscriptionStatus(str, Enum):
+    NO_SPEECH = "NO_SPEECH"
+    SPEECH_DETECTED = "SPEECH_DETECTED"
+    TRANSCRIBED = "TRANSCRIBED"
+    UNCERTAIN_TRANSCRIPTION = "UNCERTAIN_TRANSCRIPTION"
+    TRANSCRIPTION_REJECTED = "TRANSCRIPTION_REJECTED"
+
+
+@dataclass
+class TranscriptionResult:
+    status: TranscriptionStatus
+    transcript: str = ""
+    reason: str = ""
+    metrics: Dict[str, Any] = field(default_factory=dict)
+    audio_quality: Dict[str, Any] = field(default_factory=dict)
+    processing_info: Dict[str, Any] = field(default_factory=dict)
+
+    def __str__(self) -> str:
+        return self.transcript
+
+    def __bool__(self) -> bool:
+        return bool(self.transcript)
 
 app = FastAPI(title="SecureLink AI Inference Server")
 
@@ -91,7 +118,7 @@ INITIAL_TAGALOG_PROMPT = ""
 
 # Hotwords: strictly true safety threats & physical violence terms (15-20 words max).
 # Never include conversational slang like 'taray' or 'ganda' which Whisper hallucinates from fan noise.
-TAGALOG_HOTWORDS = "pangit gago tanga bobo tarantado bastos suntukan sapakan bugbog holdap nakaw pera bawal bully patayin layuan"
+TAGALOG_HOTWORDS = None
 
 # Content words from common prompt-echo regurgitations to discard immediately
 PROMPT_ECHO_WORDS = {
@@ -1018,39 +1045,41 @@ async def startup_event():
 # =========================================================================
 # 7. AUDIO PROCESSING PIPELINE (DENOISING + WHISPER STT)
 # =========================================================================
-def process_audio_buffer(pcm_bytes: bytes) -> tuple[str, bytes]:
-    """Applies 4th-order fan filter, NoiseReduce spectral gating, and Faster-Whisper Tagalog ASR."""
-    if len(pcm_bytes) < 3200: # Less than 100ms
-        return "", pcm_bytes
+def process_audio_buffer(pcm_bytes: bytes) -> tuple[TranscriptionResult, bytes]:
+    """Applies 85Hz HPF, MS-NSNet2 noise suppression, gentle quiet-speech post-gain, and Faster-Whisper ASR with segment validation."""
+    if len(pcm_bytes) < 3200:  # Less than 100ms
+        return TranscriptionResult(
+            status=TranscriptionStatus.NO_SPEECH,
+            reason="Buffer shorter than 100ms"
+        ), pcm_bytes
     
     # 1. Convert raw 16kHz 16-bit Mono PCM bytes to float32 NumPy array [-1.0, 1.0]
     audio_int16 = np.frombuffer(pcm_bytes, dtype=np.int16)
     audio_float = audio_int16.astype(np.float32) / 32768.0
 
+    raw_peak = float(np.max(np.abs(audio_float)))
+    raw_rms = float(np.sqrt(np.mean(audio_float**2)))
+
     # 2. Strip infrasonic fan blade chop & motor rumble (< 85Hz) while preserving vocal formants (90Hz-3400Hz)
     try:
         sos_hp = signal.butter(2, 85 / (16000 / 2), btype='high', output='sos')
         audio_float = signal.sosfilt(sos_hp, audio_float).astype(np.float32)
-    except Exception as e:
+    except Exception:
         pass
 
-    rms = float(np.sqrt(np.mean(audio_float**2)))
-    peak = float(np.max(np.abs(audio_float)))
+    hpf_rms = float(np.sqrt(np.mean(audio_float**2)))
+    hpf_peak = float(np.max(np.abs(audio_float)))
 
-    # Only drop pure electrical silence or dead mic line (peak < 0.003, raw ADC peak < 100)
-    if peak < 0.003:
-        print(f"[ASR] Dropped pure digital silence (RMS={rms:.4f}, Peak={peak:.4f})")
-        return "", pcm_bytes
+    # Drop pure electrical silence or dead mic line (peak < 0.003, raw ADC peak < 100)
+    if hpf_peak < 0.003:
+        return TranscriptionResult(
+            status=TranscriptionStatus.NO_SPEECH,
+            reason=f"Electrical silence below threshold (Peak={hpf_peak:.4f} < 0.003)",
+            audio_quality={"raw_peak": round(raw_peak, 4), "raw_rms": round(raw_rms, 4), "hpf_peak": round(hpf_peak, 4), "hpf_rms": round(hpf_rms, 4)}
+        ), pcm_bytes
 
-    # Scale speech dynamically so it enters Whisper at optimal operating level (~0.55 peak)
-    # This ensures soft speech and normal distance speech are recognized crystal-clearly
-    # without squashing or clipping loud words!
-    target_peak = 0.55
-    gain_scale = min(target_peak / (peak + 1e-6), 6.0) # Up to 6x clean linear boost
-    if gain_scale > 1.0:
-        audio_float = audio_float * gain_scale
-
-    # 3. Server-side Denoising (Microsoft NSNet2 Neural Speech Isolation with Balanced Strength)
+    # 3. Server-side Denoising FIRST (Microsoft NSNet2 Neural Speech Isolation)
+    # Neural suppression runs on natural SNR before applying any digital gain
     if has_nsnet2 and nsnet2_denoiser is not None:
         try:
             audio_float = nsnet2_denoiser.enhance(audio_float, fs=16000, strength=DENOISE_STRENGTH)
@@ -1079,123 +1108,253 @@ def process_audio_buffer(pcm_bytes: bytes) -> tuple[str, bytes]:
         except Exception as e:
             print(f"[WARN] NoiseReduce error: {e}")
 
-    # Ensure float32 for Whisper/Silero VAD ONNX models
     audio_float = np.asarray(audio_float, dtype=np.float32)
+    denoised_peak = float(np.max(np.abs(audio_float)))
+    denoised_rms = float(np.sqrt(np.mean(audio_float**2)))
 
-    # Do NOT artificially boost gain on fan hiss; keep speech dynamics natural
+    # 4. Gentle Post-Denoising Normalization (Preserves quiet genuine speech, avoids boosting noise)
+    # Only scale when genuine acoustic energy is present (> 0.01) but soft (< 0.35)
+    # Never boost when denoised peak is negligible (< 0.01) to avoid amplifying residual fan floor
+    if 0.01 < denoised_peak < 0.35:
+        gain_scale = min(0.45 / (denoised_peak + 1e-6), 3.0)
+        audio_float = audio_float * gain_scale
+
     audio_float = np.clip(audio_float, -0.99, 0.99)
 
-    # 4. Convert clean audio float back to 16-bit PCM bytes for playback in recordings
+    # 5. Convert clean audio float back to 16-bit PCM bytes for playback in recordings
     clean_int16 = np.clip(audio_float * 32767.0, -32768, 32767).astype(np.int16)
     clean_pcm_bytes = clean_int16.tobytes()
 
-    # 5. Faster-Whisper Speech Recognition with Tightened Speech Knobs
-    if has_whisper and whisper_model is not None:
-        try:
-            transcribe_kwargs = {
-                "language": "tl", # Set primary language to Tagalog (Whisper handles Taglish & English seamlessly without phoneme confusion)
-                "initial_prompt": INITIAL_TAGALOG_PROMPT if INITIAL_TAGALOG_PROMPT else None,
-                "hotwords": TAGALOG_HOTWORDS if TAGALOG_HOTWORDS else None,
-                "beam_size": 5, # Beam size 5: explores top candidate paths, greatly improving recognition accuracy
-                "temperature": [0.0], # 0.0 only: kills fallback hallucinations like 'ae, taray, taray'
-                "condition_on_previous_text": False,
-                "no_speech_threshold": 0.65,
-                "log_prob_threshold": -1.0,
-                "compression_ratio_threshold": 2.4,
-                "word_timestamps": False,
-                "vad_parameters": dict(threshold=0.40, min_speech_duration_ms=250, speech_pad_ms=300),
-            }
+    audio_quality = {
+        "raw_peak": round(raw_peak, 4),
+        "raw_rms": round(raw_rms, 4),
+        "hpf_peak": round(hpf_peak, 4),
+        "denoised_peak": round(denoised_peak, 4)
+    }
 
-            # Silero VAD isolates genuine human speech segments from noise
-            segments, info = whisper_model.transcribe(
-                audio_float,
-                vad_filter=True,
-                **transcribe_kwargs
-            )
+    # 6. Faster-Whisper Speech Recognition
+    if not (has_whisper and whisper_model is not None):
+        return TranscriptionResult(
+            status=TranscriptionStatus.NO_SPEECH,
+            reason="Whisper model unavailable",
+            audio_quality=audio_quality
+        ), clean_pcm_bytes
 
-            # Silero Gate: if vad_filter returned zero speech segments, return empty immediately
-            valid_segments = [seg.text.strip() for seg in segments if getattr(seg, 'no_speech_prob', 0.0) < 0.5 and seg.text.strip()]
-            if not valid_segments:
-                return "", clean_pcm_bytes
+    transcribe_kwargs = {
+        "language": "tl",
+        "initial_prompt": INITIAL_TAGALOG_PROMPT if INITIAL_TAGALOG_PROMPT else None,
+        "hotwords": TAGALOG_HOTWORDS if TAGALOG_HOTWORDS else None,
+        "beam_size": 5,
+        "temperature": [0.0],
+        "condition_on_previous_text": False,
+        "no_speech_threshold": 0.60,
+        "log_prob_threshold": -1.0,
+        "compression_ratio_threshold": 2.4,
+        "word_timestamps": False,
+        "vad_parameters": dict(threshold=0.40, min_speech_duration_ms=250, speech_pad_ms=300),
+    }
 
-            # Fallback Rule: only force 'tl' if duration >= 2.5s and detected language is non-Philippine
-            dur_sec = len(audio_float) / 16000.0
-            detected_lang = getattr(info, 'language', 'tl')
-            if detected_lang not in ('tl', 'en'):
-                if dur_sec >= 2.5:
-                    print(f"[ASR] Auto-detected '{detected_lang}' on {dur_sec:.1f}s clip. Re-running with forced Tagalog ('tl')...")
-                    fallback_kwargs = dict(transcribe_kwargs)
-                    fallback_kwargs["language"] = "tl"
-                    segments, info = whisper_model.transcribe(
-                        audio_float,
-                        vad_filter=True,
-                        **fallback_kwargs
-                    )
-                    valid_segments = [seg.text.strip() for seg in segments if getattr(seg, 'no_speech_prob', 0.0) < 0.5 and seg.text.strip()]
-                else:
-                    print(f"[ASR] Discarded short noisy clip ({dur_sec:.1f}s) misdetected as '{detected_lang}'")
-                    return "", clean_pcm_bytes
+    try:
+        segments_gen, info = whisper_model.transcribe(
+            audio_float,
+            vad_filter=True,
+            **transcribe_kwargs
+        )
+        segments = list(segments_gen)
+    except Exception as e:
+        print(f"[ERR] Whisper transcription error: {e}")
+        return TranscriptionResult(
+            status=TranscriptionStatus.TRANSCRIPTION_REJECTED,
+            reason=f"Whisper transcription error: {e}",
+            audio_quality=audio_quality
+        ), clean_pcm_bytes
 
-            transcript = " ".join(valid_segments).strip()
+    if not segments:
+        return TranscriptionResult(
+            status=TranscriptionStatus.TRANSCRIPTION_REJECTED if raw_peak >= 0.05 else TranscriptionStatus.NO_SPEECH,
+            reason="No speech segments detected by VAD",
+            audio_quality=audio_quality
+        ), clean_pcm_bytes
 
-            # Word-level tokenization for human-style loop & prompt-echo detection
-            words = [re.sub(r'[^a-zA-Z0-9ñÑ]', '', w.lower()) for w in transcript.split()]
-            words = [w for w in words if w]
+    # 7. Segment-Level Validation
+    valid_segments = []
+    seg_reject_reasons = []
+    for s in segments:
+        txt = s.text.strip()
+        if not txt:
+            continue
+        nsp = getattr(s, 'no_speech_prob', 0.0)
+        alp = getattr(s, 'avg_logprob', 0.0)
+        cr = getattr(s, 'compression_ratio', 1.0)
 
-            if not words:
-                return "", clean_pcm_bytes
+        if nsp >= 0.60:
+            seg_reject_reasons.append(f"no_speech_prob={nsp:.3f} >= 0.60")
+            continue
+        if cr > 2.4:
+            seg_reject_reasons.append(f"compression_ratio={cr:.2f} > 2.4")
+            continue
+        if alp < -1.40:
+            seg_reject_reasons.append(f"avg_logprob={alp:.3f} < -1.40")
+            continue
 
-            # Reject standard mic-check & silence hallucinations
-            clean_t = transcript.lower().strip().rstrip(".!?,")
-            if clean_t in [
-                "hello my check", "hello mic check", "mic check", "my check", 
-                "thank you", "you", "thanks", "salamat", "maraming salamat"
-            ]:
-                return "", clean_pcm_bytes
+        valid_segments.append(s)
 
-            # Check 1: The same word (length >= 3) appears >= 4 times consecutively
+    if not valid_segments:
+        reason_msg = "; ".join(seg_reject_reasons) if seg_reject_reasons else "All segments filtered by quality checks"
+        return TranscriptionResult(
+            status=TranscriptionStatus.TRANSCRIPTION_REJECTED,
+            reason=reason_msg,
+            audio_quality=audio_quality
+        ), clean_pcm_bytes
+
+    # 8. Fallback Rule: only force 'tl' if duration >= 2.5s and detected language is non-Philippine
+    dur_sec = len(audio_float) / 16000.0
+    detected_lang = getattr(info, 'language', 'tl')
+    if detected_lang not in ('tl', 'en'):
+        if dur_sec >= 2.5:
+            print(f"[ASR] Auto-detected '{detected_lang}' on {dur_sec:.1f}s clip. Re-running with forced Tagalog ('tl')...")
+            fallback_kwargs = dict(transcribe_kwargs)
+            fallback_kwargs["language"] = "tl"
+            try:
+                fb_segments_gen, _ = whisper_model.transcribe(
+                    audio_float,
+                    vad_filter=True,
+                    **fallback_kwargs
+                )
+                fb_segs = list(fb_segments_gen)
+                fb_valid = [s for s in fb_segs if s.text.strip() and getattr(s, 'no_speech_prob', 0.0) < 0.60 and getattr(s, 'compression_ratio', 1.0) <= 2.4 and getattr(s, 'avg_logprob', 0.0) >= -1.40]
+                if fb_valid:
+                    valid_segments = fb_valid
+            except Exception:
+                pass
+        else:
+            return TranscriptionResult(
+                status=TranscriptionStatus.TRANSCRIPTION_REJECTED,
+                reason=f"Discarded short noisy clip ({dur_sec:.1f}s) misdetected as '{detected_lang}'",
+                audio_quality=audio_quality
+            ), clean_pcm_bytes
+
+    transcript = " ".join(s.text.strip() for s in valid_segments).strip()
+
+    # 9. Word-Level Validation (Repetition loops, diversity, prompt-echo)
+    words = [re.sub(r'[^a-zA-Z0-9ñÑ]', '', w.lower()) for w in re.split(r'[\s\-]+', transcript)]
+    words = [w for w in words if w]
+
+    if not words:
+        return TranscriptionResult(
+            status=TranscriptionStatus.TRANSCRIPTION_REJECTED,
+            reason="Empty transcript after punctuation normalization",
+            audio_quality=audio_quality
+        ), clean_pcm_bytes
+
+    # Filter standard mic-check & silence hallucinations
+    clean_t = transcript.lower().strip().rstrip(".!?,")
+    if clean_t in [
+        "hello my check", "hello mic check", "mic check", "my check"
+    ]:
+        return TranscriptionResult(
+            status=TranscriptionStatus.SPEECH_DETECTED,
+            transcript=transcript,
+            reason="Filtered benign mic-check phrase",
+            audio_quality=audio_quality
+        ), clean_pcm_bytes
+
+    HALLUCINATION_ARTIFACTS = {
+        "thank you", "you", "thanks", "salamat", "maraming salamat",
+        "okay", "outro", "subtitles", "subtitle", "bye", "goodbye"
+    }
+    if clean_t in HALLUCINATION_ARTIFACTS:
+        return TranscriptionResult(
+            status=TranscriptionStatus.TRANSCRIPTION_REJECTED,
+            transcript="",
+            reason=f"Filtered hallucination artifact ('{clean_t}')",
+            audio_quality=audio_quality
+        ), clean_pcm_bytes
+
+    # Check 1: Consecutive word repetition loop
+    streak = 1
+    max_streak = 1
+    for idx in range(1, len(words)):
+        if len(words[idx]) >= 3 and words[idx] == words[idx - 1]:
+            streak += 1
+            if streak > max_streak:
+                max_streak = streak
+        else:
             streak = 1
-            max_streak = 1
-            for idx in range(1, len(words)):
-                if len(words[idx]) >= 3 and words[idx] == words[idx - 1]:
-                    streak += 1
-                    if streak > max_streak:
-                        max_streak = streak
-                else:
-                    streak = 1
-            if max_streak >= 4:
-                print(f"[ASR] Dropped consecutive word repetition loop (streak={max_streak}): \"{transcript[:50]}...\"")
-                return "", clean_pcm_bytes
+    if max_streak >= 4 or (max_streak >= 3 and len(words) <= 5):
+        return TranscriptionResult(
+            status=TranscriptionStatus.TRANSCRIPTION_REJECTED,
+            transcript=transcript,
+            reason=f"Consecutive word repetition loop (streak={max_streak})",
+            audio_quality=audio_quality
+        ), clean_pcm_bytes
 
-            # Check 2: Lexical diversity (unique words / total words < 0.35 on clips with >= 6 words)
-            if len(words) >= 6:
-                lexical_diversity = len(set(words)) / len(words)
-                if lexical_diversity < 0.35:
-                    print(f"[ASR] Dropped low-diversity loop (diversity={lexical_diversity:.2f}): \"{transcript[:50]}...\"")
-                    return "", clean_pcm_bytes
+    # Check 2: Lexical diversity (unique words / total words < 0.35 on clips with >= 6 words)
+    if len(words) >= 6:
+        lexical_diversity = len(set(words)) / len(words)
+        if lexical_diversity < 0.35:
+            return TranscriptionResult(
+                status=TranscriptionStatus.TRANSCRIPTION_REJECTED,
+                transcript=transcript,
+                reason=f"Low lexical diversity loop (diversity={lexical_diversity:.2f} < 0.35)",
+                audio_quality=audio_quality
+            ), clean_pcm_bytes
 
-            # Check 3: Token concentration (> 40% of words are identical in clip with >= 5 words)
-            if len(words) >= 5:
-                from collections import Counter
-                word_counts = Counter(words)
-                most_common_word, count = word_counts.most_common(1)[0]
-                if len(most_common_word) >= 3 and (count / len(words)) > 0.40:
-                    print(f"[ASR] Dropped word-concentrated loop ('{most_common_word}' is {count}/{len(words)} tokens): \"{transcript[:50]}...\"")
-                    return "", clean_pcm_bytes
+    # Check 3: Token concentration (> 50% of words identical in clip with >= 4 words)
+    if len(words) >= 4:
+        from collections import Counter
+        word_counts = Counter(words)
+        most_common_word, count = word_counts.most_common(1)[0]
+        if len(most_common_word) >= 3 and (count / len(words)) > 0.50:
+            return TranscriptionResult(
+                status=TranscriptionStatus.TRANSCRIPTION_REJECTED,
+                transcript=transcript,
+                reason=f"High token concentration ('{most_common_word}' is {count}/{len(words)} tokens)",
+                audio_quality=audio_quality
+            ), clean_pcm_bytes
 
-            # Check 4: Prompt-echo filter (if >= 50% of words match prompt echo vocabulary)
-            if PROMPT_ECHO_WORDS and len(words) >= 2:
-                echo_count = sum(1 for w in words if w in PROMPT_ECHO_WORDS)
-                if (echo_count / len(words)) >= 0.50:
-                    print(f"[ASR] Dropped prompt-echo hallucination ({echo_count}/{len(words)} prompt words): \"{transcript[:50]}...\"")
-                    return "", clean_pcm_bytes
+    # Check 4: Prompt-echo filter (if >= 50% of words match prompt echo vocabulary)
+    if PROMPT_ECHO_WORDS and len(words) >= 2:
+        echo_count = sum(1 for w in words if w in PROMPT_ECHO_WORDS)
+        if (echo_count / len(words)) >= 0.50:
+            return TranscriptionResult(
+                status=TranscriptionStatus.TRANSCRIPTION_REJECTED,
+                transcript=transcript,
+                reason=f"Prompt-echo filter triggered ({echo_count}/{len(words)} prompt words)",
+                audio_quality=audio_quality
+            ), clean_pcm_bytes
 
-            return transcript, clean_pcm_bytes
-        except Exception as e:
-            print(f"[ERR] Whisper transcription error: {e}")
-            return "", clean_pcm_bytes
-    
-    return "", clean_pcm_bytes
+    # Metrics calculation
+    mean_logprob = float(np.mean([getattr(s, 'avg_logprob', 0.0) for s in valid_segments]))
+    max_no_speech = float(np.max([getattr(s, 'no_speech_prob', 0.0) for s in valid_segments]))
+    mean_cr = float(np.mean([getattr(s, 'compression_ratio', 1.0) for s in valid_segments]))
+
+    metrics = {
+        "avg_logprob": round(mean_logprob, 3),
+        "no_speech_prob": round(max_no_speech, 3),
+        "compression_ratio": round(mean_cr, 2),
+        "num_segments": len(valid_segments),
+        "detected_language": detected_lang
+    }
+
+    # 10. Borderline acoustic confidence check
+    if mean_logprob < -1.10:
+        return TranscriptionResult(
+            status=TranscriptionStatus.UNCERTAIN_TRANSCRIPTION,
+            transcript=transcript,
+            reason=f"Borderline acoustic confidence (avg_logprob={mean_logprob:.3f} < -1.10)",
+            metrics=metrics,
+            audio_quality=audio_quality
+        ), clean_pcm_bytes
+
+    return TranscriptionResult(
+        status=TranscriptionStatus.TRANSCRIBED,
+        transcript=transcript,
+        reason="Speech transcribed with high confidence",
+        metrics=metrics,
+        audio_quality=audio_quality
+    ), clean_pcm_bytes
+
 
 def save_wav(pcm_bytes: bytes, filepath: str):
     """Saves 16kHz 16-bit PCM bytes to standard WAV format."""
@@ -1233,10 +1392,11 @@ async def handle_completed_audio(device_id: str, pcm_bytes: bytes, websocket: We
 
     async with ai_inference_lock:
         t_infer_start = time.time()
-        transcript, clean_pcm = await asyncio.to_thread(process_audio_buffer, pcm_bytes)
+        result, clean_pcm = await asyncio.to_thread(process_audio_buffer, pcm_bytes)
         infer_dur = time.time() - t_infer_start
 
-        if transcript:
+        if result.status == TranscriptionStatus.TRANSCRIBED and result.transcript:
+            transcript = result.transcript
             print(f"[FINAL TRANSCRIPT] ({device_id} in {infer_dur:.2f}s, dur={dur_sec:.2f}s, peak={audio_peak:.2f}) -> \"{transcript}\"")
             score, category = context_engine.evaluate(transcript)
             is_danger = score >= 8.0
@@ -1272,7 +1432,11 @@ async def handle_completed_audio(device_id: str, pcm_bytes: bytes, websocket: We
             if device_id in registered_devices:
                 registered_devices[device_id]["latest_incident_id"] = incident_id
             else:
-                registered_devices[device_id] = {"latest_incident_id": incident_id}
+                registered_devices[device_id] = {
+                    "latest_incident_id": incident_id,
+                    "state": "ANALYZING SPEECH",
+                    "online": True
+                }
 
             wav_filename = f"{incident_id}.wav"
             wav_path = os.path.join(AUDIO_RECORDINGS_DIR, wav_filename)
@@ -1299,7 +1463,8 @@ async def handle_completed_audio(device_id: str, pcm_bytes: bytes, websocket: We
                 "duration": f"00:{max(1, int(dur_sec)):02d}"
             })
         else:
-            print(f"[ASR] ({device_id} in {infer_dur:.2f}s) Audio received ({dur_sec:.2f}s, peak={audio_peak:.2f}) -> No speech recognized (faint noise/silence)")
+            transcript = ""
+            print(f"[ASR] ({device_id} in {infer_dur:.2f}s) Audio ({dur_sec:.2f}s, peak={audio_peak:.2f}) -> Status: {result.status.value}, Reason: {result.reason}")
 
     if device_id in registered_devices:
         now_str = datetime.now().strftime("%H:%M:%S")
@@ -1307,7 +1472,7 @@ async def handle_completed_audio(device_id: str, pcm_bytes: bytes, websocket: We
         registered_devices[device_id]["online"] = is_still_connected
         
         # FIX: Only reset to VAD ARMED if a new audio stream hasn't already started
-        if registered_devices[device_id]["state"] == "ANALYZING SPEECH":
+        if registered_devices[device_id].get("state") == "ANALYZING SPEECH":
             registered_devices[device_id]["state"] = "VAD ARMED" if is_still_connected else "OFFLINE"
             
         if is_still_connected:
