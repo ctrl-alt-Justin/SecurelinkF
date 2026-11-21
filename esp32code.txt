@@ -438,13 +438,13 @@ void bleProvisionWorkerTask(void* param) {
             WiFiClientSecure secureClient;
             WiFiClient plainClient;
             if (isRemoteHttps) {
-                secureClient.setCACert(root_ca_isrg_x1);
+                secureClient.setInsecure(); // Critical: Allow Cloudflare Quick Tunnel TLS without failing on un-synced 1970 clock!
                 http.begin(secureClient, regUrl);
             } else {
                 http.begin(plainClient, regUrl);
             }
             http.addHeader("Content-Type", "application/json");
-            http.setTimeout(10000);
+            http.setTimeout(12000);
 
             String regPayload = "{\"device_id\":\"" + pin_device_id + "\",\"pairing_code\":\"" + pCode + "\",\"firmware_version\":\"2.1\",\"mac\":\"" + pin_mac_address + "\"}";
             int httpCode = http.POST(regPayload);
@@ -454,11 +454,24 @@ void bleProvisionWorkerTask(void* param) {
             Serial.printf("[BLE-PROV-TASK] Central System HTTP response code: %d\n", httpCode);
 
             if (httpCode != 200 || httpResp.indexOf("\"status\":\"success\"") < 0) {
+                String errCode = "ERR_PAIRING_CODE";
                 String errMsg = "Pairing code rejected or invalid";
-                if (httpResp.indexOf("\"message\":\"") >= 0) {
+                if (httpCode < 0) {
+                    errCode = "ERR_SERVER_UNREACHABLE";
+                    errMsg = "Cannot connect to server at " + targetHost + " (HTTP " + String(httpCode) + ")";
+                } else if (httpResp.indexOf("\"message\":\"") >= 0) {
                     errMsg = extractJsonField(httpResp, "message");
+                    if (httpResp.indexOf("\"code\":\"") >= 0) {
+                        errCode = extractJsonField(httpResp, "code");
+                    }
+                } else if (httpCode == 502 || httpCode == 503) {
+                    errCode = "ERR_TUNNEL_DOWN";
+                    errMsg = "Cloudflare Tunnel unreachable (HTTP " + String(httpCode) + ")";
+                } else {
+                    errMsg = "Server returned HTTP " + String(httpCode);
                 }
-                sendBleText("{\"type\":\"provision_error\",\"code\":\"ERR_PAIRING_CODE\",\"message\":\"" + errMsg + "\"}");
+                Serial.printf("[BLE-PROV-TASK] Registration failed: [%s] %s\n", errCode.c_str(), errMsg.c_str());
+                sendBleText("{\"type\":\"provision_error\",\"code\":\"" + errCode + "\",\"message\":\"" + errMsg + "\"}");
                 isBleProvisioningActive = false;
                 continue;
             }
@@ -1589,6 +1602,7 @@ void setup() {
 
     if (connected) {
         WiFi.setSleep(false); // Disable modem sleep: keeps TCP socket open and eliminates Windows WinError 121 timeouts
+        configTime(0, 0, "pool.ntp.org", "time.google.com");
         if (!isDevicePaired && prefs.isKey("pcode_pending")) {
             String pendingCode = prefs.getString("pcode_pending", "");
             if (pendingCode.length() >= 6) {
@@ -1599,7 +1613,7 @@ void setup() {
                 WiFiClientSecure secClient;
                 WiFiClient stdClient;
                 if (isRemoteHttps) {
-                    secClient.setCACert(root_ca_isrg_x1);
+                    secClient.setInsecure(); // Critical: Allow Cloudflare Quick Tunnel TLS without clock sync dependency
                     http.begin(secClient, regUrl);
                 } else {
                     http.begin(stdClient, regUrl);

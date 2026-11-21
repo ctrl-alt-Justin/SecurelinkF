@@ -216,7 +216,29 @@ harmful_words_only = False # Default False so all speech during testing is visib
 
 # --- SECURE DEVICE PAIRING & TOKEN PERSISTENCE ---
 DEVICE_CREDENTIALS_FILE = os.path.join(BASE_DIR, "device_credentials.json")
-active_pairing_codes: Dict[str, Dict[str, Any]] = {}  # code -> {"created_at": float, "expires_at": float, "used": bool, "device_id": str | None}
+ACTIVE_PAIRING_CODES_FILE = os.path.join(BASE_DIR, "active_pairing_codes.json")
+
+def load_active_pairing_codes() -> Dict[str, Dict[str, Any]]:
+    if os.path.exists(ACTIVE_PAIRING_CODES_FILE):
+        try:
+            with open(ACTIVE_PAIRING_CODES_FILE, "r", encoding="utf-8") as f:
+                codes = json.load(f)
+                now = time.time()
+                return {k: v for k, v in codes.items() if now <= v.get("expires_at", 0)}
+        except Exception:
+            pass
+    return {}
+
+def save_active_pairing_codes():
+    try:
+        now = time.time()
+        valid = {k: v for k, v in active_pairing_codes.items() if now <= v.get("expires_at", 0)}
+        with open(ACTIVE_PAIRING_CODES_FILE, "w", encoding="utf-8") as f:
+            json.dump(valid, f, indent=2)
+    except Exception as e:
+        print(f"[PAIRING] Error saving active pairing codes: {e}")
+
+active_pairing_codes: Dict[str, Dict[str, Any]] = load_active_pairing_codes()
 pairing_code_rate_limit: Dict[str, List[float]] = {}  # ip -> list of timestamps
 
 class PinRegistrationState:
@@ -226,7 +248,7 @@ class PinRegistrationState:
     OFFLINE = "OFFLINE"
     AUTHENTICATION_FAILED = "AUTHENTICATION_FAILED"
 
-PENDING_REGISTRATION_TIMEOUT = 90.0  # seconds
+PENDING_REGISTRATION_TIMEOUT = 180.0  # seconds (3 minutes)
 pending_registrations: Dict[str, Dict[str, Any]] = {}  # in-memory pending registrations awaiting WS authentication
 pin_registration_lock = asyncio.Lock()
 
@@ -992,10 +1014,10 @@ async def sync_mobile_companion(payload: dict):
 # =========================================================================
 @app.post("/api/pairing-code/generate")
 async def generate_pairing_code_api(payload: Optional[dict] = None):
-    """Generates an ephemeral 6-digit pairing code with a 5-minute TTL for pin pairing."""
+    """Generates an ephemeral 6-digit pairing code with a 10-minute TTL for pin pairing."""
     now = time.time()
     # Purge expired codes
-    expired_codes = [c for c, d in active_pairing_codes.items() if (now > d.get("expires_at", 0) and not d.get("used", False))]
+    expired_codes = [c for c, d in list(active_pairing_codes.items()) if (now > d.get("expires_at", 0) and not d.get("used", False))]
     for ec in expired_codes:
         active_pairing_codes.pop(ec, None)
 
@@ -1005,13 +1027,14 @@ async def generate_pairing_code_api(payload: Optional[dict] = None):
         if code not in active_pairing_codes:
             break
 
-    ttl_seconds = 300  # 5 minutes
+    ttl_seconds = 600  # 10 minutes for reliable onboarding
     active_pairing_codes[code] = {
         "created_at": now,
         "expires_at": now + ttl_seconds,
         "used": False,
         "device_id": None,
     }
+    save_active_pairing_codes()
     # Security requirement: Never log raw pairing codes
     print(f"\n[PAIRING] New 6-digit smart pin pairing code generated (TTL: {ttl_seconds}s)")
     return {
@@ -1063,7 +1086,7 @@ async def register_pin_api(payload: dict):
     connects to the physical pin WebSocket endpoint and proves token ownership.
     """
     device_id = str(payload.get("device_id", "")).strip().upper()
-    pairing_code = str(payload.get("pairing_code", "")).strip()
+    pairing_code = str(payload.get("pairing_code", "")).strip().replace(" ", "").replace("-", "")
     fw_version = str(payload.get("firmware_version", "2.1")).strip()
     mac = str(payload.get("mac", "")).strip()
 
@@ -1091,14 +1114,27 @@ async def register_pin_api(payload: dict):
 
         # If code has already been consumed:
         if code_info.get("used", False):
-            # Check for legitimate pending resumption by the SAME device
-            if (code_info.get("device_id") == device_id and 
-                device_id in pending_registrations and 
-                now <= pending_registrations[device_id].get("expires_at", 0)):
-                
-                existing_entry = pending_registrations[device_id]
-                existing_token = existing_entry.get("device_token")
-                print(f"\n[PAIRING-RESUME] Smart Pin '{device_id}' resuming existing pending registration safely.")
+            # Check for legitimate resumption by the SAME device
+            if code_info.get("device_id") == device_id:
+                if device_id in pending_registrations:
+                    existing_entry = pending_registrations[device_id]
+                    existing_token = existing_entry.get("device_token")
+                    existing_entry["expires_at"] = now + PENDING_REGISTRATION_TIMEOUT
+                else:
+                    # In-memory pending timed out, but pairing code is still active for this device!
+                    existing_token = secrets.token_hex(32)
+                    pending_registrations[device_id] = {
+                        "device_id": device_id,
+                        "device_token": existing_token,
+                        "token_hash": hash_device_token(existing_token),
+                        "pairing_code": pairing_code,
+                        "fw_version": fw_version,
+                        "mac": mac,
+                        "created_at": now,
+                        "expires_at": now + PENDING_REGISTRATION_TIMEOUT,
+                        "state": PinRegistrationState.PENDING,
+                    }
+                print(f"\n[PAIRING-RESUME] Smart Pin '{device_id}' safely resuming pending registration.")
                 return {
                     "status": "success",
                     "registration_state": PinRegistrationState.PENDING,
@@ -1122,11 +1158,11 @@ async def register_pin_api(payload: dict):
                 }
 
             # Code already used by another device or expired pending
-            print(f"\n[PAIRING-ERR] Registration rejected for '{device_id}': Pairing code already used or expired.")
+            print(f"\n[PAIRING-ERR] Registration rejected for '{device_id}': Pairing code already used by another device.")
             return {
                 "status": "error",
                 "code": "ERR_INVALID_CODE",
-                "message": "Pairing code is invalid, already used, or expired."
+                "message": "Pairing code has already been used by another device."
             }
 
         # Fresh code: ensure it's not bound to another device
@@ -1142,6 +1178,7 @@ async def register_pin_api(payload: dict):
         code_info["used"] = True
         code_info["device_id"] = device_id
         code_info["used_at"] = now
+        save_active_pairing_codes()
 
         # Generate cryptographically secure 32-byte hex credential token
         device_token = secrets.token_hex(32)
