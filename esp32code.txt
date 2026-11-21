@@ -9,6 +9,8 @@
 #include <WebServer.h>
 #include <DNSServer.h>
 #include <Preferences.h>
+#include <HTTPClient.h>
+#include <esp_mac.h>
 #include "esp_camera.h"
 
 // --- NORDIC UART BLE SERVICE (CELLULAR / OFFLINE BRIDGE) ---
@@ -51,6 +53,33 @@ String server_host = "10.28.20.28";
 int server_port = 8080;
 const char* WS_PATH_PRIMARY = "/";
 
+// --- DYNAMIC HARDWARE IDENTITY & AUTHENTICATED CREDENTIALS ---
+String pin_device_id = "PIN-001";
+String ble_device_name = "SecureLink-PIN";
+String pin_device_token = "";
+bool isDevicePaired = false;
+String pin_mac_address = "";
+
+void initDeviceIdentity() {
+    uint8_t mac[6];
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    char idBuf[16];
+    snprintf(idBuf, sizeof(idBuf), "PIN-%02X%02X", mac[4], mac[5]);
+    pin_device_id = String(idBuf);
+    
+    char nameBuf[32];
+    snprintf(nameBuf, sizeof(nameBuf), "SecureLink-%s", pin_device_id.c_str());
+    ble_device_name = String(nameBuf);
+
+    char macBuf[20];
+    snprintf(macBuf, sizeof(macBuf), "%02X:%02X:%02X:%02X:%02X:%02X",
+        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    pin_mac_address = String(macBuf);
+
+    Serial.printf("[SYS] Hardware Device ID: %s | BLE Adv Name: %s | MAC: %s\n",
+        pin_device_id.c_str(), ble_device_name.c_str(), pin_mac_address.c_str());
+}
+
 WebServer webServer(80);
 DNSServer dnsServer;
 
@@ -88,12 +117,18 @@ void connectWebSocket(const String& host, int port) {
     if (cleanHost.indexOf('/') >= 0) cleanHost = cleanHost.substring(0, cleanHost.indexOf('/'));
     if (cleanHost.indexOf(':') >= 0) cleanHost = cleanHost.substring(0, cleanHost.indexOf(':'));
     
+    // Construct authenticated WebSocket query path (?device_id=PIN-XXXX&token=...)
+    String wsPath = String(WS_PATH_PRIMARY) + "?device_id=" + pin_device_id;
+    if (pin_device_token.length() > 0) {
+        wsPath += "&token=" + pin_device_token;
+    }
+
     if (cleanHost.indexOf("trycloudflare.com") >= 0 || port == 443 || isSsl) {
-        Serial.printf("[WS] Connecting via WSS/SSL to %s:443%s\n", cleanHost.c_str(), WS_PATH_PRIMARY);
-        ws.beginSSL(cleanHost.c_str(), 443, WS_PATH_PRIMARY);
+        Serial.printf("[WS] Connecting via WSS/SSL to %s:443%s\n", cleanHost.c_str(), wsPath.c_str());
+        ws.beginSSL(cleanHost.c_str(), 443, wsPath.c_str());
     } else {
-        Serial.printf("[WS] Connecting via WS to %s:%d%s\n", cleanHost.c_str(), port, WS_PATH_PRIMARY);
-        ws.begin(cleanHost.c_str(), port, WS_PATH_PRIMARY);
+        Serial.printf("[WS] Connecting via WS to %s:%d%s\n", cleanHost.c_str(), port, wsPath.c_str());
+        ws.begin(cleanHost.c_str(), port, wsPath.c_str());
     }
     ws.onEvent(onWebSocketEvent);
     hasPendingWsConnect = true;
@@ -111,13 +146,17 @@ class BleServerCallbacks: public BLEServerCallbacks {
     }
 };
 
+void handleBleProvisioning(const String& rxJson);
+
 class BleRxCallbacks: public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic *pCharacteristic) override {
         String rxValue = pCharacteristic->getValue().c_str();
         if (rxValue.length() > 0) {
             Serial.print("[BLE-RX] Received: ");
             Serial.println(rxValue);
-            if (rxValue == "TRIGGER:DANGER" || rxValue == "CMD:CAPTURE_SNAPSHOT") {
+            if (rxValue.startsWith("{") || rxValue.indexOf("\"type\"") >= 0) {
+                handleBleProvisioning(rxValue);
+            } else if (rxValue == "TRIGGER:DANGER" || rxValue == "CMD:CAPTURE_SNAPSHOT") {
                 Serial.println("[BLE] Snapshot trigger received over BLE! Capturing...");
                 captureIncidentSnapshot();
             }
@@ -126,8 +165,8 @@ class BleRxCallbacks: public BLECharacteristicCallbacks {
 };
 
 void setupBLE() {
-    Serial.println("[BLE] Starting Nordic UART BLE Service ('SecureLink-PIN')...");
-    BLEDevice::init("SecureLink-PIN");
+    Serial.printf("[BLE] Starting Nordic UART BLE Service ('%s')...\n", ble_device_name.c_str());
+    BLEDevice::init(ble_device_name.c_str());
     BLEDevice::setMTU(512);
 
     pBleServer = BLEDevice::createServer();
@@ -155,7 +194,7 @@ void setupBLE() {
     pAdvertising->setMinPreferred(0x06);
     pAdvertising->setMinPreferred(0x12);
     BLEDevice::startAdvertising();
-    Serial.println("[BLE] Advertising active! Ready to bridge with Mobile Companion.");
+    Serial.printf("[BLE] Advertising active as '%s'! Ready for Mobile Companion onboarding.\n", ble_device_name.c_str());
 }
 
 bool sendBleChunk(const uint8_t* data, size_t len) {
@@ -175,6 +214,155 @@ void sendBleText(const String& txt) {
     if (!pTxCharacteristic || !bleClientConnected) return;
     pTxCharacteristic->setValue((uint8_t*)txt.c_str(), txt.length());
     pTxCharacteristic->notify();
+}
+
+// --- SECURE BLE ONBOARDING & PROVISIONING HANDLER ---
+void handleBleProvisioning(const String& rxJson) {
+    // 1. Device Info Query
+    if (rxJson.indexOf("get_device_info") >= 0) {
+        String infoMsg = "{\"type\":\"device_info\",\"device_id\":\"" + pin_device_id + 
+                         "\",\"mac\":\"" + pin_mac_address + 
+                         "\",\"fw_version\":\"2.1\",\"paired\":" + (isDevicePaired ? "true" : "false") + "}";
+        Serial.printf("[BLE-PROV] Replying with device info: %s\n", infoMsg.c_str());
+        sendBleText(infoMsg);
+        return;
+    }
+
+    // 2. Wi-Fi & Pairing Provisioning Command
+    if (rxJson.indexOf("\"provision\"") >= 0) {
+        sendBleText("{\"type\":\"provision_received\"}");
+        
+        auto extractJsonField = [](const String& json, const String& key) -> String {
+            int kIdx = json.indexOf("\"" + key + "\"");
+            if (kIdx < 0) return "";
+            int colIdx = json.indexOf(":", kIdx);
+            if (colIdx < 0) return "";
+            int startQuote = json.indexOf("\"", colIdx);
+            if (startQuote < 0) {
+                int endComma = json.indexOf(",", colIdx);
+                int endBrace = json.indexOf("}", colIdx);
+                int end = (endComma > 0 && endComma < endBrace) ? endComma : endBrace;
+                if (end < 0) end = json.length();
+                String val = json.substring(colIdx + 1, end);
+                val.trim();
+                return val;
+            }
+            int endQuote = json.indexOf("\"", startQuote + 1);
+            if (endQuote < 0) return "";
+            return json.substring(startQuote + 1, endQuote);
+        };
+
+        String newSsid = extractJsonField(rxJson, "ssid");
+        String newPass = extractJsonField(rxJson, "password");
+        String pCode = extractJsonField(rxJson, "pairing_code");
+        String srvUrl = extractJsonField(rxJson, "server_url");
+
+        if (newSsid.length() == 0 || pCode.length() == 0) {
+            sendBleText("{\"type\":\"provision_error\",\"code\":\"ERR_INVALID_PARAMS\",\"message\":\"SSID and pairing_code required\"}");
+            return;
+        }
+
+        Serial.printf("\n[BLE-PROV] Provisioning command received!\n  SSID: '%s'\n  Code: '%s'\n  Server: '%s'\n",
+            newSsid.c_str(), pCode.c_str(), srvUrl.c_str());
+        sendBleText("{\"type\":\"wifi_connecting\",\"ssid\":\"" + newSsid + "\"}");
+
+        // Attempt STA connection
+        WiFi.disconnect(true);
+        delay(100);
+        WiFi.mode(WIFI_STA);
+        WiFi.begin(newSsid.c_str(), newPass.c_str());
+
+        unsigned long tStart = millis();
+        bool wifiOk = false;
+        while (millis() - tStart < 12000) {
+            delay(150);
+            if (WiFi.status() == WL_CONNECTED) {
+                wifiOk = true;
+                break;
+            }
+        }
+
+        if (!wifiOk) {
+            Serial.println("[BLE-PROV] Wi-Fi connection timed out or credentials rejected!");
+            sendBleText("{\"type\":\"provision_error\",\"code\":\"ERR_WIFI_AUTH\",\"message\":\"Could not connect to Wi-Fi network\"}");
+            return;
+        }
+
+        String localIp = WiFi.localIP().toString();
+        Serial.printf("[BLE-PROV] Wi-Fi connected! Smart Pin IP: %s\n", localIp.c_str());
+        sendBleText("{\"type\":\"wifi_connected\",\"ip\":\"" + localIp + "\"}");
+        sendBleText("{\"type\":\"pairing_pending\"}");
+
+        // Parse target host & port
+        String targetHost = server_host;
+        int targetPort = server_port;
+        if (srvUrl.length() > 0) {
+            String clean = srvUrl;
+            if (clean.startsWith("http://")) clean = clean.substring(7);
+            else if (clean.startsWith("https://")) clean = clean.substring(8);
+            int colonIdx = clean.indexOf(":");
+            int slashIdx = clean.indexOf("/");
+            if (colonIdx > 0) {
+                targetHost = clean.substring(0, colonIdx);
+                int endPort = (slashIdx > colonIdx) ? slashIdx : clean.length();
+                targetPort = clean.substring(colonIdx + 1, endPort).toInt();
+                if (targetPort <= 0) targetPort = 8080;
+            } else if (slashIdx > 0) {
+                targetHost = clean.substring(0, slashIdx);
+            } else {
+                targetHost = clean;
+            }
+        }
+
+        // Contact Central System POST /api/pin/register
+        HTTPClient http;
+        String regUrl = "http://" + targetHost + ":" + String(targetPort) + "/api/pin/register";
+        Serial.printf("[BLE-PROV] Contacting registration endpoint: %s\n", regUrl.c_str());
+        http.begin(regUrl);
+        http.addHeader("Content-Type", "application/json");
+        http.setTimeout(8000);
+
+        String regPayload = "{\"device_id\":\"" + pin_device_id + "\",\"pairing_code\":\"" + pCode + "\",\"firmware_version\":\"2.1\",\"mac\":\"" + pin_mac_address + "\"}";
+        int httpCode = http.POST(regPayload);
+        String httpResp = http.getString();
+        http.end();
+
+        Serial.printf("[BLE-PROV] Central System HTTP response (%d): %s\n", httpCode, httpResp.c_str());
+
+        if (httpCode == 200 && httpResp.indexOf("\"status\":\"success\"") >= 0) {
+            String token = extractJsonField(httpResp, "device_token");
+            if (token.length() > 0) {
+                // Save persistent credentials to NVS Preferences
+                prefs.putString("ssid", newSsid);
+                prefs.putString("pass", newPass);
+                prefs.putString("server", targetHost);
+                prefs.putInt("port", targetPort);
+                prefs.putString("token", token);
+
+                wifi_ssid = newSsid;
+                wifi_pass = newPass;
+                server_host = targetHost;
+                server_port = targetPort;
+                pin_device_token = token;
+                isDevicePaired = true;
+
+                Serial.println("[BLE-PROV] Smart Pin successfully registered and paired with Central System!");
+                sendBleText("{\"type\":\"pairing_success\",\"device_id\":\"" + pin_device_id + "\"}");
+
+                // Immediately initiate authenticated WebSocket connection
+                WiFi.setSleep(false);
+                connectWebSocket(server_host, server_port);
+                return;
+            }
+        }
+
+        // Error during registration
+        String errMsg = "Pairing code rejected or invalid";
+        if (httpResp.indexOf("\"message\":\"") >= 0) {
+            errMsg = extractJsonField(httpResp, "message");
+        }
+        sendBleText("{\"type\":\"provision_error\",\"code\":\"ERR_PAIRING_CODE\",\"message\":\"" + errMsg + "\"}");
+    }
 }
 
 // --- DUAL-CORE AUDIO ENGINE & PSRAM RING BUFFER ---
@@ -548,12 +736,16 @@ void loadPreferences() {
     wifi_pass2 = prefs.getString("pass2", "");
     server_host = prefs.getString("server", "10.28.20.28");
     server_port = prefs.getInt("port", 8080);
+    pin_device_token = prefs.getString("token", "");
+    isDevicePaired = (pin_device_token.length() > 0);
     cachedServerIP = server_host;
     Serial.printf("[CFG] Primary Wi-Fi SSID: '%s'\n", wifi_ssid.c_str());
     if (wifi_ssid2.length() > 0) {
         Serial.printf("[CFG] Backup/Roaming Wi-Fi SSID: '%s'\n", wifi_ssid2.c_str());
     }
     Serial.printf("[CFG] Stored Server Host: '%s:%d'\n", server_host.c_str(), server_port);
+    Serial.printf("[CFG] Device Token: %s (Paired: %s)\n",
+        pin_device_token.length() > 0 ? "[AUTHENTICATED]" : "[NONE]", isDevicePaired ? "YES" : "NO");
 }
 
 void startConfigPortal() {
@@ -1042,16 +1234,21 @@ void setup() {
 
     pinMode(0, INPUT_PULLUP); // XIAO ESP32S3 Boot button
     loadPreferences();
+    initDeviceIdentity(); // Compute persistent hardware ID & BLE device name
 
-    // If Boot button is pressed at power-on or no SSID is configured, enter setup portal immediately
-    if (digitalRead(0) == LOW || wifi_ssid == "") {
-        Serial.println("[SYS] Starting setup portal (Boot button pressed or unconfigured)...");
+    // 2. CRITICAL FIX: INITIALIZE BLE FIRST!
+    // BLE is active immediately upon boot so phone can discover and pair without buttons or cables
+    setupBLE();
+
+    // If Boot button is manually held at power-on, enter fallback captive portal
+    if (digitalRead(0) == LOW) {
+        Serial.println("[SYS] Boot button held at power-on! Starting manual setup portal...");
         startConfigPortal();
     }
 
     bootStartMs = millis();
 
-    // 2. INITIALIZE PSRAM RING BUFFER
+    // 3. INITIALIZE PSRAM RING BUFFER
     if (psramInit()) {
         audioRingBuffer = (uint8_t*)ps_malloc(RING_BUFFER_SIZE);
         Serial.printf("[SYS] 8MB PSRAM found! Ring Buffer allocated in PSRAM: %u bytes\n", (unsigned int)RING_BUFFER_SIZE);
@@ -1067,7 +1264,6 @@ void setup() {
 
     setupMicrophone();
     setupCamera();
-    setupBLE(); // Initialize Nordic UART BLE Service & Advertising for Mobile Companion
 
     // Launch Dedicated Audio Engine on Core 1 (Core 0 handles Wi-Fi, WebSocket, LittleFS, and System)
     xTaskCreatePinnedToCore(
@@ -1088,7 +1284,7 @@ void setup() {
         Serial.println("[ERR] LittleFS Mount Failed");
     }
 
-    // 3. BOOT WI-FI CONNECTION CHECK & ROAMING FALLBACK
+    // 4. BOOT WI-FI CONNECTION CHECK & ROAMING FALLBACK
     bool connected = false;
     if (wifi_ssid.length() > 0) {
         Serial.printf("\n[WIFI] Checking primary checkpoint '%s'...\n", wifi_ssid.c_str());
@@ -1129,9 +1325,9 @@ void setup() {
         WiFi.setSleep(false); // Disable modem sleep: keeps TCP socket open and eliminates Windows WinError 121 timeouts
         discoverCheckpoint();
     } else if (wifi_ssid.length() == 0) {
-        // Only launch setup portal on boot if NO Wi-Fi credentials have ever been configured
-        Serial.println("[WIFI] No Wi-Fi configured. Launching Setup Portal ('SecureLink-Setup')...");
-        startConfigPortal();
+        // BLE Onboarding is active: do not block in captive portal!
+        Serial.printf("[WIFI] No Wi-Fi configured. Pin is in BLE Onboarding Mode ('%s').\n", ble_device_name.c_str());
+        Serial.println("[WIFI] Ready for Mobile Companion BLE pairing!");
     } else {
         Serial.println("[WIFI] Initial boot connection pending. Proceeding to non-blocking background retry in loop()...");
     }

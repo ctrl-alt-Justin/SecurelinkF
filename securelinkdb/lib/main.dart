@@ -6422,21 +6422,106 @@ class _PinSetupDialogState extends State<_PinSetupDialog> with SingleTickerProvi
   bool _statusSuccess = false;
   List<String> _consoleLogs = [];
 
+  // BLE Cryptographic Pairing State
+  String? _pairingCode;
+  int _pairingCodeTtl = 0;
+  Timer? _pairingTimer;
+  Timer? _pairingPollTimer;
+  bool _isGeneratingCode = false;
+  bool _isPairingSuccessful = false;
+  String? _pairedDeviceId;
+
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
+    _tabController = TabController(length: 3, vsync: this);
     _loadNetworkAndPorts();
+    _generatePairingCode();
   }
 
   @override
   void dispose() {
+    _pairingTimer?.cancel();
+    _pairingPollTimer?.cancel();
     _tabController.dispose();
     _ssidController.dispose();
     _passController.dispose();
     _serverIpController.dispose();
     _serverPortController.dispose();
     super.dispose();
+  }
+
+  Future<void> _generatePairingCode() async {
+    setState(() {
+      _isGeneratingCode = true;
+      _isPairingSuccessful = false;
+      _pairedDeviceId = null;
+    });
+    try {
+      final client = HttpClient()..connectionTimeout = const Duration(seconds: 4);
+      final req = await client.postUrl(Uri.parse('http://127.0.0.1:8080/api/pairing-code/generate'));
+      final resp = await req.close();
+      if (resp.statusCode == 200) {
+        final body = await resp.transform(utf8.decoder).join();
+        final data = jsonDecode(body) as Map<String, dynamic>;
+        final code = data['pairing_code'] as String;
+        final ttl = data['expires_in'] as int? ?? 300;
+
+        _pairingTimer?.cancel();
+        _pairingPollTimer?.cancel();
+
+        if (mounted) {
+          setState(() {
+            _pairingCode = code;
+            _pairingCodeTtl = ttl;
+            _isGeneratingCode = false;
+          });
+        }
+
+        _pairingTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+          if (!mounted) {
+            timer.cancel();
+            return;
+          }
+          if (_pairingCodeTtl > 0) {
+            setState(() => _pairingCodeTtl--);
+          } else {
+            timer.cancel();
+            _pairingPollTimer?.cancel();
+          }
+        });
+
+        _pairingPollTimer = Timer.periodic(const Duration(seconds: 2), (timer) async {
+          if (!mounted || _pairingCode == null) {
+            timer.cancel();
+            return;
+          }
+          try {
+            final pollClient = HttpClient()..connectionTimeout = const Duration(seconds: 2);
+            final pollReq = await pollClient.getUrl(Uri.parse('http://127.0.0.1:8080/api/pairing-code/status/$_pairingCode'));
+            final pollResp = await pollReq.close();
+            if (pollResp.statusCode == 200) {
+              final pollBody = await pollResp.transform(utf8.decoder).join();
+              final pollData = jsonDecode(pollBody) as Map<String, dynamic>;
+              if (pollData['used'] == true) {
+                timer.cancel();
+                _pairingTimer?.cancel();
+                if (mounted) {
+                  setState(() {
+                    _isPairingSuccessful = true;
+                    _pairedDeviceId = pollData['device_id'] as String? ?? 'Smart Pin';
+                  });
+                }
+              }
+            }
+          } catch (_) {}
+        });
+      } else {
+        if (mounted) setState(() => _isGeneratingCode = false);
+      }
+    } catch (e) {
+      if (mounted) setState(() => _isGeneratingCode = false);
+    }
   }
 
   Future<void> _loadNetworkAndPorts() async {
@@ -6557,6 +6642,206 @@ class _PinSetupDialogState extends State<_PinSetupDialog> with SingleTickerProvi
     }
   }
 
+  Widget _buildBlePairingCodeTab() {
+    final minutes = (_pairingCodeTtl ~/ 60).toString().padLeft(2, '0');
+    final seconds = (_pairingCodeTtl % 60).toString().padLeft(2, '0');
+    final progress = _pairingCodeTtl / 300.0;
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0xFF109C6D).withOpacity(0.12),
+              shape: BoxShape.circle,
+              border: Border.all(color: const Color(0xFF55E2C0).withOpacity(0.35)),
+            ),
+            child: const Icon(Icons.key_rounded, color: Color(0xFF55E2C0), size: 30),
+          ),
+          const SizedBox(height: 12),
+          const Text(
+            'ONE-TIME SMART PIN PAIRING CODE',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 13,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 0.9,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Enter this temporary code into the SecureLink Mobile Companion app to provision and authenticate the wearable pin without USB or buttons.',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: Colors.white.withOpacity(0.65),
+              fontSize: 11,
+              height: 1.4,
+            ),
+          ),
+          const SizedBox(height: 18),
+
+          // Code display card
+          if (_isPairingSuccessful) ...[
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(18),
+              decoration: BoxDecoration(
+                color: const Color(0xFF109C6D).withOpacity(0.2),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: const Color(0xFF55E2C0), width: 1.5),
+              ),
+              child: Column(
+                children: [
+                  const Icon(Icons.verified_rounded, color: Color(0xFF55E2C0), size: 38),
+                  const SizedBox(height: 8),
+                  Text(
+                    '$_pairedDeviceId SUCCESSFULLY PAIRED!',
+                    style: const TextStyle(
+                      color: Color(0xFF55E2C0),
+                      fontSize: 15,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 1.0,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Device credential issued and saved. Smart Pin is online and audio streaming is authorized.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Colors.white.withOpacity(0.8), fontSize: 11),
+                  ),
+                ],
+              ),
+            ),
+          ] else if (_pairingCode != null && _pairingCodeTtl > 0) ...[
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+              decoration: BoxDecoration(
+                color: const Color(0xFF071118),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: const Color(0xFF109C6D).withOpacity(0.6), width: 1.5),
+                boxShadow: [
+                  BoxShadow(
+                    color: const Color(0xFF109C6D).withOpacity(0.18),
+                    blurRadius: 18,
+                    spreadRadius: 2,
+                  ),
+                ],
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    _pairingCode!.split('').join('  '),
+                    style: const TextStyle(
+                      color: Color(0xFF55E2C0),
+                      fontSize: 32,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 4.0,
+                      fontFamily: 'monospace',
+                    ),
+                  ),
+                  const SizedBox(width: 14),
+                  IconButton(
+                    onPressed: () {
+                      Clipboard.setData(ClipboardData(text: _pairingCode!));
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Pairing code copied to clipboard!'),
+                          backgroundColor: Color(0xFF109C6D),
+                          duration: Duration(seconds: 2),
+                        ),
+                      );
+                    },
+                    icon: const Icon(Icons.copy_rounded, color: Colors.white70, size: 18),
+                    tooltip: 'Copy Code',
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.timer_outlined, size: 14, color: _pairingCodeTtl < 60 ? Colors.redAccent : Colors.white60),
+                const SizedBox(width: 6),
+                Text(
+                  'Expires in $minutes:$seconds',
+                  style: TextStyle(
+                    color: _pairingCodeTtl < 60 ? Colors.redAccent : Colors.white70,
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: 220,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: LinearProgressIndicator(
+                  value: progress,
+                  minHeight: 4,
+                  backgroundColor: Colors.white12,
+                  valueColor: AlwaysStoppedAnimation<Color>(
+                    _pairingCodeTtl < 60 ? Colors.redAccent : const Color(0xFF55E2C0),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const SizedBox(
+                  width: 11,
+                  height: 11,
+                  child: CircularProgressIndicator(strokeWidth: 1.5, color: Color(0xFF55E2C0)),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'Waiting for smart pin registration over BLE...',
+                  style: TextStyle(color: Colors.white.withOpacity(0.55), fontSize: 10.5),
+                ),
+              ],
+            ),
+          ] else ...[
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: Colors.redAccent.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.redAccent.withOpacity(0.3)),
+              ),
+              child: const Text(
+                'Pairing code expired or not yet generated.',
+                style: TextStyle(color: Colors.redAccent, fontSize: 11.5, fontWeight: FontWeight.w700),
+              ),
+            ),
+          ],
+
+          const SizedBox(height: 18),
+          ElevatedButton.icon(
+            onPressed: _isGeneratingCode ? null : _generatePairingCode,
+            icon: _isGeneratingCode
+                ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                : const Icon(Icons.refresh_rounded, size: 16),
+            label: Text(_isGeneratingCode ? 'Generating...' : (_pairingCode != null ? 'Generate New Code' : 'Generate Pairing Code')),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF109C6D),
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final hasConnectedPin = widget.liveDevices.any((d) => d.online);
@@ -6660,8 +6945,12 @@ class _PinSetupDialogState extends State<_PinSetupDialog> with SingleTickerProvi
                   unselectedLabelStyle: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w500),
                   tabs: const [
                     Tab(
+                      icon: Icon(Icons.key_rounded, size: 16),
+                      text: '🔑 BLE Pairing Code (Recommended)',
+                    ),
+                    Tab(
                       icon: Icon(Icons.usb_rounded, size: 16),
-                      text: '⚡ USB One-Click Setup (Recommended)',
+                      text: '⚡ USB One-Click Setup',
                     ),
                     Tab(
                       icon: Icon(Icons.wifi_tethering_rounded, size: 16),
@@ -6676,7 +6965,10 @@ class _PinSetupDialogState extends State<_PinSetupDialog> with SingleTickerProvi
                 child: TabBarView(
                   controller: _tabController,
                   children: [
-                    // --- TAB 1: USB PROVISIONING ---
+                    // --- TAB 1: BLE PAIRING CODE GENERATOR ---
+                    _buildBlePairingCodeTab(),
+
+                    // --- TAB 2: USB PROVISIONING ---
                     SingleChildScrollView(
                       padding: const EdgeInsets.all(20),
                       child: Column(

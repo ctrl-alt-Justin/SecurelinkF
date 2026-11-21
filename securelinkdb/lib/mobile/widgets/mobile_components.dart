@@ -1136,9 +1136,13 @@ class _PairPinModalState extends State<PairPinModal> with SingleTickerProviderSt
   final TextEditingController _aliasCtrl = TextEditingController();
   final TextEditingController _ssidCtrl = TextEditingController();
   final TextEditingController _passCtrl = TextEditingController();
+  final TextEditingController _pairingCodeCtrl = TextEditingController();
   bool _isPairing = false;
   ScanResult? _selectedBleScanResult;
   String? _selectedBlePin;
+  String? _provisioningStepMessage;
+  double _provisioningProgress = 0.0;
+  String? _provisioningError;
 
   @override
   void initState() {
@@ -1176,6 +1180,7 @@ class _PairPinModalState extends State<PairPinModal> with SingleTickerProviderSt
     _aliasCtrl.dispose();
     _ssidCtrl.dispose();
     _passCtrl.dispose();
+    _pairingCodeCtrl.dispose();
     super.dispose();
   }
 
@@ -1592,8 +1597,8 @@ class _PairPinModalState extends State<PairPinModal> with SingleTickerProviderSt
       children: [
         Center(
           child: Container(
-            width: 68,
-            height: 68,
+            width: 58,
+            height: 58,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
               color: const Color(0xFF007AFF).withValues(alpha: 0.12),
@@ -1602,240 +1607,405 @@ class _PairPinModalState extends State<PairPinModal> with SingleTickerProviderSt
             child: Icon(
               ble.isScanning ? Icons.bluetooth_searching_rounded : Icons.bluetooth_audio_rounded,
               color: const Color(0xFF00C6FF),
-              size: 34,
+              size: 28,
             ),
           ),
         ),
-        const SizedBox(height: 10),
+        const SizedBox(height: 8),
         Center(
           child: Text(
             ble.isScanning
                 ? 'Scanning for Nearby Smart Pins (BLE)...'
-                : 'Real Bluetooth Low Energy (BLE) Scan',
+                : (_selectedBleScanResult == null ? 'Select Smart Pin to Provision' : 'Configure & Pair ${_selectedBlePin ?? "Smart Pin"}'),
             style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w700),
           ),
         ),
-        const SizedBox(height: 6),
+        const SizedBox(height: 4),
         Center(
           child: Text(
             ble.isScanning
-                ? 'Searching 2.4GHz spectrum for Nordic UART Service...'
-                : (scanResults.isEmpty
-                    ? 'No Smart Pins found nearby yet'
-                    : '${scanResults.length} Pin(s) discovered in Bluetooth signal range'),
+                ? 'Searching 2.4GHz spectrum for SecureLink-PIN badges...'
+                : (_selectedBleScanResult == null
+                    ? (scanResults.isEmpty
+                        ? 'No unconfigured pins found nearby yet'
+                        : '${scanResults.length} Pin(s) discovered in Bluetooth signal range')
+                    : 'Enter Wi-Fi & 6-digit dashboard pairing code to authenticate'),
             style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 11),
           ),
         ),
-        const SizedBox(height: 14),
+        const SizedBox(height: 12),
 
-        // Discovered Devices list from REAL BlePinRelayService FlutterBluePlus scan
-        if (scanResults.isNotEmpty) ...[
-          ...scanResults.map((r) {
-            final adv = r.advertisementData.advName;
-            final devName = r.device.platformName;
-            final name = adv.isNotEmpty ? adv : (devName.isNotEmpty ? devName : 'SecureLink-PIN');
-            final isSelected = _selectedBleScanResult == r;
+        // STEP 1: DEVICE SELECTION (if not yet selected)
+        if (_selectedBleScanResult == null) ...[
+          if (scanResults.isNotEmpty) ...[
+            ...scanResults.map((r) {
+              final adv = r.advertisementData.advName;
+              final devName = r.device.platformName;
+              final name = adv.isNotEmpty ? adv : (devName.isNotEmpty ? devName : 'SecureLink-PIN');
 
-            return GestureDetector(
-              onTap: () {
-                setState(() {
-                  _selectedBleScanResult = r;
-                  _selectedBlePin = name;
-                });
-              },
-              child: Container(
-                margin: const EdgeInsets.only(bottom: 8),
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                decoration: BoxDecoration(
-                  color: isSelected
-                      ? const Color(0xFF007AFF).withValues(alpha: 0.18)
-                      : Colors.white.withValues(alpha: 0.03),
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(
-                    color: isSelected ? const Color(0xFF00C6FF) : Colors.white10,
-                    width: isSelected ? 1.5 : 1,
+              return GestureDetector(
+                onTap: () {
+                  setState(() {
+                    _selectedBleScanResult = r;
+                    _selectedBlePin = name;
+                    _provisioningError = null;
+                  });
+                },
+                child: Container(
+                  margin: const EdgeInsets.only(bottom: 8),
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.03),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: Colors.white12),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.bluetooth_rounded, color: Color(0xFF00C6FF), size: 24),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(name, style: const TextStyle(color: Colors.white, fontSize: 13.5, fontWeight: FontWeight.w800)),
+                            const SizedBox(height: 2),
+                            Text(
+                              'MAC: ${r.device.remoteId.str} • Tap to Pair',
+                              style: TextStyle(color: Colors.white.withValues(alpha: 0.55), fontSize: 10.5),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.08),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Text(
+                          '${r.rssi} dBm',
+                          style: const TextStyle(color: Color(0xFF00C6FF), fontSize: 10, fontWeight: FontWeight.w700),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-                child: Row(
-                  children: [
-                    Icon(
-                      isSelected ? Icons.check_circle_rounded : Icons.bluetooth_rounded,
-                      color: isSelected ? const Color(0xFF00C6FF) : Colors.white60,
-                      size: 24,
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(name, style: const TextStyle(color: Colors.white, fontSize: 13.5, fontWeight: FontWeight.w800)),
-                          const SizedBox(height: 2),
-                          Text(
-                            'MAC: ${r.device.remoteId.str} • Nordic UART Service Ready',
-                            style: TextStyle(color: Colors.white.withValues(alpha: 0.55), fontSize: 10.5),
-                          ),
-                        ],
-                      ),
-                    ),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                      decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: 0.08),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Text(
-                        '${r.rssi} dBm',
-                        style: const TextStyle(color: Color(0xFF00C6FF), fontSize: 10, fontWeight: FontWeight.w700),
-                      ),
-                    ),
-                  ],
-                ),
+              );
+            }),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                onPressed: ble.isScanning ? null : () => ble.startScan(),
+                icon: const Icon(Icons.refresh_rounded, size: 14, color: Color(0xFF00C6FF)),
+                label: const Text('Rescan BLE', style: TextStyle(color: Color(0xFF00C6FF), fontSize: 11)),
               ),
-            );
-          }),
-          const SizedBox(height: 6),
-          Align(
-            alignment: Alignment.centerRight,
-            child: TextButton.icon(
-              onPressed: ble.isScanning ? null : () => ble.startScan(),
-              icon: const Icon(Icons.refresh_rounded, size: 14, color: Color(0xFF00C6FF)),
-              label: const Text('Rescan BLE', style: TextStyle(color: Color(0xFF00C6FF), fontSize: 11)),
             ),
-          ),
-        ] else
-          Container(
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.04),
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: Colors.white10),
-            ),
-            child: Column(
-              children: [
-                Icon(
-                  ble.isScanning ? Icons.sync_rounded : Icons.bluetooth_disabled_rounded,
-                  color: const Color(0xFF00C6FF),
-                  size: 32,
-                ),
-                const SizedBox(height: 10),
-                Text(
-                  ble.isScanning ? 'Scanning for Nearby Smart Pins...' : 'No Smart Pins Discovered Over Bluetooth',
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w800),
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  ble.isScanning
-                      ? 'Listening for BLE advertisements...'
-                      : 'Ensure your XIAO ESP32-S3 Sense is powered on and within Bluetooth range (~10m).',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 11),
-                ),
-                const SizedBox(height: 14),
-                ElevatedButton.icon(
-                  onPressed: ble.isScanning ? null : () => ble.startScan(),
-                  icon: ble.isScanning
-                      ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-                      : const Icon(Icons.search_rounded, size: 16),
-                  label: Text(ble.isScanning ? 'Scanning...' : 'Scan Bluetooth (BLE)'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF007AFF),
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          ] else
+            Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.04),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: Colors.white10),
+              ),
+              child: Column(
+                children: [
+                  Icon(
+                    ble.isScanning ? Icons.sync_rounded : Icons.bluetooth_disabled_rounded,
+                    color: const Color(0xFF00C6FF),
+                    size: 32,
                   ),
+                  const SizedBox(height: 10),
+                  Text(
+                    ble.isScanning ? 'Scanning for Nearby Smart Pins...' : 'No Smart Pins Discovered Over Bluetooth',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w800),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    ble.isScanning
+                        ? 'Listening for BLE advertisements...'
+                        : 'Ensure your XIAO ESP32-S3 Sense is powered on and within Bluetooth range (~10m).',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 11),
+                  ),
+                  const SizedBox(height: 14),
+                  ElevatedButton.icon(
+                    onPressed: ble.isScanning ? null : () => ble.startScan(),
+                    icon: ble.isScanning
+                        ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                        : const Icon(Icons.search_rounded, size: 16),
+                    label: Text(ble.isScanning ? 'Scanning...' : 'Scan Bluetooth (BLE)'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF007AFF),
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ] else ...[
+          // STEP 2: SELECTED DEVICE CARD
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              color: const Color(0xFF007AFF).withValues(alpha: 0.15),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: const Color(0xFF00C6FF).withValues(alpha: 0.4)),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.check_circle_rounded, color: Color(0xFF00C6FF), size: 22),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _selectedBlePin ?? 'SecureLink-PIN',
+                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 13.5),
+                      ),
+                      Text(
+                        'Target MAC: ${_selectedBleScanResult!.device.remoteId.str}',
+                        style: TextStyle(color: Colors.white.withValues(alpha: 0.6), fontSize: 10.5),
+                      ),
+                    ],
+                  ),
+                ),
+                TextButton(
+                  onPressed: _isPairing ? null : () => setState(() => _selectedBleScanResult = null),
+                  child: const Text('Change', style: TextStyle(color: Color(0xFF00C6FF), fontSize: 11, fontWeight: FontWeight.w700)),
                 ),
               ],
             ),
           ),
-        const SizedBox(height: 14),
+          const SizedBox(height: 12),
 
-        TextField(
-          controller: _aliasCtrl,
-          style: const TextStyle(color: Colors.white, fontSize: 13.5),
-          decoration: InputDecoration(
-            labelText: 'Assign to Student / Teacher (Optional)',
-            labelStyle: TextStyle(color: Colors.white.withValues(alpha: 0.7), fontSize: 12),
-            hintText: 'e.g. Student: Maria Santos',
-            prefixIcon: const Icon(Icons.badge_rounded, color: Color(0xFF00C6FF), size: 18),
-            filled: true,
-            fillColor: Colors.white.withValues(alpha: 0.04),
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+          // WI-FI CREDENTIALS INPUT
+          TextField(
+            controller: _ssidCtrl,
+            enabled: !_isPairing,
+            style: const TextStyle(color: Colors.white, fontSize: 13.5),
+            decoration: InputDecoration(
+              labelText: 'Campus Wi-Fi SSID',
+              labelStyle: TextStyle(color: Colors.white.withValues(alpha: 0.7), fontSize: 12),
+              prefixIcon: const Icon(Icons.wifi_rounded, color: Color(0xFF00C6FF), size: 18),
+              filled: true,
+              fillColor: Colors.white.withValues(alpha: 0.04),
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+            ),
           ),
-        ),
-        const SizedBox(height: 18),
+          const SizedBox(height: 10),
 
-        SizedBox(
-          width: double.infinity,
-          child: ElevatedButton.icon(
-            onPressed: _isPairing || _selectedBleScanResult == null
-                ? null
-                : () async {
-                    setState(() => _isPairing = true);
-                    final sel = _selectedBleScanResult!;
-                    final advName = sel.advertisementData.advName;
-                    final devName = sel.device.platformName;
-                    String targetPinId = _selectedBlePin ?? (advName.isNotEmpty ? advName : (devName.isNotEmpty ? devName : 'SecureLink-PIN'));
-                    targetPinId = targetPinId.replaceAll('SECURELINK-', '').replaceAll('SecureLink-', '').trim();
-                    if (targetPinId.isEmpty) {
-                      final clean = sel.device.remoteId.str.replaceAll(':', '').toUpperCase();
-                      targetPinId = 'PIN-${clean.length > 4 ? clean.substring(clean.length - 4) : clean}';
-                    }
-                    if (!targetPinId.startsWith('PIN-') && !targetPinId.startsWith('PIN')) {
-                      targetPinId = 'PIN-$targetPinId';
-                    }
+          TextField(
+            controller: _passCtrl,
+            obscureText: true,
+            enabled: !_isPairing,
+            style: const TextStyle(color: Colors.white, fontSize: 13.5),
+            decoration: InputDecoration(
+              labelText: 'Wi-Fi Password',
+              labelStyle: TextStyle(color: Colors.white.withValues(alpha: 0.7), fontSize: 12),
+              prefixIcon: const Icon(Icons.lock_rounded, color: Color(0xFF00C6FF), size: 18),
+              filled: true,
+              fillColor: Colors.white.withValues(alpha: 0.04),
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+          ),
+          const SizedBox(height: 10),
 
-                    // REAL BLE connection and bridge
-                    final connOk = await ble.connectToDevice(sel.device, widget.service, pinId: targetPinId);
-                    if (connOk) {
-                      await widget.service.pairPin(
-                        targetPinId,
+          // 6-DIGIT CENTRAL SYSTEM PAIRING CODE
+          TextField(
+            controller: _pairingCodeCtrl,
+            enabled: !_isPairing,
+            keyboardType: TextInputType.number,
+            maxLength: 6,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 18,
+              fontWeight: FontWeight.w900,
+              letterSpacing: 4.0,
+            ),
+            decoration: InputDecoration(
+              counterText: '',
+              labelText: 'Central System 6-Digit Pairing Code',
+              labelStyle: TextStyle(color: Colors.white.withValues(alpha: 0.7), fontSize: 12, letterSpacing: 0),
+              hintText: '123456',
+              hintStyle: TextStyle(color: Colors.white.withValues(alpha: 0.3), letterSpacing: 4.0),
+              prefixIcon: const Icon(Icons.vpn_key_rounded, color: MobileDesignSystem.primaryGreenMint, size: 20),
+              helperText: 'Generate temporary code in Central System Dashboard -> Devices Tab',
+              helperStyle: TextStyle(color: Colors.white.withValues(alpha: 0.45), fontSize: 10),
+              filled: true,
+              fillColor: Colors.white.withValues(alpha: 0.04),
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+          ),
+          const SizedBox(height: 10),
+
+          // OPTIONAL ALIAS
+          TextField(
+            controller: _aliasCtrl,
+            enabled: !_isPairing,
+            style: const TextStyle(color: Colors.white, fontSize: 13.5),
+            decoration: InputDecoration(
+              labelText: 'Assign to Student / Teacher (Optional)',
+              labelStyle: TextStyle(color: Colors.white.withValues(alpha: 0.7), fontSize: 12),
+              hintText: 'e.g. Student: Maria Santos',
+              prefixIcon: const Icon(Icons.badge_rounded, color: Color(0xFF00C6FF), size: 18),
+              filled: true,
+              fillColor: Colors.white.withValues(alpha: 0.04),
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+          ),
+          const SizedBox(height: 14),
+
+          // LIVE PROVISIONING PROGRESS OR ERROR CARD
+          if (_isPairing) ...[
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFF007AFF).withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFF00C6FF).withValues(alpha: 0.3)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(color: Color(0xFF00C6FF), strokeWidth: 2),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        _provisioningStepMessage ?? 'Provisioning Smart Pin...',
+                        style: const TextStyle(color: Colors.white, fontSize: 11.5, fontWeight: FontWeight.w700),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(4),
+                    child: LinearProgressIndicator(
+                      value: _provisioningProgress > 0 ? _provisioningProgress : null,
+                      backgroundColor: Colors.white12,
+                      valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF00C6FF)),
+                      minHeight: 4,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
+
+          if (_provisioningError != null) ...[
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: MobileDesignSystem.statusDanger.withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: MobileDesignSystem.statusDanger.withValues(alpha: 0.5)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.error_outline_rounded, color: MobileDesignSystem.statusDanger, size: 20),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      _provisioningError!,
+                      style: const TextStyle(color: Colors.white, fontSize: 11, height: 1.3),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
+
+          // PROVISION ACTION BUTTON
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: _isPairing || _selectedBleScanResult == null
+                  ? null
+                  : () async {
+                      final ssid = _ssidCtrl.text.trim();
+                      final pass = _passCtrl.text.trim();
+                      final code = _pairingCodeCtrl.text.trim();
+
+                      if (ssid.isEmpty) {
+                        setState(() => _provisioningError = 'Please specify a Wi-Fi network SSID.');
+                        return;
+                      }
+                      if (code.length != 6) {
+                        setState(() => _provisioningError = 'Pairing code must be exactly 6 digits.');
+                        return;
+                      }
+
+                      setState(() {
+                        _isPairing = true;
+                        _provisioningError = null;
+                        _provisioningProgress = 0.1;
+                        _provisioningStepMessage = 'Initializing BLE Provisioning...';
+                      });
+
+                      final result = await widget.service.provisionPinViaBle(
+                        device: _selectedBleScanResult!.device,
+                        ssid: ssid,
+                        password: pass,
+                        pairingCode: code,
                         alias: _aliasCtrl.text.trim(),
-                        method: 'Bluetooth Low Energy',
+                        onProgress: (stepMsg, progress) {
+                          if (mounted) {
+                            setState(() {
+                              _provisioningStepMessage = stepMsg;
+                              _provisioningProgress = progress;
+                            });
+                          }
+                        },
                       );
+
                       if (!mounted) return;
-                      setState(() => _isPairing = false);
-                      Navigator.pop(context);
-                      widget.onPaired?.call();
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          backgroundColor: const Color(0xFF0E151A),
-                          content: Text(
-                            'Smart Pin $targetPinId bridged and paired via BLE!',
-                            style: const TextStyle(color: Color(0xFF00C6FF)),
+
+                      if (result['success'] == true) {
+                        setState(() => _isPairing = false);
+                        Navigator.pop(context);
+                        widget.onPaired?.call();
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            backgroundColor: const Color(0xFF0E151A),
+                            content: Text(
+                              result['message'] ?? 'Smart Pin paired and authenticated successfully!',
+                              style: const TextStyle(color: MobileDesignSystem.primaryGreenMint),
+                            ),
                           ),
-                        ),
-                      );
-                    } else {
-                      if (!mounted) return;
-                      setState(() => _isPairing = false);
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          backgroundColor: const Color(0xFF0E151A),
-                          content: Text(
-                            'Failed to connect to ${sel.device.platformName}. Ensure pin is powered on.',
-                            style: const TextStyle(color: MobileDesignSystem.statusDanger),
-                          ),
-                        ),
-                      );
-                    }
-                  },
-            icon: _isPairing
-                ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-                : const Icon(Icons.bluetooth_connected_rounded),
-            label: Text(
-              _isPairing
-                  ? 'Connecting Real BLE...'
-                  : (_selectedBleScanResult == null ? 'Select Discovered Pin Above' : 'Connect & Bridge Selected Pin'),
-              style: const TextStyle(fontWeight: FontWeight.w800),
-            ),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF007AFF),
-              foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(vertical: 14),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                        );
+                      } else {
+                        setState(() {
+                          _isPairing = false;
+                          _provisioningError = result['error'] ?? 'Pairing failed. Check Wi-Fi and code.';
+                        });
+                      }
+                    },
+              icon: _isPairing
+                  ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                  : const Icon(Icons.phonelink_setup_rounded),
+              label: Text(
+                _isPairing ? 'Provisioning Smart Pin...' : 'Provision & Authenticate Pin',
+                style: const TextStyle(fontWeight: FontWeight.w800),
+              ),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF007AFF),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+              ),
             ),
           ),
-        ),
+        ],
       ],
     );
   }

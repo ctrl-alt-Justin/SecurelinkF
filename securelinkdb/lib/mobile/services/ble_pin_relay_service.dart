@@ -56,6 +56,14 @@ class BlePinRelayService extends ChangeNotifier {
   List<ScanResult> _scanResults = [];
   bool _isScanning = false;
 
+  // Provisioning stream & device metadata
+  final StreamController<Map<String, dynamic>> _provisioningEventsController =
+      StreamController<Map<String, dynamic>>.broadcast();
+  Stream<Map<String, dynamic>> get provisioningEvents => _provisioningEventsController.stream;
+
+  Map<String, dynamic>? _lastDeviceInfo;
+  Map<String, dynamic>? get lastDeviceInfo => _lastDeviceInfo;
+
   // Getters
   BleRelayState get state => _state;
   bool get isConnected => _connectedDevice != null && _state != BleRelayState.disconnected;
@@ -322,7 +330,20 @@ class BlePinRelayService extends ChangeNotifier {
       return;
     }
 
-    // 2. Check if packet is a text command (e.g. SNAP:<len>, STREAM_END, PING:...)
+    // 2. Check if packet is a JSON message (Onboarding / Provisioning protocol)
+    try {
+      final decoded = utf8.decode(bytes);
+      final trimmed = decoded.trim();
+      if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+        final parsed = jsonDecode(trimmed);
+        if (parsed is Map<String, dynamic> && parsed.containsKey('type')) {
+          _handleBleJsonMessage(parsed);
+          return;
+        }
+      }
+    } catch (_) {}
+
+    // 3. Check if packet is a text command (e.g. SNAP:<len>, STREAM_END, PING:...)
     bool isAsciiText = false;
     String textMsg = '';
     try {
@@ -432,6 +453,53 @@ class BlePinRelayService extends ChangeNotifier {
       await _connectedDevice?.disconnect();
     } catch (_) {}
     _handleBleDisconnect();
+  }
+
+  void _handleBleJsonMessage(Map<String, dynamic> msg) {
+    debugPrint('[BLE-JSON] Received from pin: $msg');
+    final type = msg['type'];
+    if (type == 'device_info') {
+      _lastDeviceInfo = msg;
+      if (msg['device_id'] != null) {
+        _pinnedDeviceId = msg['device_id'].toString().toUpperCase();
+      }
+    }
+    _provisioningEventsController.add(msg);
+    notifyListeners();
+  }
+
+  Future<bool> sendBleJson(Map<String, dynamic> jsonMap) async {
+    if (_rxCharacteristic == null || _connectedDevice == null) return false;
+    try {
+      final jsonStr = jsonEncode(jsonMap);
+      final bytes = utf8.encode(jsonStr);
+      debugPrint('[BLE-TX] Sending JSON command to pin: $jsonStr');
+      await _rxCharacteristic!.write(bytes, withoutResponse: false);
+      return true;
+    } catch (e) {
+      debugPrint('[BLE-TX] Error sending JSON to pin: $e');
+      return false;
+    }
+  }
+
+  Future<bool> requestDeviceInfo() async {
+    return sendBleJson({'type': 'get_device_info'});
+  }
+
+  Future<bool> sendProvisioningCommand({
+    required String ssid,
+    required String password,
+    required String pairingCode,
+    required String serverUrl,
+  }) async {
+    return sendBleJson({
+      'type': 'provision',
+      'version': 1,
+      'ssid': ssid,
+      'password': password,
+      'pairing_code': pairingCode,
+      'server_url': serverUrl,
+    });
   }
 
   Future<void> sendCommandToPin(String cmd) async {

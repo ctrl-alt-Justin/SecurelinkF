@@ -3,9 +3,11 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import '../models/device_model.dart';
+import 'ble_pin_relay_service.dart';
 
 class IncidentReport {
   final String id;
@@ -1037,6 +1039,97 @@ class MobileServerService extends ChangeNotifier {
   }) async {
     final cleanId = pinId.trim().toUpperCase();
     return pairPin(cleanId, alias: alias, method: 'Bluetooth Low Energy');
+  }
+
+  /// Complete button-free BLE onboarding & cryptographic provisioning workflow
+  Future<Map<String, dynamic>> provisionPinViaBle({
+    required BluetoothDevice device,
+    required String ssid,
+    required String password,
+    required String pairingCode,
+    String? alias,
+    void Function(String stepMessage, double progress)? onProgress,
+  }) async {
+    final relay = BlePinRelayService();
+    onProgress?.call('Connecting to Pin over BLE...', 0.15);
+
+    final connected = await relay.connectToPin(device);
+    if (!connected) {
+      return {'success': false, 'error': 'Failed to connect to Smart Pin over BLE.'};
+    }
+
+    onProgress?.call('Connected! Querying pin identity...', 0.30);
+    await relay.requestDeviceInfo();
+    await Future.delayed(const Duration(milliseconds: 350));
+
+    final targetServerUrl = 'http://$host:$port';
+    onProgress?.call('Transmitting Wi-Fi & Pairing Code to Pin...', 0.45);
+
+    final completer = Completer<Map<String, dynamic>>();
+
+    StreamSubscription? sub;
+    Timer? timeoutTimer = Timer(const Duration(seconds: 35), () {
+      if (!completer.isCompleted) {
+        sub?.cancel();
+        completer.complete({
+          'success': false,
+          'error': 'Provisioning timed out after 35 seconds. Check Wi-Fi credentials or pairing code.',
+        });
+      }
+    });
+
+    sub = relay.provisioningEvents.listen((event) async {
+      final type = event['type'];
+      debugPrint('[BLE-WIZARD] Provisioning event: $event');
+
+      if (type == 'wifi_connecting') {
+        onProgress?.call('Smart Pin connecting to "${event['ssid'] ?? ssid}"...', 0.60);
+      } else if (type == 'wifi_connected') {
+        onProgress?.call('Wi-Fi connected (${event['ip'] ?? 'LAN'}). Validating pairing code with Central System...', 0.75);
+      } else if (type == 'pairing_pending') {
+        onProgress?.call('Central System verifying single-use code...', 0.85);
+      } else if (type == 'pairing_success') {
+        timeoutTimer.cancel();
+        sub?.cancel();
+        final devId = (event['device_id'] ?? relay.pinnedDeviceId).toString().toUpperCase();
+        await pairPin(devId, alias: alias, method: 'BLE Cryptographic Pairing');
+        onProgress?.call('Pairing successful! Pin authenticated.', 1.0);
+        if (!completer.isCompleted) {
+          completer.complete({
+            'success': true,
+            'device_id': devId,
+            'message': 'Smart Pin $devId successfully paired and authenticated!',
+          });
+        }
+      } else if (type == 'provision_error') {
+        timeoutTimer.cancel();
+        sub?.cancel();
+        final errMsg = event['message'] ?? 'Provisioning failed';
+        if (!completer.isCompleted) {
+          completer.complete({
+            'success': false,
+            'code': event['code'] ?? 'ERR_UNKNOWN',
+            'error': errMsg,
+          });
+        }
+      }
+    });
+
+    // Send provisioning JSON command over BLE RX
+    final sent = await relay.sendProvisioningCommand(
+      ssid: ssid,
+      password: password,
+      pairingCode: pairingCode,
+      serverUrl: targetServerUrl,
+    );
+
+    if (!sent) {
+      timeoutTimer.cancel();
+      sub.cancel();
+      return {'success': false, 'error': 'Could not transmit provisioning command over BLE.'};
+    }
+
+    return completer.future;
   }
 
   // --------------------------------------------------------------------------
