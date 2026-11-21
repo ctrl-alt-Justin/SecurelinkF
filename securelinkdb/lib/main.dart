@@ -8283,7 +8283,7 @@ class _PinSetupDialogState extends State<_PinSetupDialog> with SingleTickerProvi
   late TabController _tabController;
   final TextEditingController _ssidController = TextEditingController(text: 'SLTYMTBLLS');
   final TextEditingController _passController = TextEditingController(text: '9945SUmaxx!');
-  final TextEditingController _serverIpController = TextEditingController(text: '127.0.0.1');
+  final TextEditingController _serverIpController = TextEditingController();
   final TextEditingController _serverPortController = TextEditingController(text: '8080');
 
   bool _obscurePass = true;
@@ -8468,9 +8468,14 @@ class _PinSetupDialogState extends State<_PinSetupDialog> with SingleTickerProvi
       return;
     }
 
+    // Ensure we have an active pairing code before flashing via USB
+    if (_pairingCode == null || _pairingCode!.isEmpty || _pairingCodeTtl <= 10) {
+      await _generatePairingCode();
+    }
+
     setState(() {
       _isProvisioning = true;
-      _statusMessage = 'Flashing credentials to $_selectedPort...';
+      _statusMessage = 'Flashing credentials to $_selectedPort via USB serial...';
       _statusSuccess = false;
       _consoleLogs.clear();
     });
@@ -8480,11 +8485,18 @@ class _PinSetupDialogState extends State<_PinSetupDialog> with SingleTickerProvi
       client.connectionTimeout = const Duration(seconds: 5);
       final req = await client.postUrl(Uri.parse('http://127.0.0.1:8080/api/provision-pin'));
       req.headers.contentType = ContentType.json;
+
+      String srvIp = _serverIpController.text.trim();
+      // Ensure dashboard never passes loopback/localhost to physical hardware
+      if (srvIp.isEmpty || srvIp == '127.0.0.1' || srvIp == 'localhost') {
+        srvIp = ''; // Triggers backend get_primary_ip() LAN address
+      }
+
       req.write(jsonEncode({
         'port': _selectedPort,
         'ssid': _ssidController.text.trim(),
         'pass': _passController.text.trim(),
-        'server_ip': _serverIpController.text.trim(),
+        'server_ip': srvIp,
         'server_port': int.tryParse(_serverPortController.text.trim()) ?? 8080,
         if (_pairingCode != null && _pairingCode!.isNotEmpty) 'pairing_code': _pairingCode,
       }));
@@ -8496,10 +8508,16 @@ class _PinSetupDialogState extends State<_PinSetupDialog> with SingleTickerProvi
         final success = data['status'] == 'success';
         final rawLogs = (data['logs'] as List? ?? []);
         final logs = rawLogs.map((e) => e.toString()).toList();
+        final actualIp = data['server_ip'] as String? ?? srvIp;
+        if (actualIp.isNotEmpty && _serverIpController.text.isEmpty) {
+          _serverIpController.text = actualIp;
+        }
         setState(() {
           _isProvisioning = false;
           _statusSuccess = success;
-          _statusMessage = data['message'] as String? ?? (success ? 'Configuration Flashed!' : 'Failed');
+          _statusMessage = success
+              ? 'Credentials flashed! Smart Pin is connecting to Wi-Fi and registering...'
+              : (data['message'] as String? ?? 'Failed');
           _consoleLogs = logs;
         });
       }

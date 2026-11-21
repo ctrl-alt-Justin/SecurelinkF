@@ -742,7 +742,11 @@ async def provision_pin_serial(payload: dict):
     port = payload.get("port")
     ssid = str(payload.get("ssid", "")).strip()
     password = str(payload.get("pass", "")).strip()
-    server_ip = str(payload.get("server_ip", get_primary_ip())).strip()
+    raw_ip = str(payload.get("server_ip", "")).strip()
+    if not raw_ip or raw_ip in ("127.0.0.1", "localhost", "0.0.0.0", "::1"):
+        server_ip = get_primary_ip()
+    else:
+        server_ip = raw_ip
     try:
         server_port = int(payload.get("server_port", 8080))
     except (ValueError, TypeError):
@@ -763,7 +767,8 @@ async def provision_pin_serial(payload: dict):
         pcode = str(payload.get("pairing_code", "")).strip()
         if pcode:
             cmd = f"SET_WIFI:{ssid}:{password}:{server_ip}:{server_port}:{pcode}\n"
-            print(f"[PROVISION] Sending command to Pin with pairing code: SET_WIFI:{ssid}:****:{server_ip}:{server_port}:{pcode}")
+            # Never log raw pairing code to console
+            print(f"[PROVISION] Sending command to Pin with pairing code: SET_WIFI:{ssid}:****:{server_ip}:{server_port}:{pcode[:2]}****")
         else:
             cmd = f"SET_WIFI:{ssid}:{password}:{server_ip}:{server_port}\n"
             print(f"[PROVISION] Sending command to Pin: SET_WIFI:{ssid}:****:{server_ip}:{server_port}")
@@ -785,7 +790,10 @@ async def provision_pin_serial(payload: dict):
         ser.close()
         return {
             "status": "success",
-            "message": f"Wi-Fi credentials flashed to {port}! Pin is connecting to '{ssid}'...",
+            "serial_written": True,
+            "server_ip": server_ip,
+            "server_port": server_port,
+            "message": f"Wi-Fi credentials flashed to {port}! Pin is connecting to '{ssid}' at {server_ip}:{server_port}...",
             "logs": logs
         }
     except Exception as e:
@@ -1071,18 +1079,69 @@ async def register_pin_api(payload: dict):
     async with pin_registration_lock:
         cleanup_expired_pending_registrations()
         code_info = active_pairing_codes.get(pairing_code)
-        if not code_info or code_info.get("used", False) or now > code_info.get("expires_at", 0):
-            # Security requirement: Never log raw pairing codes
-            print(f"\n[PAIRING-ERR] Registration rejected for '{device_id}': Invalid, already used, or expired pairing code.")
+        
+        # Check if code exists and is within TTL
+        if not code_info or now > code_info.get("expires_at", 0):
+            print(f"\n[PAIRING-ERR] Registration rejected for '{device_id}': Invalid or expired pairing code.")
+            return {
+                "status": "error",
+                "code": "ERR_INVALID_CODE",
+                "message": "Pairing code is invalid or expired."
+            }
+
+        # If code has already been consumed:
+        if code_info.get("used", False):
+            # Check for legitimate pending resumption by the SAME device
+            if (code_info.get("device_id") == device_id and 
+                device_id in pending_registrations and 
+                now <= pending_registrations[device_id].get("expires_at", 0)):
+                
+                existing_entry = pending_registrations[device_id]
+                existing_token = existing_entry.get("device_token")
+                print(f"\n[PAIRING-RESUME] Smart Pin '{device_id}' resuming existing pending registration safely.")
+                return {
+                    "status": "success",
+                    "registration_state": PinRegistrationState.PENDING,
+                    "device_id": device_id,
+                    "device_token": existing_token,
+                    "cs_id": "CS-CAMPUS-01",
+                    "server_ip": get_primary_ip(),
+                    "server_port": 8080,
+                    "message": f"Resumed pending registration for {device_id}. Connect to WebSocket to complete pairing."
+                }
+
+            # Check if device is already paired with this code
+            if (code_info.get("device_id") == device_id and 
+                device_id in registered_devices and 
+                registered_devices[device_id].get("paired", False)):
+                print(f"\n[PAIRING-INFO] Smart Pin '{device_id}' is already registered and paired.")
+                return {
+                    "status": "error",
+                    "code": "ERR_ALREADY_PAIRED",
+                    "message": "Device is already registered and paired."
+                }
+
+            # Code already used by another device or expired pending
+            print(f"\n[PAIRING-ERR] Registration rejected for '{device_id}': Pairing code already used or expired.")
             return {
                 "status": "error",
                 "code": "ERR_INVALID_CODE",
                 "message": "Pairing code is invalid, already used, or expired."
             }
 
+        # Fresh code: ensure it's not bound to another device
+        if code_info.get("device_id") and code_info.get("device_id") != device_id:
+            print(f"\n[PAIRING-ERR] Registration rejected for '{device_id}': Code assigned to different device.")
+            return {
+                "status": "error",
+                "code": "ERR_INVALID_CODE",
+                "message": "Pairing code is bound to another device."
+            }
+
         # Consume single-use code immediately
         code_info["used"] = True
         code_info["device_id"] = device_id
+        code_info["used_at"] = now
 
         # Generate cryptographically secure 32-byte hex credential token
         device_token = secrets.token_hex(32)
@@ -1093,6 +1152,7 @@ async def register_pin_api(payload: dict):
         # Do NOT broadcast pin_registered to the dashboard until authenticated WebSocket connection!
         pending_registrations[device_id] = {
             "device_id": device_id,
+            "device_token": device_token,  # Kept in memory only for resumption before WS promotion
             "token_hash": token_hash,
             "pairing_code": pairing_code,
             "fw_version": fw_version,

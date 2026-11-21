@@ -367,7 +367,7 @@ class TestPinRegistrationPromotion(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(get_device_registration_state("PIN-UNFINISHED"), PinRegistrationState.UNREGISTERED)
 
     async def test_10_repeated_registration_attempts_no_duplicates(self):
-        """Test that repeated calls with same pairing code or device ID do not duplicate devices."""
+        """Test that repeated calls with same pairing code by same device resume safely without duplicate tokens, and other devices are rejected."""
         active_pairing_codes["778899"] = {
             "created_at": time.time(),
             "expires_at": time.time() + 60,
@@ -381,14 +381,24 @@ class TestPinRegistrationPromotion(unittest.IsolatedAsyncioTestCase):
             "pairing_code": "778899"
         })
         self.assertEqual(resp1["status"], "success")
+        token1 = resp1["device_token"]
 
-        # Second call with the same pairing code must fail
+        # Resumption call with the same pairing code and same device_id resumes safely with same token
         resp2 = await register_pin_api({
             "device_id": "PIN-F360",
             "pairing_code": "778899"
         })
-        self.assertEqual(resp2["status"], "error")
-        self.assertEqual(resp2["code"], "ERR_INVALID_CODE")
+        self.assertEqual(resp2["status"], "success")
+        self.assertEqual(resp2["registration_state"], PinRegistrationState.PENDING)
+        self.assertEqual(resp2["device_token"], token1, "Resumed pending registration must return same credential token")
+
+        # Call with different device_id on consumed code must be rejected
+        resp3 = await register_pin_api({
+            "device_id": "PIN-IMPOSTOR",
+            "pairing_code": "778899"
+        })
+        self.assertEqual(resp3["status"], "error")
+        self.assertEqual(resp3["code"], "ERR_INVALID_CODE")
 
         # Ensure only 1 pending registration exists
         count = sum(1 for k in pending_registrations if k == "PIN-F360")

@@ -519,12 +519,7 @@ void bleProvisionWorkerTask(void* param) {
                 sendBleText("{\"type\":\"pairing_success\",\"device_id\":\"" + pin_device_id + "\"}");
             } else {
                 Serial.println("[BLE-PROV-TASK] WebSocket authentication did not confirm within timeout.");
-                if (ws.isConnected()) {
-                    isDevicePaired = true;
-                    sendBleText("{\"type\":\"pairing_success\",\"device_id\":\"" + pin_device_id + "\"}");
-                } else {
-                    sendBleText("{\"type\":\"provision_error\",\"code\":\"ERR_WS_AUTH\",\"message\":\"WebSocket authentication failed or timed out\"}");
-                }
+                sendBleText("{\"type\":\"provision_error\",\"code\":\"ERR_WS_AUTH\",\"message\":\"WebSocket authentication failed or timed out\"}");
             }
 
             isBleProvisioningActive = false;
@@ -1596,7 +1591,6 @@ void setup() {
         WiFi.setSleep(false); // Disable modem sleep: keeps TCP socket open and eliminates Windows WinError 121 timeouts
         if (!isDevicePaired && prefs.isKey("pcode_pending")) {
             String pendingCode = prefs.getString("pcode_pending", "");
-            prefs.remove("pcode_pending");
             if (pendingCode.length() >= 6) {
                 Serial.printf("[PROV] Found pending pairing code. Registering with Central System...\n");
                 HTTPClient http;
@@ -1623,12 +1617,22 @@ void setup() {
                         String readBack = prefs.getString("token", "");
                         if (readBack == token && token.length() > 0) {
                             pin_device_token = token;
+                            cachedServerIP = server_host;
+                            prefs.remove("pcode_pending");
                             Serial.println("[PROV] Smart Pin token registered & verified in NVS. Connecting WebSocket to authenticate...");
+                            connectWebSocket(server_host, server_port);
                         } else {
                             Serial.println("[PROV] ERROR: Failed to persist device token to flash memory!");
                         }
                     }
+                } else if (hCode == 400 || hResp.indexOf("ERR_INVALID_CODE") >= 0) {
+                    Serial.println("[PROV] Pairing code rejected or expired by Central System. Clearing pcode_pending.");
+                    prefs.remove("pcode_pending");
+                } else {
+                    Serial.printf("[PROV] Registration attempt returned %d. Retaining pcode_pending for next boot/connection.\n", hCode);
                 }
+            } else {
+                prefs.remove("pcode_pending");
             }
         }
         discoverCheckpoint();
