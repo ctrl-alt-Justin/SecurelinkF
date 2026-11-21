@@ -191,18 +191,6 @@ void connectWebSocket(const String& host, int port) {
     wsConnectStartedAt = millis();
 }
 
-class BleServerCallbacks: public BLEServerCallbacks {
-    void onConnect(BLEServer* pServer) override {
-        bleClientConnected = true;
-        Serial.println("[BLE] Mobile Companion Connected! Audio bridge active.");
-    }
-    void onDisconnect(BLEServer* pServer) override {
-        bleClientConnected = false;
-        bleRxBuffer = "";
-        Serial.println("[BLE] Mobile Companion Disconnected.");
-    }
-};
-
 struct BleProvisionRequest {
     char ssid[64];
     char password[64];
@@ -216,6 +204,18 @@ static volatile bool isBleProvisioningActive = false;
 static String bleRxBuffer = "";
 static unsigned long lastBleRxChunkTime = 0;
 static constexpr size_t MAX_BLE_RX_BUFFER = 2048;
+
+class BleServerCallbacks: public BLEServerCallbacks {
+    void onConnect(BLEServer* pServer) override {
+        bleClientConnected = true;
+        Serial.println("[BLE] Mobile Companion Connected! Audio bridge active.");
+    }
+    void onDisconnect(BLEServer* pServer) override {
+        bleClientConnected = false;
+        bleRxBuffer = "";
+        Serial.println("[BLE] Mobile Companion Disconnected.");
+    }
+};
 
 void sendBleText(const String& txt) {
     if (!pTxCharacteristic || !bleClientConnected) return;
