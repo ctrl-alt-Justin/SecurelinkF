@@ -181,135 +181,24 @@ except Exception as e:
     bert_model = None
 
 # =========================================================================
-# 4. CONTEXT ENGINE (NLP CLASSIFICATION + PRONOUN TARGETING + ESCALATION)
+# 4. CONTEXT ENGINE (NLP CLASSIFICATION + INTENT & SEVERITY ASSESSMENT V3)
 # =========================================================================
-class ContextEngine:
-    def __init__(self):
-        self.history = []
-        self.target_pronouns = {"ikaw", "ka", "mo", "sayo", "sa'yo", "kita", "niyo", "ninyo", "you", "your", "u"}
-        
-        # Tagalog roots use substring matching; English words use strict boundaries
-        self.hard_threats_tagalog = ["patay", "suntok", "bugbog", "tumba", "sapak", "tadyak", "upak", "hiwa", "basag", "resbak", "kikilitin"]
-        self.hard_threats_english = [r"\bkill\b", r"\bpunch\b", r"\bbeat you\b", r"\bhurt you\b", r"\bthreat\b", r"\bstab\b", r"\bdie\b", r"\battack\b", r"\bmurder\b"]
-        
-        self.hard_extort_tagalog = ["pera", "bayad", "ambag", "ilabas", "bigyan", "baon", "allowance", "barya"]
-        self.hard_extort_english = [r"\btax\b", r"\bgive me money\b", r"\bpay up\b", r"\bhand it over\b", r"\bgive your money\b", r"\bextort\b"]
-        
-        self.hard_harass_tagalog = ["pangit", "bobo", "kuwenta", "kwenta", "tanga", "inutil", "kadiri", "baho", "palamunin", "pabigat", "monggoloid", "abnoy", "baliw", "siraulo", "gago", "tarantado", "gaga", "puta"]
-        self.hard_harass_english = [r"\bidiot\b", r"\bstupid\b", r"\bugly\b", r"\bloser\b", r"\bshut up\b", r"\bworthless\b", r"\bfreak\b", r"\bfool\b"]
+from context_engine import (
+    ContextEngine,
+    ThreatIntent,
+    ThreatType,
+    Targetedness,
+    Imminence,
+    EvidenceReliability,
+    IncidentLevel,
+    ContextExtraction,
+    SeverityAssessment,
+    context_engine,
+)
 
-    def _matches_any(self, text_lower: str, keywords: list) -> bool:
-        for k in keywords:
-            if " " in k or "-" in k:
-                if k in text_lower:
-                    return True
-            else:
-                if re.search(r'\b' + re.escape(k) + r'\b', text_lower):
-                    return True
-        return False
-
-    def evaluate(self, text: str):
-        if not text or len(text.strip()) < 3:
-            return 0.0, "Conversational"
-
-        text_lower = text.lower()
-        words = text_lower.split()
-
-        # 1. Base Deep Learning Inference
-        if bert_model and tokenizer:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=128)
-            if device == "cuda":
-                inputs = {k: v.to("cuda") for k, v in inputs.items()}
-            with torch.no_grad():
-                outputs = bert_model(**inputs)
-            
-            logits = outputs.logits
-            probabilities = F.softmax(logits, dim=-1)
-            predicted_class = logits.argmax(-1).item()
-            confidence = probabilities[0][predicted_class].item()
-
-            if confidence < 0.60:
-                predicted_class = 0
-
-            if predicted_class == 0:
-                base_score = 1.0
-                category = "Conversational"
-            elif predicted_class == 1:
-                base_score = 4.5 + (confidence * 2.0)
-                category = "Verbal Harassment"
-            elif predicted_class == 2:
-                # Extortion requires confidence >= 0.70 or presence of hard extortion keywords
-                has_extort_check = any(e in text_lower for e in self.hard_extort_tagalog) or any(re.search(e, text_lower) for e in self.hard_extort_english)
-                if confidence >= 0.70 or has_extort_check:
-                    base_score = 5.0 + (confidence * 2.0)
-                    category = "Extortion / Demand"
-                else:
-                    base_score = 1.0
-                    category = "Conversational"
-            elif predicted_class == 3:
-                # Physical threat requires confidence >= 0.70 or presence of hard threat keywords
-                has_threat_check = any(t in text_lower for t in self.hard_threats_tagalog) or any(re.search(e, text_lower) for e in self.hard_threats_english)
-                if confidence >= 0.70 or has_threat_check:
-                    base_score = 7.0 + (confidence * 2.0)
-                    category = "Physical Threat"
-                else:
-                    base_score = 1.0
-                    category = "Conversational"
-            else:
-                base_score = 1.0
-                category = "Conversational"
-        else:
-            base_score = 1.0
-            category = "Conversational"
-
-        # 2. Targetedness & Heuristic Safety Net
-        is_targeted = any(p in words for p in self.target_pronouns)
-        targetedness_multiplier = 1.3 if is_targeted else 1.0
-
-        # Check Tagalog roots (substring) OR English words (strict regex boundary)
-        has_threat = any(t in text_lower for t in self.hard_threats_tagalog) or any(re.search(e, text_lower) for e in self.hard_threats_english)
-        has_extort = any(e in text_lower for e in self.hard_extort_tagalog) or any(re.search(e, text_lower) for e in self.hard_extort_english)
-        has_harass = any(h in text_lower for h in self.hard_harass_tagalog) or any(re.search(e, text_lower) for e in self.hard_harass_english)
-
-        if has_threat:
-            base_score = max(base_score, 8.5)
-            category = "Physical Threat"
-        elif has_extort:
-            base_score = max(base_score, 6.0 if is_targeted else 4.5)
-            category = "Extortion / Demand"
-        elif has_harass:
-            # Bullying words, hate speech, & profanities are serious violations:
-            # Untargeted: 4.8 (triggers THREAT level and visual alert)
-            # Targeted (e.g. "mongoloid ka", "gago ka", "tangina mo"): 6.5 (severe THREAT)
-            base_score = max(base_score, 6.5 if is_targeted else 4.8)
-            category = "Verbal Harassment"
-
-        current_score = base_score * targetedness_multiplier if category != "Conversational" else base_score
-
-        # 3. Rolling Window Aggregation (Threat Escalation)
-        self.history.append(current_score)
-        if len(self.history) > 5:
-            self.history.pop(0)
-
-        # Count hostile statements (scoring 4.5 or higher) in the last 5 statements
-        hostile_count = sum(1 for s in self.history if s >= 4.5)
-
-        if hostile_count >= 3:
-            # Severe Escalation: 3+ hostile statements force score >= 8.5 (DANGER)
-            final_score = max(current_score, 8.5)
-            final_score = min(final_score, 10.0)
-            category = "Escalated Harassment / Danger"
-        elif hostile_count == 2:
-            # Rising Warning: exactly 2 hostile statements apply 1.5x multiplier (capped at 7.9)
-            final_score = min(current_score * 1.5, 7.9)
-            category = "Hostile Escalation"
-        else:
-            final_score = min(current_score, 10.0)
-
-        return round(final_score, 1), category
-
-context_engine = ContextEngine()
+# Connect fine-tuned TagalogBERT and tokenizer to the ContextEngine instance
+context_engine.bert_model = bert_model
+context_engine.tokenizer = tokenizer
 
 # =========================================================================
 # 5. WEBSOCKET & DEVICE FLEET ORCHESTRATION
@@ -1398,7 +1287,7 @@ async def handle_completed_audio(device_id: str, pcm_bytes: bytes, websocket: We
         if result.status == TranscriptionStatus.TRANSCRIBED and result.transcript:
             transcript = result.transcript
             print(f"[FINAL TRANSCRIPT] ({device_id} in {infer_dur:.2f}s, dur={dur_sec:.2f}s, peak={audio_peak:.2f}) -> \"{transcript}\"")
-            score, category = context_engine.evaluate(transcript)
+            score, category = context_engine.evaluate(transcript, device_id=device_id, transcription_result=result)
             is_danger = score >= 8.0
 
             # --- HARMFUL WORDS ONLY FILTER ---
