@@ -3,7 +3,10 @@ import 'package:flutter/material.dart';
 class DeviceStatus {
   final String id;
   final bool online;
+  final bool directOnline;
+  final bool relayOnline;
   final int battery;
+  final int batteryMv;
   final String state;
   final String network;
   final String lastSeen;
@@ -19,7 +22,10 @@ class DeviceStatus {
   const DeviceStatus({
     required this.id,
     required this.online,
+    this.directOnline = false,
+    this.relayOnline = false,
     required this.battery,
+    this.batteryMv = -1,
     required this.state,
     required this.network,
     required this.lastSeen,
@@ -53,10 +59,22 @@ class DeviceStatus {
       runtime = '${h}h ${m}m';
     }
 
+    final bool isOnline = json['online'] as bool? ?? false;
+    final String? connSource = json['connection_source'] as String?;
+    final bool bleProx = json['ble_proximity'] as bool? ?? false;
+    final bool direct = json['direct_online'] as bool? ??
+        (connSource == 'ESP32_DIRECT' || (isOnline && connSource != 'MOBILE_BLE_RELAY'));
+    final bool relay = json['relay_online'] as bool? ??
+        (connSource == 'MOBILE_BLE_RELAY' || bleProx);
+    final int mv = json['batteryMv'] as int? ?? json['battery_mv'] as int? ?? -1;
+
     return DeviceStatus(
       id: json['id'] as String? ?? 'PIN-001',
-      online: json['online'] as bool? ?? false,
+      online: isOnline || direct || relay,
+      directOnline: direct,
+      relayOnline: relay,
       battery: batt,
+      batteryMv: mv,
       state: json['state'] as String? ?? 'STANDBY',
       network: json['network'] as String? ?? 'Campus Wi-Fi',
       lastSeen: json['lastSeen'] as String? ?? 'Just now',
@@ -64,8 +82,8 @@ class DeviceStatus {
       rssi: json['rssi'] as int? ?? -62,
       estRuntime: json['estRuntime'] as String? ?? runtime,
       ipAddress: json['ip'] as String?,
-      connectionSource: json['connection_source'] as String?,
-      bleProximity: json['ble_proximity'] as bool? ?? false,
+      connectionSource: connSource ?? (direct ? 'ESP32_DIRECT' : (relay ? 'MOBILE_BLE_RELAY' : null)),
+      bleProximity: bleProx,
       relayedBy: json['relayed_by'] as String?,
       lastBleSeen: json['last_ble_seen'] as String?,
     );
@@ -74,7 +92,10 @@ class DeviceStatus {
   Map<String, dynamic> toJson() => {
     'id': id,
     'online': online,
+    'direct_online': directOnline,
+    'relay_online': relayOnline,
     'battery': battery,
+    'batteryMv': batteryMv,
     'state': state,
     'network': network,
     'lastSeen': lastSeen,
@@ -91,7 +112,10 @@ class DeviceStatus {
   DeviceStatus copyWith({
     String? id,
     bool? online,
+    bool? directOnline,
+    bool? relayOnline,
     int? battery,
+    int? batteryMv,
     String? state,
     String? network,
     String? lastSeen,
@@ -107,7 +131,10 @@ class DeviceStatus {
     return DeviceStatus(
       id: id ?? this.id,
       online: online ?? this.online,
+      directOnline: directOnline ?? this.directOnline,
+      relayOnline: relayOnline ?? this.relayOnline,
       battery: battery ?? this.battery,
+      batteryMv: batteryMv ?? this.batteryMv,
       state: state ?? this.state,
       network: network ?? this.network,
       lastSeen: lastSeen ?? this.lastSeen,
@@ -120,6 +147,13 @@ class DeviceStatus {
       relayedBy: relayedBy ?? this.relayedBy,
       lastBleSeen: lastBleSeen ?? this.lastBleSeen,
     );
+  }
+
+  String get connectionStatusLabel {
+    if (directOnline) return 'ONLINE — DIRECT';
+    if (relayOnline || (bleProximity && online)) return 'ONLINE — BLE RELAY';
+    if (online) return 'ONLINE';
+    return 'OFFLINE';
   }
 
   bool get isBatteryValid => battery >= 0;

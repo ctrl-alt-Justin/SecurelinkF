@@ -632,7 +632,10 @@ extension DashboardStatusX on DashboardStatus {
 class DeviceStatus {
   final String id;
   final bool online;
+  final bool directOnline;
+  final bool relayOnline;
   final int battery;
+  final int batteryMv;
   final String state;
   final String network;
   final String lastSeen;
@@ -647,7 +650,10 @@ class DeviceStatus {
   const DeviceStatus({
     required this.id,
     required this.online,
+    this.directOnline = false,
+    this.relayOnline = false,
     required this.battery,
+    this.batteryMv = -1,
     required this.state,
     required this.network,
     required this.lastSeen,
@@ -661,24 +667,49 @@ class DeviceStatus {
   });
 
   factory DeviceStatus.fromJson(Map<String, dynamic> json) {
-    final batt = json['battery'] ?? 100;
-    final hours = (batt / 100.0 * 7.5);
-    final h = hours.floor();
-    final m = ((hours - h) * 60).round();
-    final runtime = '${h}h ${m}m';
+    int batt = -1;
+    final rawBatt = json['battery'];
+    if (rawBatt is int) {
+      batt = rawBatt >= 0 ? rawBatt.clamp(0, 100) : -1;
+    } else if (rawBatt != null) {
+      final parsed = int.tryParse('$rawBatt');
+      if (parsed != null) {
+        batt = parsed >= 0 ? parsed.clamp(0, 100) : -1;
+      }
+    }
+
+    String runtime = '--';
+    if (batt >= 0) {
+      final hours = (batt / 100.0 * 7.5);
+      final h = hours.floor();
+      final m = ((hours - h) * 60).round();
+      runtime = '${h}h ${m}m';
+    }
+
+    final bool isOnline = json['online'] as bool? ?? false;
+    final String? connSource = json['connection_source'] as String?;
+    final bool bleProx = json['ble_proximity'] as bool? ?? false;
+    final bool direct = json['direct_online'] as bool? ??
+        (connSource == 'ESP32_DIRECT' || (isOnline && connSource != 'MOBILE_BLE_RELAY'));
+    final bool relay = json['relay_online'] as bool? ??
+        (connSource == 'MOBILE_BLE_RELAY' || bleProx);
+    final int mv = json['batteryMv'] as int? ?? json['battery_mv'] as int? ?? -1;
 
     return DeviceStatus(
       id: json['id'] ?? 'PIN-001',
-      online: json['online'] ?? false,
+      online: isOnline || direct || relay,
+      directOnline: direct,
+      relayOnline: relay,
       battery: batt,
+      batteryMv: mv,
       state: json['state'] ?? 'STANDBY',
       network: json['network'] ?? 'Campus Wi-Fi',
       lastSeen: json['lastSeen'] ?? 'Just now',
       cpuMhz: json['cpuMhz'] ?? 160,
       rssi: json['rssi'] ?? -62,
       estRuntime: json['estRuntime'] ?? runtime,
-      connectionSource: json['connection_source'] as String?,
-      bleProximity: json['ble_proximity'] as bool? ?? false,
+      connectionSource: connSource ?? (direct ? 'ESP32_DIRECT' : (relay ? 'MOBILE_BLE_RELAY' : null)),
+      bleProximity: bleProx,
       relayedBy: json['relayed_by'] as String?,
       lastBleSeen: json['last_ble_seen'] as String?,
     );
@@ -687,7 +718,10 @@ class DeviceStatus {
   DeviceStatus copyWith({
     String? id,
     bool? online,
+    bool? directOnline,
+    bool? relayOnline,
     int? battery,
+    int? batteryMv,
     String? state,
     String? network,
     String? lastSeen,
@@ -702,7 +736,10 @@ class DeviceStatus {
     return DeviceStatus(
       id: id ?? this.id,
       online: online ?? this.online,
+      directOnline: directOnline ?? this.directOnline,
+      relayOnline: relayOnline ?? this.relayOnline,
       battery: battery ?? this.battery,
+      batteryMv: batteryMv ?? this.batteryMv,
       state: state ?? this.state,
       network: network ?? this.network,
       lastSeen: lastSeen ?? this.lastSeen,
@@ -714,6 +751,14 @@ class DeviceStatus {
       relayedBy: relayedBy ?? this.relayedBy,
       lastBleSeen: lastBleSeen ?? this.lastBleSeen,
     );
+  }
+
+  String get connectionStatusLabel {
+    if (connectionSource == 'USB') return 'ONLINE — USB';
+    if (directOnline) return 'ONLINE — DIRECT';
+    if (relayOnline || (bleProximity && online)) return 'ONLINE — BLE RELAY';
+    if (online) return 'ONLINE';
+    return 'OFFLINE';
   }
 }
 
@@ -1173,7 +1218,7 @@ class _DashboardShellState extends State<DashboardShell> with WindowListener {
             final data = jsonDecode(message);
             final eventType = data['event_type'] ?? 'incident';
 
-            if (eventType == 'device_update') {
+            if (eventType == 'device_update' || eventType == 'pin_ble_relayed') {
               final dev = DeviceStatus.fromJson(data['device']);
               setState(() {
                 final idx = liveDevices.indexWhere((d) => d.id == dev.id);
@@ -3822,33 +3867,36 @@ class _NetworkHealth extends StatelessWidget {
     final activePin = devices.where((d) => d.online).firstOrNull ?? devices.firstOrNull;
     final isPinOnline = activePin != null && activePin.online;
 
-    // Real Wi-Fi Network Name from connected pin or gateway
+    // Real Network Name from connected pin or gateway
+    final bool isUsb = isPinOnline && activePin.connectionSource == 'USB';
     final wifiName = isPinOnline
-        ? (activePin.network.isNotEmpty ? activePin.network : 'Campus Wi-Fi')
+        ? (isUsb ? 'Direct USB Cable (CDC)' : (activePin.network.isNotEmpty ? activePin.network : 'Campus Wi-Fi'))
         : (isServerConnected ? 'Campus Wi-Fi (Standby)' : 'Disconnected');
     final wifiColor = isPinOnline
         ? const Color(0xFF57DDA0)
         : (isServerConnected ? const Color(0xFFFFC45D) : const Color(0xFFFF5E72));
 
-    // Real Transmission / RSSI Signal
+    // Real Transmission / Signal
     final transmission = isPinOnline
-        ? '${activePin.rssi} dBm (RSSI)'
+        ? (isUsb ? 'Native USB Serial (115200 baud)' : '${activePin.rssi} dBm (RSSI)')
         : (isServerConnected ? 'Gateway Active (Port 8080)' : 'Gateway Offline');
     final transmissionColor = isPinOnline
-        ? (activePin.rssi >= -68 ? const Color(0xFF57DDA0) : const Color(0xFFFFC45D))
+        ? const Color(0xFF57DDA0)
         : (isServerConnected ? const Color(0xFF57DDA0) : const Color(0xFFFF5E72));
 
     // Real Power & Battery Target
     final batteryInfo = activePin != null
-        ? '${activePin.battery}% • ${activePin.estRuntime}'
+        ? (activePin.battery >= 0 ? '${activePin.battery}% • ${activePin.estRuntime}' : '-- (Unknown)')
         : (isServerConnected ? 'Inference Engine Ready' : 'AI Server Offline');
     final batteryColor = activePin != null
-        ? (activePin.battery > 25 ? const Color(0xFF57DDA0) : const Color(0xFFFF5E72))
+        ? (activePin.battery < 0
+            ? Colors.white38
+            : (activePin.battery > 25 ? const Color(0xFF57DDA0) : const Color(0xFFFF5E72)))
         : (isServerConnected ? const Color(0xFF9B84FF) : const Color(0xFFFF5E72));
 
     return Column(
       children: [
-        _InfoRow(icon: Icons.wifi_rounded, label: 'Campus Wi-Fi', value: wifiName, color: wifiColor),
+        _InfoRow(icon: isUsb ? Icons.usb_rounded : Icons.wifi_rounded, label: isUsb ? 'USB Connection' : 'Campus Wi-Fi', value: wifiName, color: wifiColor),
         _InfoRow(icon: Icons.speed_rounded, label: 'Transmission', value: transmission, color: transmissionColor),
         _InfoRow(icon: Icons.battery_charging_full_rounded, label: 'Power Target', value: batteryInfo, color: batteryColor),
       ],
@@ -4377,7 +4425,17 @@ class _DeviceRow extends StatelessWidget {
 class _StatusPill extends StatelessWidget {
   final bool online;
   final String state;
-  const _StatusPill({required this.online, this.state = ''});
+  final String? connectionSource;
+  final bool bleRelay;
+  final String? statusLabel;
+
+  const _StatusPill({
+    required this.online,
+    this.state = '',
+    this.connectionSource,
+    this.bleRelay = false,
+    this.statusLabel,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -4391,16 +4449,50 @@ class _StatusPill extends StatelessWidget {
     
     if (isStreaming) {
       color = const Color(0xFF38BDF8); // Cyan
-      label = 'STREAMING AUDIO';
+      label = connectionSource == 'USB'
+          ? 'STREAMING (USB)'
+          : ((connectionSource == 'MOBILE_BLE_RELAY' || bleRelay) ? 'STREAMING (BLE RELAY)' : 'STREAMING AUDIO');
       icon = Icons.graphic_eq_rounded;
     } else if (isAnalyzing) {
       color = const Color(0xFFA78BFA); // Lavender
       label = 'ANALYZING SPEECH';
       icon = Icons.psychology_rounded;
+    } else if (statusLabel != null && statusLabel!.isNotEmpty) {
+      if (statusLabel == 'ONLINE — USB' || connectionSource == 'USB') {
+        color = const Color(0xFF55E2C0); // Vibrant Mint/Cyan
+        label = 'ONLINE — USB';
+        icon = Icons.usb_rounded;
+      } else if (statusLabel == 'ONLINE — DIRECT') {
+        color = const Color(0xFF54DCA0); // Emerald
+        label = 'ONLINE — DIRECT';
+        icon = Icons.wifi_rounded;
+      } else if (statusLabel == 'ONLINE — BLE RELAY') {
+        color = const Color(0xFF38BDF8); // Sky blue
+        label = 'ONLINE — BLE RELAY';
+        icon = Icons.bluetooth_connected_rounded;
+      } else if (online) {
+        color = const Color(0xFF54DCA0);
+        label = statusLabel!;
+        icon = Icons.security_rounded;
+      } else {
+        color = Colors.white38;
+        label = 'OFFLINE';
+        icon = Icons.power_settings_new_rounded;
+      }
     } else if (online) {
-      color = const Color(0xFF54DCA0); // Emerald
-      label = 'ARMED (STANDBY)';
-      icon = Icons.security_rounded;
+      if (connectionSource == 'USB') {
+        color = const Color(0xFF55E2C0);
+        label = 'ONLINE — USB';
+        icon = Icons.usb_rounded;
+      } else if (connectionSource == 'MOBILE_BLE_RELAY' || bleRelay) {
+        color = const Color(0xFF38BDF8);
+        label = 'ONLINE — BLE RELAY';
+        icon = Icons.bluetooth_connected_rounded;
+      } else {
+        color = const Color(0xFF54DCA0); // Emerald
+        label = 'ONLINE — DIRECT';
+        icon = Icons.security_rounded;
+      }
     } else {
       color = Colors.white38;
       label = 'OFFLINE';
@@ -5079,7 +5171,11 @@ class _DeviceCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final batteryColor = device.battery <= 20 ? const Color(0xFFFF5E72) : device.battery <= 35 ? const Color(0xFFFFC45D) : const Color(0xFF5BDC9F);
+    final batteryColor = device.battery < 0
+        ? Colors.white38
+        : (device.battery <= 20
+            ? const Color(0xFFFF5E72)
+            : (device.battery <= 35 ? const Color(0xFFFFC45D) : const Color(0xFF5BDC9F)));
     return _Glass(
       radius: 20,
       padding: const EdgeInsets.all(15),
@@ -5088,7 +5184,13 @@ class _DeviceCard extends StatelessWidget {
         children: [
           Row(
             children: [
-              _StatusPill(online: device.online, state: device.state),
+              _StatusPill(
+                online: device.online,
+                state: device.state,
+                connectionSource: device.connectionSource,
+                bleRelay: device.relayOnline || device.bleProximity,
+                statusLabel: device.connectionStatusLabel,
+              ),
               const SizedBox(width: 8),
               if (device.bleProximity) ...[
                 Container(
@@ -5161,9 +5263,12 @@ class _DeviceCard extends StatelessWidget {
               children: [
                 Row(
                   children: [
-                    Icon(Icons.battery_std_rounded, size: 13, color: batteryColor),
+                    Icon(device.battery < 0 ? Icons.battery_unknown_rounded : Icons.battery_std_rounded, size: 13, color: batteryColor),
                     const SizedBox(width: 4),
-                    Text('${device.battery}% (${device.estRuntime})', style: TextStyle(color: batteryColor, fontSize: 8.5, fontWeight: FontWeight.w700)),
+                    Text(
+                      device.battery >= 0 ? '${device.battery}% (${device.estRuntime})' : '-- (Unknown)',
+                      style: TextStyle(color: batteryColor, fontSize: 8.5, fontWeight: FontWeight.w700),
+                    ),
                     const Spacer(),
                     Text('200mAh LiPo', style: TextStyle(color: Colors.white.withOpacity(0.28), fontSize: 8)),
                   ],
@@ -5173,7 +5278,7 @@ class _DeviceCard extends StatelessWidget {
                   borderRadius: BorderRadius.circular(5),
                   child: LinearProgressIndicator(
                     minHeight: 3.5,
-                    value: device.battery / 100.0,
+                    value: device.battery >= 0 ? (device.battery / 100.0).clamp(0.0, 1.0) : 0.0,
                     backgroundColor: Colors.white.withOpacity(0.04),
                     valueColor: AlwaysStoppedAnimation<Color>(batteryColor),
                   ),

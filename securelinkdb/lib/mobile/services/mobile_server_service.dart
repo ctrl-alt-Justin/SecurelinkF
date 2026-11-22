@@ -1439,16 +1439,25 @@ class MobileServerService extends ChangeNotifier {
       runtimeStr = '${hours}h ${mins.toString().padLeft(2, '0')}m';
     }
 
+    final bool isDirect = existing?.directOnline ?? (existing?.online == true && existing?.connectionSource == 'ESP32_DIRECT');
+    final int mv = (batteryMv != null && batteryMv > 0)
+        ? batteryMv
+        : (existing != null && existing.batteryMv > 0 ? existing.batteryMv : -1);
+
     _devices[cleanId] = DeviceStatus(
       id: cleanId,
-      online: existing?.online ?? false, // Preserve direct Wi-Fi online status strictly
+      online: true, // Reachable and active right now via BLE link
+      directOnline: isDirect,
+      relayOnline: true,
       battery: bat,
+      batteryMv: mv,
       state: existing?.state ?? 'VAD ARMED',
-      network: existing?.network ?? 'BLE Audio Bridge',
-      lastSeen: existing?.lastSeen ?? 'Active over BLE',
+      network: isDirect ? (existing?.network ?? 'Campus Wi-Fi') : 'BLE Audio Bridge',
+      lastSeen: isDirect ? (existing?.lastSeen ?? 'Active') : 'Active over BLE',
       cpuMhz: existing?.cpuMhz ?? 160,
       rssi: rssi,
       estRuntime: runtimeStr,
+      connectionSource: isDirect ? 'ESP32_DIRECT' : 'MOBILE_BLE_RELAY',
       bleProximity: true,
       relayedBy: _mobileId,
       lastBleSeen: 'Active over BLE just now',
@@ -1533,8 +1542,13 @@ class MobileServerService extends ChangeNotifier {
   void reportBleDisconnected(String pinId) {
     final cleanId = pinId.trim().toUpperCase();
     if (_devices.containsKey(cleanId)) {
-      _devices[cleanId] = _devices[cleanId]!.copyWith(
+      final existing = _devices[cleanId]!;
+      final bool stillDirect = existing.directOnline;
+      _devices[cleanId] = existing.copyWith(
+        relayOnline: false,
         bleProximity: false,
+        online: stillDirect,
+        connectionSource: stillDirect ? 'ESP32_DIRECT' : null,
         lastBleSeen: 'BLE Disconnected',
       );
       notifyListeners();

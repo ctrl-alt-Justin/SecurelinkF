@@ -911,42 +911,39 @@ class TestPinRegistrationPromotion(unittest.IsolatedAsyncioTestCase):
         save_device_credentials(creds)
         registered_devices[registered_pin] = {
             "id": registered_pin,
-            "online": True,
-            "state": "VAD ARMED",
+            "online": False,
+            "state": "OFFLINE",
             "battery": -1,
             "ble_proximity": False
         }
 
-        # Emulate server-side ble_relay_presence logic
-        def handle_ble_relay(pin_id: str, mobile_id: str, batt: int, rssi: int):
-            if pin_id and (pin_id in registered_devices or pin_id in load_device_credentials()):
-                dev = registered_devices[pin_id]
-                dev["ble_proximity"] = True
-                dev["relayed_by"] = mobile_id
-                if not dev.get("online", False):
-                    dev["connection_source"] = "MOBILE_BLE_RELAY"
-                    dev["state"] = "STANDBY"
-                if batt >= 0:
-                    dev["battery"] = max(0, min(100, batt))
-                else:
-                    dev["battery"] = -1
-                return True
-            return False  # Rejected
-
         # 1. Unregistered pin attempted relay: MUST be rejected
-        accepted_unreg = handle_ble_relay(unregistered_pin, "Mobile-1", 85, -60)
-        self.assertFalse(accepted_unreg, "Unregistered pin must NOT be accepted via BLE relay")
-        self.assertNotIn(unregistered_pin, registered_devices)
+        now_ts = time.time()
+        self.assertNotIn(unregistered_pin, creds)
+        unreg_res = server.recalculate_pin_connection_state(unregistered_pin, now_ts)
+        self.assertFalse(unreg_res["online"])
+        self.assertEqual(unreg_res["state"], "UNREGISTERED")
 
-        # 2. Registered pin relay: accepted, updates battery and proximity, direct online preserved!
-        accepted_reg = handle_ble_relay(registered_pin, "Mobile-1", 72, -55)
-        self.assertTrue(accepted_reg)
-        self.assertTrue(registered_devices[registered_pin]["ble_proximity"])
-        self.assertEqual(registered_devices[registered_pin]["battery"], 72)
-        self.assertTrue(registered_devices[registered_pin]["online"], "Direct online status must be preserved!")
-        self.assertEqual(registered_devices[registered_pin]["state"], "VAD ARMED")
+        # 2. Registered pin relay: active BLE relay updates presence & battery, preserves direct Wi-Fi if online
+        server.active_ble_relays[registered_pin] = {
+            "Mobile-1": {
+                "timestamp": now_ts,
+                "rssi": -55,
+                "battery": 72,
+                "battery_mv": 3950,
+                "last_seen_str": "12:00:00"
+            }
+        }
+        reg_res = server.recalculate_pin_connection_state(registered_pin, now_ts)
+        self.assertTrue(reg_res["online"])
+        self.assertTrue(reg_res["ble_proximity"])
+        self.assertEqual(reg_res["battery"], 72)
+        self.assertEqual(reg_res["batteryMv"], 3950)
+        self.assertEqual(reg_res["connection_source"], "MOBILE_BLE_RELAY")
+        self.assertEqual(reg_res["state"], "STANDBY")
 
         # Cleanup
+        server.active_ble_relays.pop(registered_pin, None)
         creds.pop(registered_pin, None)
         save_device_credentials(creds)
         registered_devices.pop(registered_pin, None)
@@ -1145,6 +1142,303 @@ class TestPinRegistrationPromotion(unittest.IsolatedAsyncioTestCase):
 
         for code in diagnostic_codes:
             self.assertIn(code, service_code, f"MobileServerService must handle {code}")
+
+    def test_32_recalculate_pin_connection_state_priority_and_transitions(self):
+        """Test authoritative priority: Direct WS > BLE Relay, and seamless fallback when direct drops."""
+        pin_id = "PIN-TRANSIT-01"
+        creds = load_device_credentials()
+        creds[pin_id] = {
+            "token_hash": hash_device_token("tok_transit"),
+            "registered_at": "2026-11-23 00:00:00",
+            "fw_version": "2.1",
+            "mac": "11:22:33:44:55:66"
+        }
+        save_device_credentials(creds)
+        server.registered_devices[pin_id] = {
+            "id": pin_id,
+            "online": False,
+            "battery": -1,
+            "state": "OFFLINE",
+            "network": "Campus Wi-Fi",
+            "lastSeen": "Registered",
+            "paired": True
+        }
+
+        now_ts = time.time()
+
+        # State 1: Both offline
+        s1 = server.recalculate_pin_connection_state(pin_id, now_ts)
+        self.assertFalse(s1["online"])
+        self.assertFalse(s1["direct_online"])
+        self.assertFalse(s1["relay_online"])
+        self.assertIsNone(s1["connection_source"])
+
+        # State 2: Direct Wi-Fi connects
+        mock_ws = MagicMock()
+        server.pin_active_sockets[pin_id] = mock_ws
+        server.active_pins[mock_ws] = pin_id
+        s2 = server.recalculate_pin_connection_state(pin_id, now_ts)
+        self.assertTrue(s2["online"])
+        self.assertTrue(s2["direct_online"])
+        self.assertFalse(s2["relay_online"])
+        self.assertEqual(s2["connection_source"], "ESP32_DIRECT")
+
+        # State 3: BLE relay also arrives while direct is active
+        server.active_ble_relays[pin_id] = {
+            "Mobile-Teacher": {
+                "timestamp": now_ts,
+                "rssi": -50,
+                "battery": 88,
+                "battery_mv": 4100,
+                "last_seen_str": "00:01:00"
+            }
+        }
+        s3 = server.recalculate_pin_connection_state(pin_id, now_ts)
+        self.assertTrue(s3["online"])
+        self.assertTrue(s3["direct_online"])
+        self.assertTrue(s3["relay_online"])
+        self.assertTrue(s3["ble_proximity"])
+        self.assertEqual(s3["connection_source"], "ESP32_DIRECT", "Direct Wi-Fi MUST retain priority over BLE relay")
+
+        # State 4: Direct Wi-Fi drops! Seamless fallback to BLE Relay
+        server.pin_active_sockets.pop(pin_id, None)
+        server.active_pins.pop(mock_ws, None)
+        s4 = server.recalculate_pin_connection_state(pin_id, now_ts)
+        self.assertTrue(s4["online"], "Pin MUST remain ONLINE via BLE Relay when direct Wi-Fi drops!")
+        self.assertFalse(s4["direct_online"])
+        self.assertTrue(s4["relay_online"])
+        self.assertEqual(s4["connection_source"], "MOBILE_BLE_RELAY")
+        self.assertEqual(s4["battery"], 88)
+        self.assertEqual(s4["relayed_by"], "Mobile-Teacher")
+
+        # State 5: BLE Relay also disconnects
+        server.active_ble_relays.pop(pin_id, None)
+        s5 = server.recalculate_pin_connection_state(pin_id, now_ts)
+        self.assertFalse(s5["online"])
+        self.assertFalse(s5["relay_online"])
+        self.assertEqual(s5["state"], "OFFLINE")
+
+        # Cleanup
+        creds.pop(pin_id, None)
+        save_device_credentials(creds)
+        server.registered_devices.pop(pin_id, None)
+
+    def test_33_watchdog_preserves_active_ble_relay(self):
+        """Test that the pin liveness watchdog does NOT mark pin OFFLINE if active BLE relay exists."""
+        pin_id = "PIN-WATCHDOG-01"
+        creds = load_device_credentials()
+        creds[pin_id] = {
+            "token_hash": hash_device_token("tok_watchdog"),
+            "registered_at": "2026-11-23 00:00:00",
+            "fw_version": "2.1",
+            "mac": "22:33:44:55:66:77"
+        }
+        save_device_credentials(creds)
+        server.registered_devices[pin_id] = {
+            "id": pin_id,
+            "online": True,
+            "connection_source": "MOBILE_BLE_RELAY",
+            "battery": 65,
+            "state": "STANDBY",
+            "network": "BLE Audio Bridge",
+            "lastSeen": "Just now",
+            "paired": True
+        }
+
+        now_ts = time.time()
+        server.active_ble_relays[pin_id] = {
+            "Companion-1": {
+                "timestamp": now_ts,
+                "rssi": -65,
+                "battery": 65,
+                "battery_mv": 3800,
+                "last_seen_str": "00:02:00"
+            }
+        }
+
+        # Device has NO direct socket
+        self.assertNotIn(pin_id, server.pin_active_sockets)
+
+        # Run state recalculation (what watchdog does)
+        dev = server.recalculate_pin_connection_state(pin_id, now_ts)
+        self.assertTrue(dev["online"], "Watchdog recalculation MUST keep device ONLINE when BLE relay is active")
+        self.assertEqual(dev["connection_source"], "MOBILE_BLE_RELAY")
+        self.assertEqual(dev["battery"], 65)
+
+        # Cleanup
+        server.active_ble_relays.pop(pin_id, None)
+        creds.pop(pin_id, None)
+        save_device_credentials(creds)
+        server.registered_devices.pop(pin_id, None)
+
+    def test_34_ble_relay_timeout_pruning(self):
+        """Test that BLE relays older than BLE_RELAY_TIMEOUT_SEC (15s) are pruned and mark pin OFFLINE."""
+        pin_id = "PIN-PRUNE-01"
+        creds = load_device_credentials()
+        creds[pin_id] = {
+            "token_hash": hash_device_token("tok_prune"),
+            "registered_at": "2026-11-23 00:00:00",
+            "fw_version": "2.1",
+            "mac": "33:44:55:66:77:88"
+        }
+        save_device_credentials(creds)
+        server.registered_devices[pin_id] = {
+            "id": pin_id,
+            "online": True,
+            "connection_source": "MOBILE_BLE_RELAY",
+            "battery": 50,
+            "state": "STANDBY",
+            "paired": True
+        }
+
+        now_ts = 1000.0
+        # Relay recorded at timestamp 980.0 (20s old > 15s timeout)
+        server.active_ble_relays[pin_id] = {
+            "Companion-Stale": {
+                "timestamp": 980.0,
+                "rssi": -70,
+                "battery": 50,
+                "battery_mv": 3700,
+                "last_seen_str": "00:00:00"
+            }
+        }
+
+        dev = server.recalculate_pin_connection_state(pin_id, now_ts=now_ts)
+        self.assertFalse(dev["online"], "Pin MUST be marked OFFLINE when BLE relay exceeds 15s timeout")
+        self.assertFalse(dev["relay_online"])
+        self.assertIsNone(dev["connection_source"])
+        self.assertEqual(dev["state"], "OFFLINE")
+
+        # Cleanup
+        server.active_ble_relays.pop(pin_id, None)
+        creds.pop(pin_id, None)
+        save_device_credentials(creds)
+        server.registered_devices.pop(pin_id, None)
+
+    def test_35_multi_companion_relay_tracking(self):
+        """Test that multiple companion relays for the same pin do not clobber each other on partial disconnect."""
+        pin_id = "PIN-MULTI-01"
+        creds = load_device_credentials()
+        creds[pin_id] = {
+            "token_hash": hash_device_token("tok_multi"),
+            "registered_at": "2026-11-23 00:00:00",
+            "fw_version": "2.1",
+            "mac": "44:55:66:77:88:99"
+        }
+        save_device_credentials(creds)
+
+        now_ts = time.time()
+        # Two companions active
+        server.active_ble_relays[pin_id] = {
+            "Phone-Teacher": {
+                "timestamp": now_ts - 2.0,
+                "rssi": -60,
+                "battery": 90,
+                "battery_mv": 4150,
+                "last_seen_str": "00:03:00"
+            },
+            "Phone-Student": {
+                "timestamp": now_ts,
+                "rssi": -55,
+                "battery": 90,
+                "battery_mv": 4150,
+                "last_seen_str": "00:03:02"
+            }
+        }
+
+        dev = server.recalculate_pin_connection_state(pin_id, now_ts)
+        self.assertTrue(dev["online"])
+        self.assertEqual(dev["relayed_by"], "Phone-Student")
+
+        # Phone-Student disconnects: Phone-Teacher is still within 15s window
+        server.active_ble_relays[pin_id].pop("Phone-Student", None)
+        dev2 = server.recalculate_pin_connection_state(pin_id, now_ts)
+        self.assertTrue(dev2["online"], "Device MUST remain ONLINE as long as at least one companion is actively relaying")
+        self.assertEqual(dev2["relayed_by"], "Phone-Teacher")
+
+        # Phone-Teacher disconnects: now OFFLINE
+        server.active_ble_relays[pin_id].pop("Phone-Teacher", None)
+        dev3 = server.recalculate_pin_connection_state(pin_id, now_ts)
+        self.assertFalse(dev3["online"])
+
+        # Cleanup
+        server.active_ble_relays.pop(pin_id, None)
+        creds.pop(pin_id, None)
+        save_device_credentials(creds)
+        server.registered_devices.pop(pin_id, None)
+
+    def test_36_unknown_battery_sentinel_and_ui_clamping(self):
+        """Test unknown battery sentinel (-1): estRuntime is '--', clamped to >= 0.0 in UI, not marked critical."""
+        pin_id = "PIN-NOBATT-01"
+        creds = load_device_credentials()
+        creds[pin_id] = {
+            "token_hash": hash_device_token("tok_nobatt"),
+            "registered_at": "2026-11-23 00:00:00",
+            "fw_version": "2.1",
+            "mac": "55:66:77:88:99:AA"
+        }
+        save_device_credentials(creds)
+
+        now_ts = time.time()
+        server.active_ble_relays[pin_id] = {
+            "Phone-1": {
+                "timestamp": now_ts,
+                "rssi": -60,
+                "battery": -1,
+                "battery_mv": -1,
+                "last_seen_str": "00:04:00"
+            }
+        }
+
+        dev = server.recalculate_pin_connection_state(pin_id, now_ts)
+        self.assertEqual(dev["battery"], -1)
+        self.assertEqual(dev["batteryMv"], -1)
+        self.assertEqual(dev["estRuntime"], "--")
+
+        # Progress bar value formula: value = battery >= 0 ? (battery / 100.0).clamp(0.0, 1.0) : 0.0
+        val = (dev["battery"] / 100.0) if dev["battery"] >= 0 else 0.0
+        self.assertGreaterEqual(val, 0.0)
+        self.assertEqual(val, 0.0)
+
+        # Cleanup
+        server.active_ble_relays.pop(pin_id, None)
+        creds.pop(pin_id, None)
+        save_device_credentials(creds)
+        server.registered_devices.pop(pin_id, None)
+
+    def test_37_firmware_audio_routing_and_snapshot_authentication_guard(self):
+        """Test firmware enforces ws.isConnected() && serverAuthenticated before sending audio/snapshots over Wi-Fi."""
+        esp32_file = os.path.join(BASE_DIR, "..", "esp32code.txt")
+        with open(esp32_file, "r", encoding="utf-8") as f:
+            code = f.read()
+
+        # Audio stream Tier A must be gated on serverAuthenticated
+        self.assertIn("hasActiveStream && ws.isConnected() && serverAuthenticated", code)
+
+        # Snapshot Wi-Fi route must be gated on serverAuthenticated
+        self.assertIn("ws.isConnected() && serverAuthenticated", code)
+
+        # Direct heartbeat must be gated on serverAuthenticated
+        self.assertIn("ws.isConnected() && serverAuthenticated", code)
+
+        # BLE heartbeat must be active when bleClientConnected
+        self.assertIn("if (bleClientConnected)", code)
+
+        # readBatteryTelemetry single ADC read
+        self.assertIn("BatteryTelemetry readBatteryTelemetry()", code)
+        self.assertIn("analogReadMilliVolts(BATTERY_PIN)", code)
+
+    def test_38_exact_firmware_binary_identity(self):
+        """Test that esp32code.txt and bullying_pin_v2.ino are 100% byte-for-byte identical."""
+        f1_path = os.path.join(BASE_DIR, "..", "esp32code.txt")
+        f2_path = os.path.join("D:\\", "Downloads", "bullying_pin_v2", "bullying_pin_v2.ino")
+
+        with open(f1_path, "rb") as f1, open(f2_path, "rb") as f2:
+            bytes1 = f1.read()
+            bytes2 = f2.read()
+
+        self.assertEqual(len(bytes1), len(bytes2), "Files must have identical byte lengths")
+        self.assertEqual(bytes1, bytes2, "esp32code.txt and bullying_pin_v2.ino must be byte-for-byte identical")
 
 
 if __name__ == "__main__":

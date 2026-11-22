@@ -1,0 +1,440 @@
+"""
+SecureLink USB Serial Device Manager
+Direct USB connection between XIAO ESP32-S3 Sense and SecureLink Central System.
+Handles port discovery, handshake, authentication, heartbeats, and binary-framed audio streaming.
+"""
+
+import os
+import sys
+import time
+import json
+import logging
+import threading
+import queue
+from typing import Optional, Callable, Dict, Any, List
+import serial
+import serial.tools.list_ports
+
+logger = logging.getLogger("securelink.usb")
+if not logger.handlers:
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("[USB-SERIAL] %(message)s"))
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+
+# Protocol Constants
+SL_PREFIX = b"SL:"
+SL_MAGIC = "SL:"
+HEARTBEAT_TIMEOUT_SEC = 6.0
+DEFAULT_BAUD = 115200
+
+# ESP32-S3 USB CDC identifiers
+ESP32S3_VID_PID = ("303A", "1001")
+
+
+class USBDeviceManager:
+    def __init__(
+        self,
+        on_device_update: Optional[Callable[[Dict[str, Any]], None]] = None,
+        on_audio_complete: Optional[Callable[[str, bytes], None]] = None,
+        verify_credential_fn: Optional[Callable[[str], bool]] = None,
+    ):
+        self.on_device_update = on_device_update
+        self.on_audio_complete = on_audio_complete
+        self.verify_credential_fn = verify_credential_fn
+
+        self.serial_port: Optional[serial.Serial] = None
+        self.current_port_name: Optional[str] = None
+        self.running = False
+        self.thread: Optional[threading.Thread] = None
+        self.lock = threading.Lock()
+
+        # Connected Pin State
+        self.device_id: Optional[str] = None
+        self.mac_address: Optional[str] = None
+        self.fw_version: Optional[str] = None
+        self.is_authenticated = False
+        self.last_heartbeat_ts: float = 0.0
+        self.battery: int = -1
+        self.battery_mv: int = -1
+        self.vad_state: str = "OFFLINE"
+        self.audio_streaming: bool = False
+        self.audio_accumulator = bytearray()
+        self.current_stream_seq: int = 0
+
+        # Auto-reconnect configuration
+        self.auto_reconnect = True
+        self.auto_discovery = True
+
+    def scan_ports(self) -> List[Dict[str, str]]:
+        """Scans all available COM ports and flags likely XIAO ESP32-S3 Sense devices."""
+        results = []
+        for p in serial.tools.list_ports.comports():
+            is_esp32 = False
+            hwid_upper = (p.hwid or "").upper()
+            if "303A:1001" in hwid_upper:
+                is_esp32 = True
+            elif "ESP32" in (p.description or "").upper():
+                is_esp32 = True
+            elif "USB SERIAL" in (p.description or "").upper() and p.vid == 0x303A:
+                is_esp32 = True
+
+            results.append({
+                "port": p.device,
+                "description": p.description or "Serial Port",
+                "hwid": p.hwid or "",
+                "is_esp32": is_esp32,
+            })
+        return results
+
+    def find_pin_port(self) -> Optional[str]:
+        """Automatically discovers the port of a connected XIAO ESP32-S3."""
+        ports = self.scan_ports()
+        # 1. Prefer matching VID:PID 303A:1001
+        for p in ports:
+            if p["is_esp32"]:
+                return p["port"]
+        # 2. If exactly one USB Serial port exists, candidate it
+        usb_serial_ports = [p["port"] for p in ports if "USB SERIAL" in p["description"].upper()]
+        if len(usb_serial_ports) == 1:
+            return usb_serial_ports[0]
+        return None
+
+    def start(self, port: Optional[str] = None):
+        """Starts the USB reader thread."""
+        with self.lock:
+            if self.running:
+                return
+            self.running = True
+            self.current_port_name = port
+            self.thread = threading.Thread(target=self._run_loop, daemon=True, name="USBSerialReader")
+            self.thread.start()
+            logger.info("USB Device Manager worker thread started.")
+
+    def stop(self):
+        """Stops the USB reader thread and closes any open port."""
+        self.running = False
+        with self.lock:
+            self._close_serial()
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=1.5)
+        logger.info("USB Device Manager stopped.")
+
+    def _close_serial(self):
+        if self.serial_port:
+            try:
+                self.serial_port.close()
+            except Exception:
+                pass
+            self.serial_port = None
+        if self.is_authenticated or self.device_id:
+            self._mark_disconnected()
+
+    def _mark_disconnected(self):
+        old_id = self.device_id
+        self.is_authenticated = False
+        self.audio_streaming = False
+        self.audio_accumulator.clear()
+        dev_info = {
+            "id": old_id or "PIN-USB",
+            "online": False,
+            "connection_source": "USB",
+            "state": "OFFLINE",
+            "lastSeen": f"Disconnected at {time.strftime('%H:%M:%S')}",
+            "battery": -1,
+            "batteryMv": -1,
+            "paired": True,
+            "port": self.current_port_name or "None",
+        }
+        if self.on_device_update:
+            try:
+                self.on_device_update(dev_info)
+            except Exception as e:
+                logger.error(f"Error invoking on_device_update: {e}")
+        logger.info(f"USB Device '{old_id}' marked OFFLINE.")
+
+    def connect(self, port: str) -> bool:
+        """Manually requests connection to a specific port."""
+        with self.lock:
+            self._close_serial()
+            self.current_port_name = port
+        return True
+
+    def _open_port(self, port_name: str) -> bool:
+        try:
+            ser = serial.Serial(
+                port=port_name,
+                baudrate=DEFAULT_BAUD,
+                timeout=0.05,
+                write_timeout=0.5,
+            )
+            # Toggle DTR/RTS properly for ESP32 CDC
+            ser.dtr = True
+            ser.rts = False
+            self.serial_port = ser
+            self.current_port_name = port_name
+            self.last_heartbeat_ts = time.time()
+            logger.info(f"Opened USB serial port {port_name} at {DEFAULT_BAUD} baud.")
+            # Request identification handshake
+            self._send_text("SL:HANDSHAKE:REQ\n")
+            return True
+        except Exception as e:
+            logger.debug(f"Failed to open port {port_name}: {e}")
+            self.serial_port = None
+            return False
+
+    def _send_text(self, text: str):
+        if self.serial_port and self.serial_port.is_open:
+            try:
+                self.serial_port.write(text.encode("utf-8"))
+                self.serial_port.flush()
+            except Exception as e:
+                logger.error(f"Error sending text over USB: {e}")
+
+    def _run_loop(self):
+        """Background thread loop handling serial reads, framing, and watchdog."""
+        buffer = bytearray()
+
+        while self.running:
+            # 1. Manage port connection if not open
+            if not self.serial_port or not self.serial_port.is_open:
+                target_port = self.current_port_name or (self.find_pin_port() if self.auto_discovery else None)
+                if target_port:
+                    if not self._open_port(target_port):
+                        time.sleep(1.0)
+                        continue
+                else:
+                    time.sleep(1.0)
+                    continue
+
+            # 2. Check heartbeat watchdog if authenticated
+            if self.is_authenticated:
+                if (time.time() - self.last_heartbeat_ts) > HEARTBEAT_TIMEOUT_SEC:
+                    logger.warning(f"Heartbeat timed out for {self.device_id} (> {HEARTBEAT_TIMEOUT_SEC}s). Marking OFFLINE.")
+                    self._close_serial()
+                    continue
+
+            # 3. Read incoming bytes
+            try:
+                waiting = self.serial_port.in_waiting
+                chunk = self.serial_port.read(waiting if waiting > 0 else 64)
+                if chunk:
+                    buffer.extend(chunk)
+            except (serial.SerialException, OSError) as e:
+                logger.warning(f"Serial port {self.current_port_name} disconnected: {e}")
+                self._close_serial()
+                time.sleep(1.0)
+                continue
+
+            # 4. Parse framed protocol messages from buffer
+            while len(buffer) > 0:
+                # Find start prefix "SL:"
+                idx = buffer.find(SL_PREFIX)
+                if idx < 0:
+                    # Keep at most last 2 bytes in case "SL:" was partially read
+                    buffer = buffer[-2:] if len(buffer) >= 2 else buffer
+                    break
+                if idx > 0:
+                    # Discard garbage before "SL:"
+                    del buffer[:idx]
+
+                # Look for line ending marking end of command header
+                newline_idx = buffer.find(b"\n")
+                if newline_idx < 0:
+                    # Incomplete header, wait for more data (unless buffer exceeds 2KB)
+                    if len(buffer) > 2048:
+                        buffer.clear()
+                    break
+
+                header_bytes = bytes(buffer[:newline_idx]).strip()
+                header_str = header_bytes.decode("utf-8", errors="replace")
+
+                # Check if this is a binary audio frame header: SL:AUDIO:<len>:<seq>
+                if header_str.startswith("SL:AUDIO:"):
+                    parts = header_str.split(":")
+                    if len(parts) >= 3:
+                        try:
+                            payload_len = int(parts[2])
+                            seq_num = int(parts[3]) if len(parts) >= 4 else 0
+                        except ValueError:
+                            payload_len = -1
+
+                        if payload_len > 0:
+                            total_needed = newline_idx + 1 + payload_len
+                            if len(buffer) < total_needed:
+                                # Incomplete binary chunk; wait for remaining bytes
+                                break
+
+                            # Extract binary PCM data
+                            raw_audio = bytes(buffer[newline_idx + 1 : total_needed])
+                            del buffer[:total_needed]
+                            self._handle_audio_chunk(seq_num, raw_audio)
+                            continue
+
+                # Normal line-delimited message: consume header line
+                del buffer[: newline_idx + 1]
+                self._handle_command(header_str)
+
+            time.sleep(0.005)
+
+    def _handle_command(self, cmd_str: str):
+        """Processes line-delimited command messages from ESP32."""
+        parts = cmd_str.split(":")
+        if len(parts) < 2 or parts[0] != "SL":
+            return
+
+        cmd = parts[1].strip()
+
+        # 1. Identification / Handshake: SL:IDENT:<dev_id>:<mac>:<fw_ver>
+        if cmd == "IDENT":
+            dev_id = parts[2].strip().upper() if len(parts) >= 3 else "PIN-001"
+            if len(parts) > 4:
+                # MAC address contains colons (e.g. E8:F6:0A:8C:F3:60)
+                fw = parts[-1].strip()
+                mac = ":".join(parts[3:-1]).strip()
+            elif len(parts) == 4:
+                mac = parts[3].strip()
+                fw = "2.1"
+            else:
+                mac = ""
+                fw = "2.1"
+
+            logger.info(f"Received identification from pin '{dev_id}' (MAC: {mac}, FW: {fw}).")
+            self.device_id = dev_id
+            self.mac_address = mac
+            self.fw_version = fw
+
+            # Verify authorization against credentials
+            is_valid = True
+            if self.verify_credential_fn:
+                try:
+                    is_valid = self.verify_credential_fn(dev_id)
+                except Exception as e:
+                    logger.error(f"Credential check failed: {e}")
+                    is_valid = False
+
+            if is_valid:
+                self.is_authenticated = True
+                self.last_heartbeat_ts = time.time()
+                self._send_text("SL:AUTH:OK\n")
+                logger.info(f"Pin '{dev_id}' successfully authenticated over USB.")
+                self._emit_device_update(state="VAD ARMED")
+            else:
+                self.is_authenticated = False
+                self._send_text("SL:AUTH:ERR:UNAUTHORIZED\n")
+                logger.warning(f"Pin '{dev_id}' unauthorized. Authentication rejected.")
+
+        # 2. Heartbeat Ping: SL:PING:<batt_pct>:<batt_mv>:<vad_state>
+        elif cmd == "PING":
+            if not self.is_authenticated:
+                # Prompt pin to re-authenticate
+                self._send_text("SL:HANDSHAKE:REQ\n")
+                return
+
+            self.last_heartbeat_ts = time.time()
+            if len(parts) >= 3:
+                try:
+                    self.battery = int(parts[2])
+                except ValueError:
+                    self.battery = -1
+            if len(parts) >= 4:
+                try:
+                    self.battery_mv = int(parts[3])
+                except ValueError:
+                    self.battery_mv = -1
+            if len(parts) >= 5:
+                self.vad_state = parts[4].strip()
+
+            self._send_text("SL:PONG\n")
+            if not self.audio_streaming:
+                self._emit_device_update(state=self.vad_state or "VAD ARMED")
+
+        # 3. Audio Stream Start: SL:STREAM_START:<seq>
+        elif cmd in ("STREAM_START", "AUDIO_START"):
+            seq = int(parts[2]) if len(parts) >= 3 else 0
+            self.current_stream_seq = seq
+            self.audio_streaming = True
+            self.audio_accumulator.clear()
+            logger.info(f"Audio stream #{seq} started over USB from '{self.device_id}'.")
+            self._emit_device_update(state="STREAMING AUDIO (USB)")
+
+        # 4. Audio Stream End: SL:STREAM_END:<seq>:<total_bytes>
+        elif cmd in ("STREAM_END", "AUDIO_END"):
+            seq = int(parts[2]) if len(parts) >= 3 else 0
+            logger.info(f"Audio stream #{seq} finished over USB. Accumulated {len(self.audio_accumulator)} bytes.")
+            self.audio_streaming = False
+            pcm_data = bytes(self.audio_accumulator)
+            self.audio_accumulator.clear()
+
+            self._emit_device_update(state="ANALYZING SPEECH")
+
+            if self.on_audio_complete and self.device_id and len(pcm_data) >= 3200:
+                try:
+                    self.on_audio_complete(self.device_id, pcm_data)
+                except Exception as e:
+                    logger.error(f"Error invoking on_audio_complete: {e}")
+
+            # Return state to VAD ARMED
+            self._emit_device_update(state="VAD ARMED")
+
+        # 5. Diagnostic Log: SL:LOG:<message>
+        elif cmd == "LOG":
+            msg = ":".join(parts[2:])
+            logger.debug(f"[PIN-FW] {msg}")
+
+    def _handle_audio_chunk(self, seq: int, raw_bytes: bytes):
+        """Appends verified binary PCM chunk to stream accumulator."""
+        self.last_heartbeat_ts = time.time()
+        self.audio_accumulator.extend(raw_bytes)
+        if not self.audio_streaming:
+            self.audio_streaming = True
+            self._emit_device_update(state="STREAMING AUDIO (USB)")
+
+    def _emit_device_update(self, state: str = "VAD ARMED"):
+        """Emits unified device status dict to callback for dashboard and backend."""
+        now_str = time.strftime("%H:%M:%S")
+        runtime_str = "--"
+        if self.battery >= 0:
+            rem_mins = int((self.battery / 100.0) * 315)
+            runtime_str = f"{rem_mins // 60}h {rem_mins % 60:02d}m"
+
+        dev_dict = {
+            "id": self.device_id or "PIN-001",
+            "online": self.is_authenticated,
+            "direct_online": self.is_authenticated,
+            "relay_online": False,
+            "connection_source": "USB",
+            "state": state,
+            "network": f"USB CDC ({self.current_port_name or 'COM'})",
+            "lastSeen": f"Active via USB at {now_str}",
+            "cpuMhz": 160,
+            "rssi": -30,  # Direct USB cable is perfect link quality
+            "estRuntime": runtime_str,
+            "battery": self.battery,
+            "batteryMv": self.battery_mv,
+            "paired": True,
+            "port": self.current_port_name,
+            "fwVersion": self.fw_version or "2.1",
+            "mac": self.mac_address or "",
+        }
+
+        if self.on_device_update:
+            try:
+                self.on_device_update(dev_dict)
+            except Exception as e:
+                logger.error(f"Error in on_device_update callback: {e}")
+
+    def get_status(self) -> Dict[str, Any]:
+        """Returns live diagnostic summary of USB subsystem."""
+        return {
+            "status": "connected" if (self.serial_port and self.serial_port.is_open and self.is_authenticated) else "disconnected",
+            "port": self.current_port_name,
+            "device_id": self.device_id,
+            "is_authenticated": self.is_authenticated,
+            "audio_streaming": self.audio_streaming,
+            "accumulated_bytes": len(self.audio_accumulator),
+            "battery": self.battery,
+            "battery_mv": self.battery_mv,
+            "vad_state": self.vad_state,
+            "available_ports": self.scan_ports(),
+        }

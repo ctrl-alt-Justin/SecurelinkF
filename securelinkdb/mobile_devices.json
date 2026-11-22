@@ -6,10 +6,11 @@
     "role": "Admin",
     "token_hash": "49041634a6177e4664c164ee6236e747d9623a4f2ed94f26c2b160f9753f6586",
     "paired_at": "2026-11-22 03:53:16",
-    "revoked": false,
+    "revoked": true,
     "last_seen": "Just paired",
     "connection_type": "local",
-    "paired_ip": "127.0.0.1"
+    "paired_ip": "127.0.0.1",
+    "revoked_at": "2026-11-23 01:51:12"
   },
   "MOBILE-REVOKE-ME": {
     "device_id": "MOBILE-REVOKE-ME",
@@ -41,10 +42,10 @@
     "device_name": "Mobile Companion (B-2070)",
     "user_name": "Teacher / Student",
     "role": "Admin",
-    "token_hash": "0ba32dcc1b8d0ccd552276d79beea72ec6b14e22e93ae1cdda7116b006b30487",
-    "paired_at": "2026-11-22 20:12:03",
+    "token_hash": "876d46fac929e185ff61c6ae2ef2dacda108abef8f2ddede60b794209b6bd1a3",
+    "paired_at": "2026-11-23 01:52:10",
     "revoked": false,
-    "last_seen": "2026-11-23 00:59:33",
+    "last_seen": "2026-11-23 01:59:13",
     "connection_type": "remote",
     "paired_ip": "136.158.25.176"
   }

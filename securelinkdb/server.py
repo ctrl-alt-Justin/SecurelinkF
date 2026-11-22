@@ -338,6 +338,181 @@ active_mobile_clients: Dict[WebSocket, dict] = {}
 relayed_audio_accumulators: Dict[str, bytearray] = {}
 recent_incidents: collections.deque = collections.deque(maxlen=50)
 
+# --- USB SERIAL DEVICE MANAGER (DIRECT HARDWARE PIPELINE) ---
+from usb_manager import USBDeviceManager
+
+def _on_usb_device_update(dev_dict: dict):
+    dev_id = dev_dict.get("id")
+    if dev_id:
+        registered_devices[dev_id] = dev_dict
+        try:
+            loop = asyncio.get_running_loop()
+            asyncio.run_coroutine_threadsafe(
+                broadcast_to_clients({"event_type": "device_update", "device": dev_dict}),
+                loop
+            )
+        except RuntimeError:
+            pass
+
+def _on_usb_audio_complete(device_id: str, pcm_bytes: bytes):
+    try:
+        loop = asyncio.get_running_loop()
+        asyncio.run_coroutine_threadsafe(
+            handle_completed_audio(device_id, pcm_bytes, websocket=None, source="USB"),
+            loop
+        )
+    except RuntimeError:
+        pass
+
+def _verify_usb_credential(device_id: str) -> bool:
+    creds = load_device_credentials()
+    if device_id in creds:
+        return True
+    if device_id in registered_devices or device_id.startswith("PIN-"):
+        creds[device_id] = {
+            "token_hash": "usb_direct_authorized",
+            "registered_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "fw_version": "2.1",
+            "mac": "",
+            "connection_source": "USB"
+        }
+        save_device_credentials(creds)
+        return True
+    return False
+
+usb_mgr = USBDeviceManager(
+    on_device_update=_on_usb_device_update,
+    on_audio_complete=_on_usb_audio_complete,
+    verify_credential_fn=_verify_usb_credential,
+)
+
+# --- PIN CONNECTION STATE & BLE RELAY TRACKING ---
+BLE_RELAY_TIMEOUT_SEC = 15.0
+active_ble_relays: Dict[str, Dict[str, dict]] = {}  # pin_id -> {mobile_id: {timestamp, rssi, battery, battery_mv, last_seen_str}}
+telemetry_diagnostic_counters = {
+    "ble_relay_presence_received": 0,
+    "ble_relay_disconnect_received": 0,
+    "direct_pings_received": 0,
+    "device_updates_broadcast": 0,
+    "pin_ble_relayed_broadcast": 0,
+}
+
+def recalculate_pin_connection_state(pin_id: str, now_ts: Optional[float] = None) -> dict:
+    """
+    Centralized, authoritative connection state machine.
+    USB Direct takes supreme priority, followed by Direct WebSocket, then BLE Relay.
+    """
+    if now_ts is None:
+        now_ts = time.time()
+    pin_id = pin_id.strip().upper()
+    if pin_id not in registered_devices:
+        creds = load_device_credentials()
+        if pin_id in creds:
+            registered_devices[pin_id] = {
+                "id": pin_id,
+                "online": False,
+                "direct_online": False,
+                "relay_online": False,
+                "battery": -1,
+                "batteryMv": -1,
+                "state": "OFFLINE",
+                "network": "USB Serial",
+                "lastSeen": creds[pin_id].get("registered_at", "Registered"),
+                "cpuMhz": 160,
+                "rssi": -70,
+                "estRuntime": "--",
+                "paired": True,
+            }
+        else:
+            return {
+                "id": pin_id,
+                "online": False,
+                "direct_online": False,
+                "relay_online": False,
+                "state": "UNREGISTERED",
+                "battery": -1,
+                "batteryMv": -1,
+                "estRuntime": "--",
+                "paired": False,
+            }
+
+    dev = registered_devices[pin_id]
+
+    # 0. Supreme Priority: Active Authenticated USB Connection
+    usb_online = usb_mgr.is_authenticated and (usb_mgr.device_id == pin_id)
+    if usb_online:
+        dev["online"] = True
+        dev["direct_online"] = True
+        dev["relay_online"] = False
+        dev["connection_source"] = "USB"
+        dev["ble_proximity"] = False
+        dev["port"] = usb_mgr.current_port_name
+        dev["battery"] = usb_mgr.battery
+        dev["batteryMv"] = usb_mgr.battery_mv
+        if usb_mgr.audio_streaming:
+            dev["state"] = "STREAMING AUDIO (USB)"
+        elif dev.get("state") in ("OFFLINE", None, "STANDBY"):
+            dev["state"] = usb_mgr.vad_state or "VAD ARMED"
+        return dev
+
+    # 1. Direct WebSocket presence
+    direct_online = (pin_id in pin_active_sockets) or any(d_id == pin_id for d_id in active_pins.values())
+
+    # 2. Prune and check active BLE relays
+    pin_relays = active_ble_relays.setdefault(pin_id, {})
+    expired_mobiles = [mid for mid, rinfo in pin_relays.items() if (now_ts - rinfo.get("timestamp", 0)) > BLE_RELAY_TIMEOUT_SEC]
+    for mid in expired_mobiles:
+        pin_relays.pop(mid, None)
+
+    relay_online = len(pin_relays) > 0
+
+    dev["direct_online"] = direct_online
+    dev["relay_online"] = relay_online
+
+    if direct_online:
+        dev["online"] = True
+        dev["connection_source"] = "ESP32_DIRECT"
+        dev["ble_proximity"] = relay_online
+        if relay_online:
+            latest_mid = max(pin_relays.keys(), key=lambda m: pin_relays[m].get("timestamp", 0))
+            dev["relayed_by"] = latest_mid
+        if dev.get("state") in ("OFFLINE", None):
+            dev["state"] = "VAD ARMED"
+    elif relay_online:
+        dev["online"] = True
+        dev["connection_source"] = "MOBILE_BLE_RELAY"
+        dev["ble_proximity"] = True
+        latest_mid = max(pin_relays.keys(), key=lambda m: pin_relays[m].get("timestamp", 0))
+        latest_relay = pin_relays[latest_mid]
+        dev["relayed_by"] = latest_mid
+        dev["last_ble_seen"] = latest_relay.get("last_seen_str", datetime.now().strftime("%H:%M:%S"))
+        if dev.get("state") in ("OFFLINE", None):
+            dev["state"] = "STANDBY"
+        # Reflect telemetry from latest relay
+        if "battery" in latest_relay and latest_relay["battery"] is not None:
+            raw_b = int(latest_relay["battery"])
+            if raw_b >= 0:
+                dev["battery"] = max(0, min(100, raw_b))
+                rem_mins = int((dev["battery"] / 100.0) * 315)
+                dev["estRuntime"] = f"{rem_mins // 60}h {rem_mins % 60:02d}m"
+            else:
+                dev["battery"] = -1
+                dev["estRuntime"] = "--"
+        if "battery_mv" in latest_relay and latest_relay["battery_mv"] is not None:
+            raw_mv = int(latest_relay["battery_mv"])
+            dev["batteryMv"] = raw_mv if raw_mv >= 2500 else -1
+        if "rssi" in latest_relay and latest_relay["rssi"] is not None:
+            dev["rssi"] = int(latest_relay["rssi"])
+    else:
+        dev["online"] = False
+        dev["connection_source"] = None
+        dev["ble_proximity"] = False
+        dev["relayed_by"] = None
+        if dev.get("state") not in ("OFFLINE", "UNREGISTERED"):
+            dev["state"] = "OFFLINE"
+
+    return dev
+
 async def _on_tunnel_url_changed(new_url: Optional[str]):
     global current_cloud_tunnel_url
     current_cloud_tunnel_url = new_url
@@ -367,6 +542,12 @@ if os.path.exists(TUNNEL_CONFIG_FILE):
         pass
 
 async def broadcast_to_clients(payload: dict):
+    ev_type = payload.get("event_type")
+    if ev_type == "device_update":
+        telemetry_diagnostic_counters["device_updates_broadcast"] += 1
+    elif ev_type == "pin_ble_relayed":
+        telemetry_diagnostic_counters["pin_ble_relayed_broadcast"] += 1
+
     message = json.dumps(payload)
     # 1. UI Clients (Desktop Dashboard)
     dead_ui = set()
@@ -464,17 +645,34 @@ async def get_network_info():
         "harmful_words_only": harmful_words_only,
     }
 
+@app.get("/api/usb/status")
+async def get_usb_status():
+    return {"status": "success", "usb": usb_mgr.get_status()}
+
+@app.get("/api/usb/ports")
+async def get_usb_ports():
+    return {"status": "success", "ports": usb_mgr.scan_ports()}
+
+@app.post("/api/usb/connect")
+async def connect_usb_port(payload: dict):
+    port = payload.get("port", "").strip()
+    if not port:
+        return {"status": "error", "message": "No port provided"}
+    ok = usb_mgr.connect(port)
+    return {"status": "success" if ok else "error", "port": port}
+
+@app.post("/api/usb/disconnect")
+async def disconnect_usb_port():
+    usb_mgr.stop()
+    return {"status": "success", "message": "USB disconnected"}
+
 @app.get("/api/devices")
 async def get_devices():
     """Returns all currently registered and active smart pins on the network."""
     devices_list = []
-    for dev_id, dev in registered_devices.items():
-        is_active = any(d_id == dev_id for d_id in active_pins.values())
-        dev_copy = dict(dev)
-        dev_copy["online"] = is_active
-        if not is_active and dev_copy.get("state") != "OFFLINE":
-            dev_copy["state"] = "OFFLINE"
-        devices_list.append(dev_copy)
+    for dev_id in list(registered_devices.keys()):
+        dev = recalculate_pin_connection_state(dev_id)
+        devices_list.append(dict(dev))
     return {
         "status": "success",
         "devices": devices_list,
@@ -981,12 +1179,9 @@ async def ui_websocket_endpoint(websocket: WebSocket):
         "timestamp": datetime.now().strftime("%H:%M:%S")
     }))
 
-    # Send current device states on dashboard connect (mark devices without active socket as OFFLINE)
-    for dev_id, dev in registered_devices.items():
-        is_active = any(d_id == dev_id for d_id in active_pins.values())
-        if not is_active:
-            dev["online"] = False
-            dev["state"] = "OFFLINE"
+    # Send current device states on dashboard connect (authoritative state recalculation)
+    for dev_id in list(registered_devices.keys()):
+        dev = recalculate_pin_connection_state(dev_id)
         await websocket.send_text(json.dumps({"event_type": "device_update", "device": dev}))
         
     # Send saved checkpoints on connect
@@ -1353,17 +1548,22 @@ async def register_pin_api(payload: dict):
 
 @app.get("/api/devices/paired")
 async def get_paired_devices_api():
-    """Lists all cryptographically paired devices."""
+    """Lists all cryptographically paired devices with authoritative online state."""
     creds = load_device_credentials()
     result = []
     for dev_id, info in creds.items():
-        is_active = any(d_id == dev_id for d_id in active_pins.values())
+        dev = recalculate_pin_connection_state(dev_id)
         result.append({
             "device_id": dev_id,
             "mac": info.get("mac", ""),
             "fw_version": info.get("fw_version", ""),
             "registered_at": info.get("registered_at", ""),
-            "online": is_active
+            "online": dev.get("online", False),
+            "direct_online": dev.get("direct_online", False),
+            "relay_online": dev.get("relay_online", False),
+            "connection_source": dev.get("connection_source"),
+            "battery": dev.get("battery", -1),
+            "battery_mv": dev.get("batteryMv", -1),
         })
     return {"status": "success", "count": len(result), "devices": result}
 
@@ -1376,28 +1576,65 @@ async def get_pin_status(device_id: str):
     clean_id = device_id.strip().upper()
     creds = load_device_credentials()
     is_registered = clean_id in creds
-    dev = registered_devices.get(clean_id)
-    is_active = (clean_id in pin_active_sockets) or any(d_id == clean_id for d_id in active_pins.values())
-    is_paired = bool(is_registered or (dev and dev.get("paired", False)))
-
-    state_str = "OFFLINE"
-    if is_active:
-        state_str = dev.get("state", "ONLINE") if dev else "ONLINE"
-    elif is_paired:
-        state_str = "OFFLINE"
-    else:
-        state_str = "UNREGISTERED"
+    dev = recalculate_pin_connection_state(clean_id)
+    is_paired = bool(is_registered or dev.get("paired", False))
 
     return {
         "status": "success",
         "device_id": clean_id,
         "registered": is_registered,
         "paired": is_paired,
-        "online": is_active,
-        "state": state_str,
-        "battery": dev.get("battery", -1) if dev else -1,
-        "rssi": dev.get("rssi", -60) if dev else None,
-        "last_seen": dev.get("lastSeen", "") if dev else "",
+        "online": dev.get("online", False),
+        "direct_online": dev.get("direct_online", False),
+        "relay_online": dev.get("relay_online", False),
+        "connection_source": dev.get("connection_source"),
+        "state": dev.get("state", "OFFLINE" if is_paired else "UNREGISTERED"),
+        "battery": dev.get("battery", -1),
+        "battery_mv": dev.get("batteryMv", -1),
+        "rssi": dev.get("rssi", -60),
+        "last_seen": dev.get("lastSeen", ""),
+        "last_ble_seen": dev.get("last_ble_seen"),
+        "relayed_by": dev.get("relayed_by"),
+    }
+
+@app.get("/api/pin/diagnostics/{device_id}")
+async def get_pin_diagnostics(device_id: str):
+    """Detailed diagnostic view of a specific pin's direct and BLE relay connectivity."""
+    clean_id = device_id.strip().upper()
+    dev = recalculate_pin_connection_state(clean_id)
+    return {
+        "status": "success",
+        "device_id": clean_id,
+        "direct_online": dev.get("direct_online", False),
+        "relay_online": dev.get("relay_online", False),
+        "online": dev.get("online", False),
+        "connection_source": dev.get("connection_source"),
+        "state": dev.get("state"),
+        "battery": dev.get("battery", -1),
+        "battery_mv": dev.get("batteryMv", -1),
+        "rssi": dev.get("rssi", -60),
+        "relayed_by": dev.get("relayed_by"),
+        "active_relays": list(active_ble_relays.get(clean_id, {}).keys()),
+        "counters": telemetry_diagnostic_counters,
+    }
+
+@app.get("/api/diagnostics")
+async def get_system_diagnostics():
+    """Global system diagnostic summary including tunnel, active sockets, and BLE relays."""
+    return {
+        "status": "success",
+        "active_direct_pins": list(pin_active_sockets.keys()),
+        "active_ble_relays": {p: list(relays.keys()) for p, relays in active_ble_relays.items() if relays},
+        "active_mobile_clients": [
+            {"device_id": info.get("device_id"), "role": info.get("role"), "type": info.get("connection_type")}
+            for info in active_mobile_clients.values()
+        ],
+        "counters": telemetry_diagnostic_counters,
+        "tunnel": {
+            "url": get_active_tunnel_url(),
+            "state": tunnel_mgr.state,
+        },
+        "timestamp": datetime.now().strftime("%H:%M:%S"),
     }
 
 # =========================================================================
@@ -1610,7 +1847,7 @@ async def mobile_websocket_endpoint(websocket: WebSocket):
         "server_ip": get_primary_ip(),
         "server_port": 8080,
         "harmful_words_only": harmful_words_only,
-        "devices": list(registered_devices.values()),
+        "devices": [recalculate_pin_connection_state(p) for p in list(registered_devices.keys())],
         "checkpoints": load_checkpoints(),
         "recent_incidents": list(recent_incidents),
         "timestamp": datetime.now().strftime("%H:%M:%S")
@@ -1650,6 +1887,7 @@ async def mobile_websocket_endpoint(websocket: WebSocket):
 
                 # 1. BLE Relay: Presence and telemetry from nearby Smart Pins
                 if mtype == "ble_relay_presence":
+                    telemetry_diagnostic_counters["ble_relay_presence_received"] += 1
                     pin_id = str(msg.get("pin_id", "")).strip().upper()
                     if pin_id:
                         if pin_id not in registered_devices:
@@ -1658,7 +1896,10 @@ async def mobile_websocket_endpoint(websocket: WebSocket):
                                 registered_devices[pin_id] = {
                                     "id": pin_id,
                                     "online": False,
+                                    "direct_online": False,
+                                    "relay_online": False,
                                     "battery": -1,
+                                    "batteryMv": -1,
                                     "state": "OFFLINE",
                                     "network": "Campus Wi-Fi",
                                     "lastSeen": creds[pin_id].get("registered_at", "Registered"),
@@ -1669,51 +1910,54 @@ async def mobile_websocket_endpoint(websocket: WebSocket):
                                 }
 
                         if pin_id in registered_devices:
-                            dev_record = registered_devices[pin_id]
-                            dev_record["ble_proximity"] = True
-                            dev_record["relayed_by"] = device_id
-                            dev_record["last_ble_seen"] = datetime.now().strftime("%H:%M:%S")
+                            now_ts = time.time()
+                            now_str = datetime.now().strftime("%H:%M:%S")
 
-                            # If device is not directly connected over Wi-Fi, mark connection source as BLE relay
-                            if not dev_record.get("online", False):
-                                dev_record["connection_source"] = "MOBILE_BLE_RELAY"
-                                if dev_record.get("state") in ("OFFLINE", "STANDBY"):
-                                    dev_record["state"] = "STANDBY"
+                            raw_b = msg.get("battery")
+                            raw_b_int = int(raw_b) if raw_b is not None else None
+                            raw_mv = msg.get("battery_mv")
+                            raw_mv_int = int(raw_mv) if raw_mv is not None else None
+                            raw_rssi = msg.get("rssi")
+                            raw_rssi_int = int(raw_rssi) if raw_rssi is not None else -60
 
-                            if "battery" in msg:
-                                raw_b = int(msg["battery"])
-                                if raw_b >= 0:
-                                    dev_record["battery"] = max(0, min(100, raw_b))
-                                    rem_mins = int((dev_record["battery"] / 100.0) * 315)
-                                    dev_record["estRuntime"] = f"{rem_mins // 60}h {rem_mins % 60:02d}m"
-                                else:
-                                    dev_record["battery"] = -1
-                                    dev_record["estRuntime"] = "--"
-                            if "battery_mv" in msg:
-                                raw_mv = int(msg["battery_mv"])
-                                dev_record["batteryMv"] = raw_mv if raw_mv >= 2500 else -1
-                            if "rssi" in msg:
-                                dev_record["rssi"] = int(msg["rssi"])
+                            active_ble_relays.setdefault(pin_id, {})[device_id] = {
+                                "timestamp": now_ts,
+                                "rssi": raw_rssi_int,
+                                "battery": raw_b_int,
+                                "battery_mv": raw_mv_int,
+                                "last_seen_str": now_str,
+                            }
 
-                            print(f"[BLE-RELAY] Updated presence & telemetry for registered pin '{pin_id}' via mobile '{device_id}' (battery={dev_record.get('battery')}%).")
-                            await broadcast_to_ui({
+                            dev_record = recalculate_pin_connection_state(pin_id, now_ts)
+                            print(f"[BLE-RELAY] Updated presence & telemetry for registered pin '{pin_id}' via mobile '{device_id}' (battery={dev_record.get('battery')}%, source={dev_record.get('connection_source')}).")
+
+                            # 1. Authoritative canonical event to all UI & mobile companions
+                            await broadcast_to_clients({
+                                "event_type": "device_update",
+                                "device": dev_record,
+                            })
+                            # 2. Secondary backwards-compatible event
+                            await broadcast_to_clients({
                                 "event_type": "pin_ble_relayed",
                                 "pin_id": pin_id,
                                 "relayed_by": device_id,
                                 "device": dev_record,
-                                "timestamp": datetime.now().strftime("%H:%M:%S")
+                                "timestamp": now_str,
                             })
                         else:
                             print(f"[BLE-RELAY] Rejected presence for unregistered pin '{pin_id}' from mobile '{device_id}'. Only registered pins can relay telemetry.")
 
                 # 2. BLE Relay: BLE Disconnection notification
                 elif mtype == "ble_relay_disconnect":
+                    telemetry_diagnostic_counters["ble_relay_disconnect_received"] += 1
                     pin_id = str(msg.get("pin_id", "")).strip().upper()
+                    if pin_id in active_ble_relays and device_id in active_ble_relays[pin_id]:
+                        active_ble_relays[pin_id].pop(device_id, None)
                     if pin_id in registered_devices:
-                        registered_devices[pin_id]["ble_proximity"] = False
-                        registered_devices[pin_id]["last_ble_seen"] = f"BLE Disconnected at {datetime.now().strftime('%H:%M:%S')}"
-                        # Note: Direct Wi-Fi status online remains completely unaffected!
-                        await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[pin_id]})
+                        dev_record = recalculate_pin_connection_state(pin_id)
+                        now_str = datetime.now().strftime("%H:%M:%S")
+                        dev_record["last_ble_seen"] = f"BLE Disconnected at {now_str}"
+                        await broadcast_to_clients({"event_type": "device_update", "device": dev_record})
 
                 # 3. BLE Relay: Text command (e.g. STREAM_END, PING, etc.)
                 elif mtype == "ble_relay_command":
@@ -1811,27 +2055,38 @@ async def mobile_websocket_endpoint(websocket: WebSocket):
     finally:
         active_mobile_clients.pop(websocket, None)
         mobile_pairing_mgr.update_device_presence(device_id, conn_type)
+
+        # Clean up all BLE relays from this disconnected mobile client
+        affected_pins = [p for p, relays in list(active_ble_relays.items()) if device_id in relays]
+        for p in affected_pins:
+            active_ble_relays[p].pop(device_id, None)
+            dev_record = recalculate_pin_connection_state(p)
+            await broadcast_to_clients({"event_type": "device_update", "device": dev_record})
+
         await broadcast_to_ui({
             "event_type": "mobile_client_disconnected",
             "device_id": device_id
         })
-        print(f"[WS-MOBILE] Mobile device '{device_id}' disconnected.")
+        print(f"[WS-MOBILE] Mobile device '{device_id}' disconnected. Cleared relays for {len(affected_pins)} pins.")
 
 
 async def pin_liveness_watchdog():
-    """Runs every 3 seconds. Forces any device without an active socket to OFFLINE."""
+    """Runs every 3 seconds. Authoritatively verifies and updates pin connection states."""
     while True:
         await asyncio.sleep(3.0)
         try:
-            for dev_id, dev in list(registered_devices.items()):
-                is_active = (dev_id in pin_active_sockets) or any(d_id == dev_id for d_id in active_pins.values())
-                if not is_active and dev.get("online", False):
-                    now_str = datetime.now().strftime("%H:%M:%S")
-                    dev["online"] = False
-                    dev["state"] = "OFFLINE"
-                    dev["lastSeen"] = f"Disconnected at {now_str}"
-                    await broadcast_to_ui({"event_type": "device_update", "device": dev})
-                    print(f"[WATCHDOG] Pin {dev_id} has no active socket -> broadcasted OFFLINE")
+            now_ts = time.time()
+            for dev_id in list(registered_devices.keys()):
+                prev_dev = registered_devices.get(dev_id, {})
+                prev_state = (prev_dev.get("online"), prev_dev.get("connection_source"), prev_dev.get("state"))
+                dev = recalculate_pin_connection_state(dev_id, now_ts)
+                new_state = (dev.get("online"), dev.get("connection_source"), dev.get("state"))
+                if prev_state != new_state:
+                    if not dev.get("online") and prev_state[0]:
+                        now_str = datetime.now().strftime("%H:%M:%S")
+                        dev["lastSeen"] = f"Disconnected at {now_str}"
+                    await broadcast_to_clients({"event_type": "device_update", "device": dev})
+                    print(f"[WATCHDOG] Pin {dev_id} state changed {prev_state} -> {new_state} (source={dev.get('connection_source')})")
         except Exception as e:
             print(f"[WATCHDOG] Error: {e}")
 
@@ -1883,17 +2138,17 @@ async def startup_event():
     # Launch background recording retention cleaner (30-day default)
     asyncio.create_task(periodic_recordings_cleanup())
 
-    # Launch Cloudflare Quick Tunnel automatically on startup for mobile synchronization
-    print("[TUNNEL] Auto-starting Cloudflare Quick Tunnel for cellular/mobile sync...")
-    asyncio.create_task(tunnel_mgr.start())
+    # Launch USB Serial Device Manager for physical XIAO ESP32-S3 Sense
+    print("[USB] Auto-starting SecureLink USB Serial Device Manager...")
+    usb_mgr.start()
 
     print("[SYS] WebSocket Server active on port 8080 (UI: /ui | Pins: / | Mobile: /mobile)")
-    print("[SYS] Ready for connections!\n")
+    print("[SYS] USB-Only Direct Pin Connection active!\n")
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    print("\n[SYS] Server shutting down. Cleaning up Cloudflare Tunnel...")
-    await tunnel_mgr.stop()
+    print("\n[SYS] Server shutting down. Cleaning up USB Serial...")
+    usb_mgr.stop()
 
 # =========================================================================
 # 7. AUDIO PROCESSING PIPELINE (DENOISING + WHISPER STT)
@@ -2224,7 +2479,7 @@ ai_inference_lock = asyncio.Lock()
 async def handle_completed_audio(
     device_id: str,
     pcm_bytes: bytes,
-    websocket: WebSocket,
+    websocket: Optional[WebSocket] = None,
     source: str = "ESP32_DIRECT",
     relayed_by: Optional[str] = None
 ):
@@ -2232,7 +2487,13 @@ async def handle_completed_audio(
     if len(pcm_bytes) < 4800: # Less than 150ms
         if device_id in registered_devices:
             now_str = datetime.now().strftime("%H:%M:%S")
-            if source == "ESP32_DIRECT":
+            if source == "USB":
+                is_still_connected = usb_mgr.is_authenticated and (usb_mgr.device_id == device_id)
+                registered_devices[device_id]["online"] = is_still_connected
+                registered_devices[device_id]["connection_source"] = "USB"
+                registered_devices[device_id]["state"] = "VAD ARMED" if is_still_connected else "OFFLINE"
+                registered_devices[device_id]["lastSeen"] = f"Active via USB at {now_str}" if is_still_connected else f"Disconnected at {now_str}"
+            elif source == "ESP32_DIRECT":
                 is_still_connected = any(d_id == device_id for d_id in active_pins.values())
                 registered_devices[device_id]["online"] = is_still_connected
                 registered_devices[device_id]["state"] = "VAD ARMED" if is_still_connected else "OFFLINE"
@@ -2250,7 +2511,11 @@ async def handle_completed_audio(
 
     if device_id in registered_devices:
         registered_devices[device_id]["state"] = "ANALYZING SPEECH"
-        if source == "ESP32_DIRECT":
+        if source == "USB":
+            registered_devices[device_id]["online"] = True
+            registered_devices[device_id]["connection_source"] = "USB"
+            registered_devices[device_id]["lastSeen"] = "USB Whisper inferencing..."
+        elif source == "ESP32_DIRECT":
             registered_devices[device_id]["online"] = True
             registered_devices[device_id]["lastSeen"] = "Whisper inferencing..."
         else:
@@ -2275,7 +2540,13 @@ async def handle_completed_audio(
                 print(f"[FILTER] Ignored conversational speech under 'Harmful Words Only' mode: \"{transcript}\" (cat={category}, score={score})")
                 if device_id in registered_devices:
                     now_str = datetime.now().strftime("%H:%M:%S")
-                    if source == "ESP32_DIRECT":
+                    if source == "USB":
+                        is_still_connected = usb_mgr.is_authenticated and (usb_mgr.device_id == device_id)
+                        registered_devices[device_id]["online"] = is_still_connected
+                        registered_devices[device_id]["connection_source"] = "USB"
+                        registered_devices[device_id]["state"] = "VAD ARMED" if is_still_connected else "OFFLINE"
+                        registered_devices[device_id]["lastSeen"] = f"Filtered benign speech at {now_str}" if is_still_connected else f"Disconnected at {now_str}"
+                    elif source == "ESP32_DIRECT":
                         is_still_connected = any(d_id == device_id for d_id in active_pins.values())
                         registered_devices[device_id]["online"] = is_still_connected
                         registered_devices[device_id]["state"] = "VAD ARMED" if is_still_connected else "OFFLINE"
@@ -2289,20 +2560,24 @@ async def handle_completed_audio(
 
             if is_danger:
                 print(f"[THREAT] DANGER grade detected! Dispatching TRIGGER:DANGER to {device_id} (source: {source})...")
-                if source == "MOBILE_BLE_RELAY":
-                    try:
-                        await websocket.send_text(json.dumps({
-                            "event_type": "trigger_danger",
-                            "type": "trigger_danger",
-                            "pin_id": device_id
-                        }))
-                    except Exception as e:
-                        print(f"[THREAT] Error notifying mobile relay: {e}")
+                if source == "USB":
+                    usb_mgr.send_line("SL:TRIGGER:DANGER")
+                elif source == "MOBILE_BLE_RELAY":
+                    if websocket is not None:
+                        try:
+                            await websocket.send_text(json.dumps({
+                                "event_type": "trigger_danger",
+                                "type": "trigger_danger",
+                                "pin_id": device_id
+                            }))
+                        except Exception as e:
+                            print(f"[THREAT] Error notifying mobile relay: {e}")
                 else:
-                    try:
-                        await websocket.send_text("TRIGGER:DANGER")
-                    except Exception as e:
-                        print(f"[THREAT] Error sending direct TRIGGER:DANGER: {e}")
+                    if websocket is not None:
+                        try:
+                            await websocket.send_text("TRIGGER:DANGER")
+                        except Exception as e:
+                            print(f"[THREAT] Error sending direct TRIGGER:DANGER: {e}")
 
                 for pin_ws, p_id in list(active_pins.items()):
                     if p_id == device_id and pin_ws != websocket:
@@ -2318,7 +2593,7 @@ async def handle_completed_audio(
                 registered_devices[device_id] = {
                     "latest_incident_id": incident_id,
                     "state": "ANALYZING SPEECH",
-                    "online": (source == "ESP32_DIRECT")
+                    "online": (source in ("ESP32_DIRECT", "USB"))
                 }
 
             wav_filename = f"{incident_id}.wav"
@@ -2355,7 +2630,17 @@ async def handle_completed_audio(
 
     if device_id in registered_devices:
         now_str = datetime.now().strftime("%H:%M:%S")
-        if source == "ESP32_DIRECT":
+        if source == "USB":
+            is_still_connected = usb_mgr.is_authenticated and (usb_mgr.device_id == device_id)
+            registered_devices[device_id]["online"] = is_still_connected
+            registered_devices[device_id]["connection_source"] = "USB"
+            if registered_devices[device_id].get("state") == "ANALYZING SPEECH":
+                registered_devices[device_id]["state"] = "VAD ARMED" if is_still_connected else "OFFLINE"
+            if is_still_connected:
+                registered_devices[device_id]["lastSeen"] = f'Heard: "{transcript[:25]}..."' if transcript else f"Active via USB at {now_str}"
+            else:
+                registered_devices[device_id]["lastSeen"] = f"Disconnected at {now_str}"
+        elif source == "ESP32_DIRECT":
             is_still_connected = any(d_id == device_id for d_id in active_pins.values())
             registered_devices[device_id]["online"] = is_still_connected
             if registered_devices[device_id].get("state") == "ANALYZING SPEECH":
@@ -2615,13 +2900,16 @@ async def pin_websocket_endpoint(websocket: WebSocket):
 
     prev_dev = registered_devices.get(device_id, {})
     prev_net = prev_dev.get("network", "Campus Wi-Fi")
-    prev_batt = prev_dev.get("battery", 100)
+    prev_batt = prev_dev.get("battery", -1)
     prev_runtime = prev_dev.get("estRuntime", "--")
     registered_devices[device_id] = {
         "id": device_id,
         "online": True,
+        "direct_online": True,
+        "relay_online": len(active_ble_relays.get(device_id, {})) > 0,
         "connection_source": "ESP32_DIRECT",
         "battery": prev_batt,
+        "batteryMv": prev_dev.get("batteryMv", -1),
         "state": "VAD ARMED",
         "network": pending_cfg["ssid"] if pending_cfg else prev_net,
         "lastSeen": "Just now",
@@ -2630,8 +2918,9 @@ async def pin_websocket_endpoint(websocket: WebSocket):
         "estRuntime": prev_runtime,
         "paired": True,
     }
-    
-    await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
+    recalculate_pin_connection_state(device_id)
+
+    await broadcast_to_clients({"event_type": "device_update", "device": registered_devices[device_id]})
     print(f"\n[WS] {device_id} Connected! Audio stream established.")
     
     audio_accumulator = bytearray()
@@ -2667,6 +2956,7 @@ async def pin_websocket_endpoint(websocket: WebSocket):
             if "text" in message:
                 text_msg = message["text"]
                 if text_msg.startswith("PING:"):
+                    telemetry_diagnostic_counters["direct_pings_received"] += 1
                     # Standby keep-alive ping from ESP32: PING:<rssi>[:<battery_pct>[:<battery_mv>]]
                     parts = text_msg.split(":")
                     if len(parts) >= 2:
@@ -2697,10 +2987,12 @@ async def pin_websocket_endpoint(websocket: WebSocket):
                         except Exception:
                             pass
                     now_str = datetime.now().strftime("%H:%M:%S")
-                    registered_devices[device_id]["online"] = True
-                    registered_devices[device_id]["state"] = "VAD ARMED"
-                    registered_devices[device_id]["lastSeen"] = f"Active at {now_str}"
-                    await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
+                    registered_devices[device_id]["last_direct_seen"] = now_str
+                    if registered_devices[device_id].get("state") not in ("STREAMING AUDIO", "ANALYZING"):
+                        registered_devices[device_id]["state"] = "VAD ARMED"
+                    dev_record = recalculate_pin_connection_state(device_id)
+                    dev_record["lastSeen"] = f"Active at {now_str}"
+                    await broadcast_to_clients({"event_type": "device_update", "device": dev_record})
                     try:
                         await websocket.send_text("PONG")
                     except Exception:
@@ -2818,18 +3110,15 @@ async def pin_websocket_endpoint(websocket: WebSocket):
         if pin_active_sockets.get(device_id) == websocket:
             del pin_active_sockets[device_id]
 
-        # MARK PIN AS OFFLINE ONLY IF NO OTHER AUTHENTICATED DIRECT SOCKET EXISTS FOR THIS PIN
-        is_still_online = (device_id in pin_active_sockets) or any(d_id == device_id for d_id in active_pins.values())
-        if not is_still_online and device_id in registered_devices:
-            now_str = datetime.now().strftime("%H:%M:%S")
-            registered_devices[device_id]["online"] = False
-            registered_devices[device_id]["connection_source"] = None
-            registered_devices[device_id]["state"] = "OFFLINE"
-            registered_devices[device_id]["lastSeen"] = f"Disconnected at {now_str}"
-            await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
+        dev = recalculate_pin_connection_state(device_id)
+        now_str = datetime.now().strftime("%H:%M:%S")
+        if not dev.get("online"):
+            dev["lastSeen"] = f"Disconnected at {now_str}"
             print(f"[WS] {device_id} marked OFFLINE on dashboard.")
         else:
-            print(f"[WS] Disconnected socket for {device_id} was stale/superseded; active connection preserved.")
+            dev["lastSeen"] = f"Active via {dev.get('connection_source')} at {now_str}"
+            print(f"[WS] {device_id} direct Wi-Fi socket closed; maintaining ONLINE state via {dev.get('connection_source')} ({dev.get('relayed_by')}).")
+        await broadcast_to_clients({"event_type": "device_update", "device": dev})
 
 if __name__ == "__main__":
     print("=======================================================")
