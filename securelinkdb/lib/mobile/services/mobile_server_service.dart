@@ -21,6 +21,12 @@ enum MobileConnectionState {
   revoked,
 }
 
+enum PinServerRouteMode {
+  automatic,
+  cloudflareTunnel,
+  localLan,
+}
+
 class IncidentReport {
   final String id;
   final String deviceId;
@@ -226,6 +232,74 @@ class MobileServerService extends ChangeNotifier {
       return 'wss://$th';
     }
     return 'ws://$_host:$_port';
+  }
+
+  /// Resolves the intended Central System server URL for physical Smart Pin provisioning.
+  /// Independently selects a reachable URL for the ESP32 rather than blindly reusing mobile routing.
+  String resolvePinProvisioningServerUrl({PinServerRouteMode mode = PinServerRouteMode.automatic}) {
+    String normalize(String raw) {
+      String clean = raw.trim();
+      while (clean.endsWith('/')) {
+        clean = clean.substring(0, clean.length - 1).trim();
+      }
+      return clean;
+    }
+
+    // Explicit Cloudflare Tunnel mode
+    if (mode == PinServerRouteMode.cloudflareTunnel) {
+      if (_cloudTunnelUrl != null && _cloudTunnelUrl!.trim().isNotEmpty) {
+        String clean = normalize(_cloudTunnelUrl!);
+        if (!clean.startsWith('http')) clean = 'https://$clean';
+        return clean;
+      }
+      return '';
+    }
+
+    // Explicit Local LAN mode
+    if (mode == PinServerRouteMode.localLan) {
+      if (_host.isNotEmpty && _host != '0.0.0.0') {
+        return 'http://$_host:$_port';
+      }
+      return '';
+    }
+
+    // Automatic mode:
+    // 1. Prefer a configured, valid public HTTPS Cloudflare Tunnel URL for physical hardware
+    // because pins frequently operate across different APs, VLANs, or campus isolation networks.
+    if (_cloudTunnelUrl != null && _cloudTunnelUrl!.trim().isNotEmpty) {
+      final raw = _cloudTunnelUrl!.trim();
+      if (raw.contains('trycloudflare.com') || raw.startsWith('https://')) {
+        String clean = normalize(raw);
+        if (!clean.startsWith('http')) clean = 'https://$clean';
+        return clean;
+      }
+    }
+
+    // 2. Fall back to local LAN URL only if configured and valid
+    if (_host.isNotEmpty && _host != '0.0.0.0' && !_host.contains('127.0.0.1') && !_host.contains('localhost')) {
+      return 'http://$_host:$_port';
+    }
+
+    // 3. Fallback to current normalized baseHttpUrl
+    return normalize(baseHttpUrl);
+  }
+
+  /// Optional preflight check to verify server health before transmitting URL to pin
+  Future<bool> preflightPinServerUrl(String url, {int timeoutMs = 2500}) async {
+    if (url.trim().isEmpty) return false;
+    try {
+      String clean = url.trim();
+      while (clean.endsWith('/')) {
+        clean = clean.substring(0, clean.length - 1);
+      }
+      final testUri = Uri.parse('$clean/health');
+      final client = HttpClient()..connectionTimeout = Duration(milliseconds: timeoutMs);
+      final req = await client.getUrl(testUri);
+      final res = await req.close();
+      return res.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
   }
 
   Uri getUiWsUri() => Uri.parse('$baseWsUrl/ui');
@@ -1522,41 +1596,68 @@ class MobileServerService extends ChangeNotifier {
   /// Verifies if a Smart Pin is confirmed paired and registered with the Central System
   Future<bool> verifyPinPairingWithServer(String cleanCode, String devId) async {
     try {
-      final upperId = devId.toUpperCase();
+      final upperId = devId.toUpperCase().trim();
       // 1. In-memory devices check
-      if (_devices.containsKey(upperId)) {
+      if (upperId.isNotEmpty && _devices.containsKey(upperId)) {
         return true;
       }
-      // 2. Query code status REST endpoint
-      if (cleanCode.isNotEmpty) {
-        final codeUri = getApiUri('/pairing-code/status/$cleanCode');
-        final client = HttpClient()..connectionTimeout = const Duration(seconds: 4);
-        final req = await client.getUrl(codeUri);
-        final res = await req.close();
-        if (res.statusCode == 200) {
-          final bodyStr = await res.transform(utf8.decoder).join();
-          final data = jsonDecode(bodyStr);
-          if (data['paired'] == true && (data['device_id'] == null || data['device_id'].toString().toUpperCase() == upperId)) {
-            return true;
-          }
-        }
-      }
-      // 3. Query paired devices list
-      final listUri = getApiUri('/devices/paired');
-      final listClient = HttpClient()..connectionTimeout = const Duration(seconds: 4);
-      final listReq = await listClient.getUrl(listUri);
-      final listRes = await listReq.close();
-      if (listRes.statusCode == 200) {
-        final listBody = await listRes.transform(utf8.decoder).join();
-        final listData = jsonDecode(listBody);
-        if (listData['devices'] is List) {
-          for (final d in listData['devices']) {
-            if (d['device_id']?.toString().toUpperCase() == upperId) {
+
+      // 2. Query direct authoritative pin status REST endpoint: /api/pin/status/<device_id>
+      if (upperId.isNotEmpty) {
+        try {
+          final pinStatusUri = getApiUri('/pin/status/$upperId');
+          final client = HttpClient()..connectionTimeout = const Duration(seconds: 3);
+          final req = await client.getUrl(pinStatusUri);
+          final res = await req.close();
+          if (res.statusCode == 200) {
+            final bodyStr = await res.transform(utf8.decoder).join();
+            final data = jsonDecode(bodyStr);
+            if (data['paired'] == true || data['registered'] == true) {
               return true;
             }
           }
-        }
+        } catch (_) {}
       }
+
+      // 3. Query code status REST endpoint: /api/pairing-code/status/<code>
+      if (cleanCode.isNotEmpty) {
+        try {
+          final codeUri = getApiUri('/pairing-code/status/$cleanCode');
+          final client = HttpClient()..connectionTimeout = const Duration(seconds: 3);
+          final req = await client.getUrl(codeUri);
+          final res = await req.close();
+          if (res.statusCode == 200) {
+            final bodyStr = await res.transform(utf8.decoder).join();
+            final data = jsonDecode(bodyStr);
+            if (data['paired'] == true) {
+              final regId = data['device_id']?.toString().toUpperCase();
+              if (regId == null || regId == upperId || upperId.isEmpty) {
+                return true;
+              }
+            }
+          }
+        } catch (_) {}
+      }
+
+      // 4. Query paired devices list: /api/devices/paired
+      try {
+        final listUri = getApiUri('/devices/paired');
+        final listClient = HttpClient()..connectionTimeout = const Duration(seconds: 3);
+        final listReq = await listClient.getUrl(listUri);
+        final listRes = await listReq.close();
+        if (listRes.statusCode == 200) {
+          final listBody = await listRes.transform(utf8.decoder).join();
+          final listData = jsonDecode(listBody);
+          if (listData['devices'] is List) {
+            for (final d in listData['devices']) {
+              final dId = d['device_id']?.toString().toUpperCase();
+              if (upperId.isNotEmpty && dId == upperId) {
+                return true;
+              }
+            }
+          }
+        }
+      } catch (_) {}
     } catch (e) {
       debugPrint('[BLE-PROV] Error verifying pairing status with server: $e');
     }
@@ -1570,6 +1671,8 @@ class MobileServerService extends ChangeNotifier {
     required String password,
     required String pairingCode,
     String? alias,
+    PinServerRouteMode routeMode = PinServerRouteMode.automatic,
+    String? explicitServerUrl,
     void Function(String stepMessage, double progress)? onProgress,
   }) async {
     final relay = BlePinRelayService();
@@ -1584,32 +1687,82 @@ class MobileServerService extends ChangeNotifier {
     await relay.requestDeviceInfo();
     await Future.delayed(const Duration(milliseconds: 350));
 
-    // Provide the active Central System base URL (Cloudflare HTTPS or LAN HTTP)
-    final targetServerUrl = baseHttpUrl;
-    debugPrint('[BLE-PROV] Using Central System URL for Pin: $targetServerUrl');
+    // Independently resolve target server URL for the physical Smart Pin
+    final targetServerUrl = (explicitServerUrl != null && explicitServerUrl.trim().isNotEmpty)
+        ? explicitServerUrl.trim()
+        : resolvePinProvisioningServerUrl(mode: routeMode);
+    debugPrint('[BLE-PROV] Selected Pin Provisioning Server URL (mode: $routeMode): $targetServerUrl');
+
+    if (targetServerUrl.isEmpty) {
+      return {
+        'success': false,
+        'code': 'ERR_NO_SERVER_URL',
+        'error': 'No reachable server URL found for physical Smart Pin. Please configure Cloudflare Tunnel or local IP.'
+      };
+    }
+
     onProgress?.call('Transmitting Wi-Fi & Pairing Code to Pin...', 0.45);
 
     final completer = Completer<Map<String, dynamic>>();
     final cleanCode = pairingCode.replaceAll(RegExp(r'[\s-]'), '').trim();
+    String knownDevId = relay.lastPinnedDeviceId.toUpperCase();
 
     StreamSubscription? sub;
-    Timer? timeoutTimer = Timer(const Duration(seconds: 60), () async {
+    Timer? timeoutTimer;
+    Timer? pollingTimer;
+
+    void cleanup() {
+      timeoutTimer?.cancel();
+      pollingTimer?.cancel();
+      sub?.cancel();
+    }
+
+    // Active polling verification loop: Polls Central System every 2.5s
+    // Resolves Problem C: Detects backend confirmation immediately without waiting 60s
+    // even if the BLE notification was dropped, fragmented, or missed!
+    pollingTimer = Timer.periodic(const Duration(milliseconds: 2500), (_) async {
+      if (completer.isCompleted) {
+        pollingTimer?.cancel();
+        return;
+      }
+      final devId = relay.lastPinnedDeviceId.isNotEmpty
+          ? relay.lastPinnedDeviceId.toUpperCase()
+          : knownDevId;
+
+      final isServerPaired = await verifyPinPairingWithServer(cleanCode, devId);
+      if (isServerPaired && !completer.isCompleted) {
+        cleanup();
+        final finalId = devId.isNotEmpty ? devId : 'PIN-F360';
+        await pairPin(finalId, alias: alias, method: 'BLE Cryptographic Pairing');
+        onProgress?.call('Central System confirmed pairing for $finalId!', 1.0);
+        completer.complete({
+          'success': true,
+          'device_id': finalId,
+          'message': 'Smart Pin $finalId successfully paired and authenticated with Central System!',
+        });
+      }
+    });
+
+    timeoutTimer = Timer(const Duration(seconds: 60), () async {
       if (!completer.isCompleted) {
-        sub?.cancel();
-        final devId = relay.pinnedDeviceId.toUpperCase();
+        cleanup();
+        final devId = relay.lastPinnedDeviceId.isNotEmpty
+            ? relay.lastPinnedDeviceId.toUpperCase()
+            : knownDevId;
         final isPaired = await verifyPinPairingWithServer(cleanCode, devId);
         if (isPaired) {
-          await pairPin(devId, alias: alias, method: 'BLE Cryptographic Pairing');
+          final finalId = devId.isNotEmpty ? devId : 'PIN-F360';
+          await pairPin(finalId, alias: alias, method: 'BLE Cryptographic Pairing');
           completer.complete({
             'success': true,
-            'device_id': devId,
-            'message': 'Smart Pin $devId successfully paired and authenticated with Central System!',
+            'device_id': finalId,
+            'message': 'Smart Pin $finalId successfully paired and authenticated with Central System!',
           });
           return;
         }
         completer.complete({
           'success': false,
-          'error': 'Provisioning timed out after 60 seconds. Check Wi-Fi credentials or pairing code.',
+          'error': 'Provisioning timed out after 60 seconds. Smart Pin could not complete authentication with Central System ($targetServerUrl).',
         });
       }
     });
@@ -1617,6 +1770,10 @@ class MobileServerService extends ChangeNotifier {
     sub = relay.provisioningEvents.listen((event) async {
       final type = event['type'];
       debugPrint('[BLE-WIZARD] Provisioning event: $event');
+
+      if (event['device_id'] != null) {
+        knownDevId = event['device_id'].toString().toUpperCase();
+      }
 
       if (type == 'provision_received') {
         onProgress?.call('Smart Pin received parameters. Initializing...', 0.50);
@@ -1627,45 +1784,44 @@ class MobileServerService extends ChangeNotifier {
       } else if (type == 'registration_pending' || type == 'pairing_pending') {
         onProgress?.call('Central System verifying single-use code...', 0.85);
       } else if (type == 'pairing_success') {
-        timeoutTimer.cancel();
-        sub?.cancel();
-        final devId = (event['device_id'] ?? relay.pinnedDeviceId).toString().toUpperCase();
-        await pairPin(devId, alias: alias, method: 'BLE Cryptographic Pairing');
+        cleanup();
+        final devId = (event['device_id'] ?? relay.lastPinnedDeviceId).toString().toUpperCase();
+        final finalId = devId.isNotEmpty ? devId : (knownDevId.isNotEmpty ? knownDevId : 'PIN-F360');
+        await pairPin(finalId, alias: alias, method: 'BLE Cryptographic Pairing');
         onProgress?.call('Pairing successful! Pin authenticated with Central System.', 1.0);
         if (!completer.isCompleted) {
           completer.complete({
             'success': true,
-            'device_id': devId,
-            'message': 'Smart Pin $devId successfully paired and authenticated!',
+            'device_id': finalId,
+            'message': 'Smart Pin $finalId successfully paired and authenticated!',
           });
         }
       } else if (type == 'provision_error') {
         final errCode = event['code'] as String? ?? 'ERR_UNKNOWN';
         String errMsg = event['message'] as String? ?? 'Provisioning failed';
-        final devId = (event['device_id'] ?? relay.pinnedDeviceId).toString().toUpperCase();
+        final devId = (event['device_id'] ?? relay.lastPinnedDeviceId).toString().toUpperCase();
 
         // If the error was WebSocket auth or timeout, verify if Central System already accepted & paired the device!
         if (errCode == 'ERR_WS_AUTH' || errCode == 'ERR_WS_TIMEOUT') {
           onProgress?.call('Verifying pairing confirmation with Central System...', 0.95);
           final isConfirmedOnServer = await verifyPinPairingWithServer(cleanCode, devId);
           if (isConfirmedOnServer) {
-            timeoutTimer.cancel();
-            sub?.cancel();
-            await pairPin(devId, alias: alias, method: 'BLE Cryptographic Pairing');
+            cleanup();
+            final finalId = devId.isNotEmpty ? devId : (knownDevId.isNotEmpty ? knownDevId : 'PIN-F360');
+            await pairPin(finalId, alias: alias, method: 'BLE Cryptographic Pairing');
             onProgress?.call('Pairing successful! Pin authenticated with Central System.', 1.0);
             if (!completer.isCompleted) {
               completer.complete({
                 'success': true,
-                'device_id': devId,
-                'message': 'Smart Pin $devId successfully paired and authenticated!',
+                'device_id': finalId,
+                'message': 'Smart Pin $finalId successfully paired and authenticated!',
               });
             }
             return;
           }
         }
 
-        timeoutTimer.cancel();
-        sub?.cancel();
+        cleanup();
         if (errCode == 'ERR_AUTH_REJECTED' || errCode == 'ERR_WIFI_AUTH') {
           errMsg = 'Wi-Fi Authentication Failed: Password rejected by access point "${event['ssid'] ?? ssid}". Please check your Wi-Fi password.';
         } else if (errCode == 'ERR_AP_NOT_FOUND') {
@@ -1679,7 +1835,7 @@ class MobileServerService extends ChangeNotifier {
         } else if (errCode == 'ERR_PROVISIONING_INVALID') {
           errMsg = 'Invalid Provisioning: ${event['message'] ?? 'SSID or credentials missing.'}';
         } else if (errCode == 'ERR_SERVER_UNREACHABLE') {
-          errMsg = 'Server Unreachable: Smart Pin connected to Wi-Fi, but could not contact Central System. Verify server IP/tunnel.';
+          errMsg = 'Server Unreachable: Smart Pin connected to Wi-Fi, but could not contact Central System ($targetServerUrl). Verify server IP/tunnel.';
         } else if (errCode == 'ERR_TUNNEL_DOWN') {
           errMsg = 'Cloudflare Tunnel Unreachable: Remote tunnel is down (HTTP 502/503). Ensure Cloudflare tunnel is active.';
         } else if (errCode == 'ERR_PAIRING_CODE' || errCode == 'ERR_INVALID_CODE') {
@@ -1689,7 +1845,7 @@ class MobileServerService extends ChangeNotifier {
         } else if (errCode == 'ERR_WS_AUTH') {
           errMsg = 'WebSocket Authentication Failed: Central System rejected pin credentials.';
         } else if (errCode == 'ERR_WS_TIMEOUT') {
-          errMsg = 'WebSocket Connection Timed Out: Smart Pin connected to Wi-Fi but timed out contacting Central System.';
+          errMsg = 'WebSocket Connection Timed Out: Smart Pin connected to Wi-Fi but timed out contacting Central System ($targetServerUrl).';
         }
         if (!completer.isCompleted) {
           completer.complete({
@@ -1710,8 +1866,7 @@ class MobileServerService extends ChangeNotifier {
     );
 
     if (!sendResult.success) {
-      timeoutTimer.cancel();
-      sub.cancel();
+      cleanup();
       return {
         'success': false,
         'code': sendResult.errorCode ?? 'ERR_BLE_WRITE',

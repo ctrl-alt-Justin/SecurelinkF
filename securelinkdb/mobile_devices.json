@@ -41,10 +41,10 @@
     "device_name": "Mobile Companion (B-2070)",
     "user_name": "Teacher / Student",
     "role": "Admin",
-    "token_hash": "f6c16a19494e4d69dbd1da74f2c7900742dd4c3faf5605f109ce57dc662e5859",
-    "paired_at": "2026-11-22 16:52:30",
+    "token_hash": "742dddf2bb9424dea399e319ce0d067c3e34c0d5e3ee9bec1144e61591deff81",
+    "paired_at": "2026-11-22 18:20:45",
     "revoked": false,
-    "last_seen": "2026-11-22 18:05:53",
+    "last_seen": "2026-11-22 18:28:31",
     "connection_type": "remote",
     "paired_ip": "136.158.25.176"
   }

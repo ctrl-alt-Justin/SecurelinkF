@@ -212,6 +212,7 @@ context_engine.tokenizer = tokenizer
 ui_clients = set()
 registered_devices = {}
 active_pins = {} # Map of websocket -> device_id
+pin_active_sockets = {} # Authoritative map of device_id -> newest active websocket
 harmful_words_only = False # Default False so all speech during testing is visible on the dashboard!
 
 # --- SECURE DEVICE PAIRING & TOKEN PERSISTENCE ---
@@ -1366,6 +1367,39 @@ async def get_paired_devices_api():
         })
     return {"status": "success", "count": len(result), "devices": result}
 
+@app.get("/api/pin/status/{device_id}")
+async def get_pin_status(device_id: str):
+    """
+    Authoritative query endpoint for mobile companion & dashboard.
+    Returns whether the device is permanently registered, paired, and currently online.
+    """
+    clean_id = device_id.strip().upper()
+    creds = load_device_credentials()
+    is_registered = clean_id in creds
+    dev = registered_devices.get(clean_id)
+    is_active = (clean_id in pin_active_sockets) or any(d_id == clean_id for d_id in active_pins.values())
+    is_paired = bool(is_registered or (dev and dev.get("paired", False)))
+
+    state_str = "OFFLINE"
+    if is_active:
+        state_str = dev.get("state", "ONLINE") if dev else "ONLINE"
+    elif is_paired:
+        state_str = "OFFLINE"
+    else:
+        state_str = "UNREGISTERED"
+
+    return {
+        "status": "success",
+        "device_id": clean_id,
+        "registered": is_registered,
+        "paired": is_paired,
+        "online": is_active,
+        "state": state_str,
+        "battery": dev.get("battery", 100) if dev else None,
+        "rssi": dev.get("rssi", -60) if dev else None,
+        "last_seen": dev.get("lastSeen", "") if dev else "",
+    }
+
 # =========================================================================
 # MOBILE COMPANION PAIRING & SYNCHRONIZATION APIS (QR + 8-DIGIT CODE)
 # =========================================================================
@@ -1757,7 +1791,7 @@ async def pin_liveness_watchdog():
         await asyncio.sleep(3.0)
         try:
             for dev_id, dev in list(registered_devices.items()):
-                is_active = any(d_id == dev_id for d_id in active_pins.values())
+                is_active = (dev_id in pin_active_sockets) or any(d_id == dev_id for d_id in active_pins.values())
                 if not is_active and dev.get("online", False):
                     now_str = datetime.now().strftime("%H:%M:%S")
                     dev["online"] = False
@@ -2508,6 +2542,15 @@ async def pin_websocket_endpoint(websocket: WebSocket):
                 })
 
     # Register into active_pins ONLY after authentication succeeds!
+    old_ws = pin_active_sockets.get(device_id)
+    if old_ws and old_ws != websocket:
+        print(f"[WS] Superseding existing socket for '{device_id}' with newer authenticated connection.")
+        try:
+            active_pins.pop(old_ws, None)
+            await old_ws.close(code=1000, reason="Superseded by newer connection")
+        except Exception:
+            pass
+    pin_active_sockets[device_id] = websocket
     active_pins[websocket] = device_id
     print(f"[WS-AUTH] Smart Pin '{device_id}' authenticated successfully.")
     try:
@@ -2737,11 +2780,12 @@ async def pin_websocket_endpoint(websocket: WebSocket):
             audio_accumulator.clear()
             asyncio.create_task(handle_completed_audio(device_id, final_pcm, websocket))
 
-        if websocket in active_pins:
-            del active_pins[websocket]
+        active_pins.pop(websocket, None)
+        if pin_active_sockets.get(device_id) == websocket:
+            del pin_active_sockets[device_id]
 
-        # MARK PIN AS OFFLINE ONLY IF NO OTHER DIRECT SOCKET EXISTS FOR THIS PIN
-        is_still_online = any(d_id == device_id for d_id in active_pins.values())
+        # MARK PIN AS OFFLINE ONLY IF NO OTHER AUTHENTICATED DIRECT SOCKET EXISTS FOR THIS PIN
+        is_still_online = (device_id in pin_active_sockets) or any(d_id == device_id for d_id in active_pins.values())
         if not is_still_online and device_id in registered_devices:
             now_str = datetime.now().strftime("%H:%M:%S")
             registered_devices[device_id]["online"] = False
@@ -2750,6 +2794,8 @@ async def pin_websocket_endpoint(websocket: WebSocket):
             registered_devices[device_id]["lastSeen"] = f"Disconnected at {now_str}"
             await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
             print(f"[WS] {device_id} marked OFFLINE on dashboard.")
+        else:
+            print(f"[WS] Disconnected socket for {device_id} was stale/superseded; active connection preserved.")
 
 if __name__ == "__main__":
     print("=======================================================")

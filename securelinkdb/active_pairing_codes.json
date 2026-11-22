@@ -1,8 +1,9 @@
 {
-  "585693": {
-    "created_at": 1795341855.228477,
-    "expires_at": 1795342455.228477,
-    "used": false,
-    "device_id": null
+  "778899": {
+    "created_at": 1795344690.8972628,
+    "expires_at": 1795344750.8972628,
+    "used": true,
+    "device_id": "PIN-F360",
+    "used_at": 1795344690.8972628
   }
 }

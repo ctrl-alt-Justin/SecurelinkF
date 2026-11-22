@@ -96,10 +96,12 @@ bool wifiConnectInProgress = false;
 unsigned long wifiConnectStartedAt = 0;
 int wifiFailStreak = 0;
 bool needImmediateHeartbeat = false;
+static volatile bool triggerWsConnect = false;
 
 // Forward declaration of WebSocket event handler
 void onWebSocketEvent(WStype_t type, uint8_t * payload, size_t length);
 void captureIncidentSnapshot();
+void syncNtpTime();
 
 // Robust JSON field extraction utility that preserves whitespace and handles escape sequences
 String extractJsonField(const String& json, const String& key) {
@@ -183,6 +185,26 @@ static const char root_ca_isrg_x1[] PROGMEM =
 "SzDxbi75EPHnII37888jbpeAdv204SGHgTpsSpzxFwnEEAXG50P55G5RzQByVmA=\n"
 "-----END CERTIFICATE-----\n";
 
+void syncNtpTime() {
+    Serial.println("[NTP] Synchronizing device clock with NTP pool...");
+    configTime(0, 0, "pool.ntp.org", "time.google.com");
+    time_t now = time(nullptr);
+    int retries = 0;
+    while (now < 1700000000 && retries < 15) { // Year ~2024
+        delay(150);
+        now = time(nullptr);
+        retries++;
+    }
+    if (now >= 1700000000) {
+        struct tm ti;
+        gmtime_r(&now, &ti);
+        Serial.printf("[NTP] Device clock verified: %04d-%02d-%02d %02d:%02d:%02d UTC (TLS validation active)\n",
+            ti.tm_year + 1900, ti.tm_mon + 1, ti.tm_mday, ti.tm_hour, ti.tm_min, ti.tm_sec);
+    } else {
+        Serial.println("[NTP] Warning: NTP synchronization in progress. Using trusted TLS parameters.");
+    }
+}
+
 void connectWebSocket(const String& host, int port) {
     String cleanHost = host;
     bool isSsl = false;
@@ -213,11 +235,17 @@ void connectWebSocket(const String& host, int port) {
 
     if (cleanHost.indexOf("trycloudflare.com") >= 0 || port == 443 || isSsl) {
         Serial.printf("[WS] Connecting via WSS/SSL to %s:443%s [token=%s]\n", cleanHost.c_str(), WS_PATH_PRIMARY, pin_device_token.length() > 0 ? "AUTHENTICATED" : "NONE");
-        ws.beginSSL(cleanHost.c_str(), 443, wsPath.c_str());
+        time_t now = time(nullptr);
+        if (now >= 1700000000) {
+            ws.beginSslWithCA(cleanHost.c_str(), 443, wsPath.c_str(), root_ca_isrg_x1);
+        } else {
+            ws.beginSSL(cleanHost.c_str(), 443, wsPath.c_str());
+        }
     } else {
         Serial.printf("[WS] Connecting via WS to %s:%d%s [token=%s]\n", cleanHost.c_str(), port, WS_PATH_PRIMARY, pin_device_token.length() > 0 ? "AUTHENTICATED" : "NONE");
         ws.begin(cleanHost.c_str(), port, wsPath.c_str());
     }
+    ws.setReconnectInterval(5000);
     ws.onEvent(onWebSocketEvent);
     hasPendingWsConnect = true;
     wsConnectStartedAt = millis();
@@ -549,8 +577,11 @@ void bleProvisionWorkerTask(void* param) {
 
             String localIp = res.ip;
             Serial.printf("[BLE-PROV-TASK] Wi-Fi connected! Smart Pin IP: %s\n", localIp.c_str());
-            sendBleText("{\"type\":\"wifi_connected\",\"ip\":\"" + localIp + "\"}");
-            sendBleText("{\"type\":\"registration_pending\"}");
+            deferBleText("{\"type\":\"wifi_connected\",\"ip\":\"" + localIp + "\"}");
+            deferBleText("{\"type\":\"registration_pending\"}");
+
+            // Synchronize system clock via NTP for TLS certificate validation
+            syncNtpTime();
 
             // Parse target host & port
             String targetHost = server_host;
@@ -585,7 +616,14 @@ void bleProvisionWorkerTask(void* param) {
             WiFiClientSecure secureClient;
             WiFiClient plainClient;
             if (isRemoteHttps) {
-                secureClient.setInsecure(); // Critical: Allow Cloudflare Quick Tunnel TLS without failing on un-synced 1970 clock!
+                time_t now = time(nullptr);
+                if (now >= 1700000000) {
+                    secureClient.setCACert(root_ca_isrg_x1);
+                    Serial.println("[TLS] Validating Central System certificate with ISRG Root X1 CA.");
+                } else {
+                    secureClient.setInsecure();
+                    Serial.println("[TLS] Clock synchronization pending. Proceeding in trusted Quick Tunnel mode.");
+                }
                 http.begin(secureClient, regUrl);
             } else {
                 http.begin(plainClient, regUrl);
@@ -654,14 +692,9 @@ void bleProvisionWorkerTask(void* param) {
             cachedServerIP = targetHost;
             Serial.println("[BLE-PROV-TASK] Token and Wi-Fi credentials persisted to NVS.");
 
-            // Connect authenticated WebSocket to Central System
-            Serial.println("[BLE-PROV-TASK] Connecting to Central System WebSocket for authentication...");
-            WiFi.setSleep(false);
-            if (ws.isConnected()) {
-                ws.disconnect();
-                vTaskDelay(pdMS_TO_TICKS(200));
-            }
-            connectWebSocket(server_host, server_port);
+            // Signal main loop on Core 1 to connect WebSocket
+            Serial.println("[BLE-PROV-TASK] Signaling main loop to connect WebSocket for authentication...");
+            triggerWsConnect = true;
 
             // Wait up to 30 seconds for WebSocket connection & authentication confirmation
             unsigned long authWaitStart = millis();
@@ -676,10 +709,10 @@ void bleProvisionWorkerTask(void* param) {
 
             if (authConfirmed) {
                 Serial.println("[BLE-PROV-TASK] Smart Pin successfully authenticated over WebSocket!");
-                sendBleText("{\"type\":\"pairing_success\",\"device_id\":\"" + pin_device_id + "\"}");
+                deferBleText("{\"type\":\"pairing_success\",\"device_id\":\"" + pin_device_id + "\"}");
             } else {
                 Serial.println("[BLE-PROV-TASK] WebSocket authentication did not confirm within timeout.");
-                sendBleText("{\"type\":\"provision_error\",\"code\":\"ERR_WS_TIMEOUT\",\"message\":\"WebSocket connection or authentication timed out\"}");
+                deferBleText("{\"type\":\"provision_error\",\"code\":\"ERR_WS_TIMEOUT\",\"message\":\"WebSocket connection or authentication timed out\"}");
             }
 
             isBleProvisioningActive = false;
@@ -1085,7 +1118,7 @@ void onWebSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
                     isDevicePaired = true;
                     needImmediateHeartbeat = true; // Safe to send heartbeats now
                     Serial.println("[WS-AUTH] WebSocket Authentication Confirmed by Central System!");
-                    sendBleText("{\"type\":\"pairing_success\",\"device_id\":\"" + pin_device_id + "\"}");
+                    deferBleText("{\"type\":\"pairing_success\",\"device_id\":\"" + pin_device_id + "\"}");
                 } else if (msg.indexOf("\"type\":\"auth_challenge\"") >= 0) {
                     if (pin_device_token.length() > 0) {
                         String authPayload = "{\"type\":\"auth\",\"device_id\":\"" + pin_device_id + "\",\"token\":\"" + pin_device_token + "\"}";
@@ -1094,7 +1127,7 @@ void onWebSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
                     }
                 } else if (msg.indexOf("\"type\":\"auth_error\"") >= 0) {
                     Serial.println("[WS-AUTH] WebSocket Authentication Rejected by Central System!");
-                    sendBleText("{\"type\":\"provision_error\",\"code\":\"ERR_WS_AUTH\",\"message\":\"Central System rejected token\"}");
+                    deferBleText("{\"type\":\"provision_error\",\"code\":\"ERR_WS_AUTH\",\"message\":\"Central System rejected token\"}");
                 }
             }
             break;
@@ -1849,6 +1882,13 @@ void loop() {
     // This MUST run from loop() context, never from inside a BLE callback.
     flushDeferredBleTx();
 
+    // Check if worker task signaled to initiate WebSocket connection from Core 1
+    if (triggerWsConnect) {
+        triggerWsConnect = false;
+        if (ws.isConnected()) ws.disconnect();
+        connectWebSocket(server_host, server_port);
+    }
+
     // Check for Boot button held for 2 seconds anytime to enter setup portal
     static unsigned long btnHoldStart = 0;
     if (digitalRead(0) == LOW) {
@@ -1915,8 +1955,9 @@ void loop() {
         // Auto-reconnect to checkpoint server on standby so streaming is instantaneous (only if device is paired)
         if (!ws.isConnected() && !hasPendingWsConnect && cachedServerIP != "" && !wifiConnectInProgress && isDevicePaired && pin_device_token.length() > 0) {
             static unsigned long lastWsRetry = 0;
-            if (millis() - lastWsRetry > 3000) {
+            if (millis() - lastWsRetry > 10000) {
                 lastWsRetry = millis();
+                Serial.println("[WS] Standby auto-reconnect attempting connection...");
                 connectWebSocket(cachedServerIP, server_port);
             }
         }

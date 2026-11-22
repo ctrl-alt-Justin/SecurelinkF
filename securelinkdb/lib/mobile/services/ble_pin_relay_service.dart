@@ -89,6 +89,7 @@ class BlePinRelayService extends ChangeNotifier {
   BleRelayState _state = BleRelayState.disconnected;
   String _statusMessage = 'BLE Bridge Disconnected';
   String _pinnedDeviceId = '';
+  String _lastPinnedDeviceId = '';
   int _relayedBytesTotal = 0;
   int _relayedPacketsTotal = 0;
 
@@ -97,6 +98,11 @@ class BlePinRelayService extends ChangeNotifier {
   int _expectedSnapshotBytes = 0;
   final BytesBuilder _snapshotBuilder = BytesBuilder();
   Timer? _snapshotTimeoutTimer;
+
+  // BLE Notification JSON Reassembly Buffer (Supports default MTU 23 and arbitrary fragmentation)
+  String _bleJsonRxBuffer = '';
+  Timer? _bleJsonRxTimeoutTimer;
+  static const int maxBleJsonBufferSize = 4096;
 
   List<ScanResult> _scanResults = [];
   bool _isScanning = false;
@@ -116,6 +122,7 @@ class BlePinRelayService extends ChangeNotifier {
   bool get isReceivingSnapshot => _isReceivingSnapshot;
   String get statusMessage => _statusMessage;
   String get pinnedDeviceId => _pinnedDeviceId;
+  String get lastPinnedDeviceId => _lastPinnedDeviceId.isNotEmpty ? _lastPinnedDeviceId : _pinnedDeviceId;
   int get relayedBytesTotal => _relayedBytesTotal;
   int get relayedPacketsTotal => _relayedPacketsTotal;
   List<ScanResult> get scanResults => List.unmodifiable(_scanResults);
@@ -312,6 +319,38 @@ class BlePinRelayService extends ChangeNotifier {
     }
   }
 
+  bool _isCompleteJsonObject(String str) {
+    final trimmed = str.trim();
+    if (!trimmed.startsWith('{')) return false;
+    int depth = 0;
+    bool inString = false;
+    bool escaped = false;
+    for (int i = 0; i < trimmed.length; i++) {
+      final c = trimmed[i];
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (c == '\\') {
+        escaped = true;
+        continue;
+      }
+      if (c == '"') {
+        inString = !inString;
+        continue;
+      }
+      if (!inString) {
+        if (c == '{') {
+          depth++;
+        } else if (c == '}') {
+          depth--;
+          if (depth == 0) return true;
+        }
+      }
+    }
+    return false;
+  }
+
   void _handleIncomingBleData(List<int> bytes) {
     if (bytes.isEmpty) return;
 
@@ -354,100 +393,125 @@ class BlePinRelayService extends ChangeNotifier {
       return;
     }
 
-    // 2. Check if packet is a JSON message (Onboarding / Provisioning protocol)
+    // Attempt UTF-8 text decode for commands & JSON
+    String? decodedText;
     try {
-      final decoded = utf8.decode(bytes);
-      final trimmed = decoded.trim();
-      if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
-        final parsed = jsonDecode(trimmed);
-        if (parsed is Map<String, dynamic> && parsed.containsKey('type')) {
-          _handleBleJsonMessage(parsed);
+      decodedText = utf8.decode(bytes);
+    } catch (_) {
+      decodedText = null;
+    }
+
+    if (decodedText != null) {
+      final trimmedText = decodedText.trim();
+
+      // 2. Check if packet is a text command (SNAP:<len>, STREAM_END, PING:...)
+      // Only treat as command if not currently buffering an active JSON payload
+      if (_bleJsonRxBuffer.isEmpty &&
+          (trimmedText.startsWith('STREAM_END') ||
+           trimmedText.startsWith('STREAM_STOP') ||
+           trimmedText.startsWith('PING:') ||
+           trimmedText.startsWith('SNAP:'))) {
+        debugPrint('[BLE-RELAY] Relaying Command: $trimmedText');
+        if (trimmedText.startsWith('SNAP:')) {
+          final declaredLen = int.tryParse(trimmedText.substring(5).trim()) ?? 0;
+          _isReceivingSnapshot = true;
+          _expectedSnapshotBytes = declaredLen;
+          _snapshotBuilder.clear();
+          debugPrint('[BLE-SNAP] Switched to Snapshot Mode! Expected: $declaredLen bytes');
+          _statusMessage = 'Receiving Camera Snapshot ($declaredLen B)...';
+          notifyListeners();
+
+          MobileServerService().relayBleCommand(_pinnedDeviceId, trimmedText);
+          _snapshotTimeoutTimer?.cancel();
+          _snapshotTimeoutTimer = Timer(const Duration(seconds: 8), () {
+            if (_isReceivingSnapshot) {
+              debugPrint('[BLE-SNAP] Timeout waiting for snapshot bytes.');
+              _isReceivingSnapshot = false;
+              _expectedSnapshotBytes = 0;
+              _snapshotBuilder.clear();
+              notifyListeners();
+            }
+          });
+          return;
+        } else if (trimmedText.startsWith('STREAM_END') || trimmedText.startsWith('STREAM_STOP')) {
+          _state = BleRelayState.connected;
+          _statusMessage = 'Relayed Incident Audio Stream Complete';
+          notifyListeners();
+          MobileServerService().relayBleCommand(_pinnedDeviceId, trimmedText);
+          return;
+        } else if (trimmedText.startsWith('PING:')) {
+          final parts = trimmedText.split(':');
+          int? rssi;
+          int? batt;
+          int? mv;
+          if (parts.length >= 2) rssi = int.tryParse(parts[1]);
+          if (parts.length >= 3) batt = int.tryParse(parts[2]);
+          if (parts.length >= 4) mv = int.tryParse(parts[3]);
+          final devId = _pinnedDeviceId.isNotEmpty ? _pinnedDeviceId : _lastPinnedDeviceId;
+          if (devId.isNotEmpty) {
+            MobileServerService().reportBleProximity(
+              pinId: devId,
+              rssi: rssi ?? -55,
+              battery: batt,
+              batteryMv: mv,
+            );
+          }
+          MobileServerService().relayBleCommand(devId, trimmedText);
           return;
         }
       }
-    } catch (_) {}
 
-    // 3. Check if packet is a text command (e.g. SNAP:<len>, STREAM_END, PING:...)
-    bool isAsciiText = false;
-    String textMsg = '';
-    try {
-      textMsg = utf8.decode(bytes);
-      if (textMsg.startsWith('STREAM_END') ||
-          textMsg.startsWith('STREAM_STOP') ||
-          textMsg.startsWith('PING:') ||
-          textMsg.startsWith('SNAP:')) {
-        isAsciiText = true;
-      }
-    } catch (_) {}
+      // 3. Multi-Fragment JSON Assembly Engine (Provisioning & Telemetry Protocol)
+      // Supports default MTU 23 (20-byte chunks) as well as larger negotiated MTU 512
+      if (_bleJsonRxBuffer.isNotEmpty || trimmedText.startsWith('{')) {
+        _bleJsonRxTimeoutTimer?.cancel();
+        _bleJsonRxBuffer += decodedText;
 
-    if (isAsciiText) {
-      debugPrint('[BLE-RELAY] Relaying Command: $textMsg');
-      if (textMsg.startsWith('SNAP:')) {
-        // Enter Snapshot Receiving Mode
-        final declaredLen = int.tryParse(textMsg.substring(5).trim()) ?? 0;
-        _isReceivingSnapshot = true;
-        _expectedSnapshotBytes = declaredLen;
-        _snapshotBuilder.clear();
-        debugPrint('[BLE-SNAP] Switched to Snapshot Mode! Expected: $declaredLen bytes');
-        _statusMessage = 'Receiving Camera Snapshot ($declaredLen B)...';
-        notifyListeners();
-
-        // Forward SNAP command through Mobile Companion session
-        MobileServerService().relayBleCommand(_pinnedDeviceId, textMsg);
-
-        // Set safety timeout (8 seconds)
-        _snapshotTimeoutTimer?.cancel();
-        _snapshotTimeoutTimer = Timer(const Duration(seconds: 8), () {
-          if (_isReceivingSnapshot) {
-            debugPrint('[BLE-SNAP] Timeout waiting for snapshot bytes.');
-            _isReceivingSnapshot = false;
-            _expectedSnapshotBytes = 0;
-            _snapshotBuilder.clear();
-            notifyListeners();
+        if (_bleJsonRxBuffer.length > maxBleJsonBufferSize) {
+          debugPrint('[BLE-JSON] Buffer overflow! Discarding ${_bleJsonRxBuffer.length} bytes.');
+          _bleJsonRxBuffer = '';
+        } else if (_isCompleteJsonObject(_bleJsonRxBuffer)) {
+          final fullJsonStr = _bleJsonRxBuffer.trim();
+          _bleJsonRxBuffer = '';
+          try {
+            final parsed = jsonDecode(fullJsonStr);
+            if (parsed is Map<String, dynamic> && parsed.containsKey('type')) {
+              _handleBleJsonMessage(parsed);
+              return;
+            }
+          } catch (e) {
+            debugPrint('[BLE-JSON] JSON decode error on reassembled payload: $e');
           }
-        });
-        return;
-      } else if (textMsg.startsWith('STREAM_END') || textMsg.startsWith('STREAM_STOP')) {
-        _state = BleRelayState.connected;
-        _statusMessage = 'Relayed Incident Audio Stream Complete';
-        notifyListeners();
-        MobileServerService().relayBleCommand(_pinnedDeviceId, textMsg);
-      } else if (textMsg.startsWith('PING:')) {
-        final parts = textMsg.split(':');
-        int? rssi;
-        int? batt;
-        int? mv;
-        if (parts.length >= 2) rssi = int.tryParse(parts[1]);
-        if (parts.length >= 3) batt = int.tryParse(parts[2]);
-        if (parts.length >= 4) mv = int.tryParse(parts[3]);
-        if (_pinnedDeviceId.isNotEmpty) {
-          MobileServerService().reportBleProximity(
-            pinId: _pinnedDeviceId,
-            rssi: rssi ?? -55,
-            battery: batt,
-            batteryMv: mv,
-          );
+        } else {
+          // Still waiting for remaining fragments: set 4.0s expiration timer
+          _bleJsonRxTimeoutTimer = Timer(const Duration(milliseconds: 4000), () {
+            if (_bleJsonRxBuffer.isNotEmpty) {
+              debugPrint('[BLE-JSON] Discarding incomplete JSON buffer after timeout (${_bleJsonRxBuffer.length} bytes).');
+              _bleJsonRxBuffer = '';
+            }
+          });
+          return;
         }
-        MobileServerService().relayBleCommand(_pinnedDeviceId, textMsg);
-      } else {
-        MobileServerService().relayBleCommand(_pinnedDeviceId, textMsg);
       }
-    } else {
-      // Binary PCM Audio chunk from ESP32
-      _relayedBytesTotal += bytes.length;
-      _relayedPacketsTotal++;
-      _state = BleRelayState.streaming;
-      _statusMessage = 'Relaying Voice to Server (${(_relayedBytesTotal / 1024).toStringAsFixed(1)} KB)';
-      notifyListeners();
-
-      MobileServerService().relayBleAudio(_pinnedDeviceId, bytes);
     }
+
+    // 4. Binary PCM Audio chunk from ESP32
+    _relayedBytesTotal += bytes.length;
+    _relayedPacketsTotal++;
+    _state = BleRelayState.streaming;
+    _statusMessage = 'Relaying Voice to Server (${(_relayedBytesTotal / 1024).toStringAsFixed(1)} KB)';
+    notifyListeners();
+
+    final devId = _pinnedDeviceId.isNotEmpty ? _pinnedDeviceId : _lastPinnedDeviceId;
+    MobileServerService().relayBleAudio(devId, bytes);
   }
 
   void _handleBleDisconnect() {
     _txSubscription?.cancel();
     _connectionStateSub?.cancel();
     _snapshotTimeoutTimer?.cancel();
+    _bleJsonRxTimeoutTimer?.cancel();
+    _bleJsonRxBuffer = '';
     _isReceivingSnapshot = false;
     _expectedSnapshotBytes = 0;
     _snapshotBuilder.clear();
@@ -455,6 +519,7 @@ class BlePinRelayService extends ChangeNotifier {
     _txCharacteristic = null;
     _rxCharacteristic = null;
     if (_pinnedDeviceId.isNotEmpty) {
+      _lastPinnedDeviceId = _pinnedDeviceId;
       MobileServerService().reportBleDisconnected(_pinnedDeviceId);
     }
     _state = BleRelayState.disconnected;
@@ -477,7 +542,10 @@ class BlePinRelayService extends ChangeNotifier {
       _lastDeviceInfo = msg;
       if (msg['device_id'] != null) {
         _pinnedDeviceId = msg['device_id'].toString().toUpperCase();
+        _lastPinnedDeviceId = _pinnedDeviceId;
       }
+    } else if (msg['device_id'] != null) {
+      _lastPinnedDeviceId = msg['device_id'].toString().toUpperCase();
     }
     _provisioningEventsController.add(msg);
     notifyListeners();

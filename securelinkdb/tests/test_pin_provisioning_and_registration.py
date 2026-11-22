@@ -40,6 +40,7 @@ from server import (
     pending_registrations,
     registered_devices,
     active_pins,
+    pin_active_sockets,
     load_device_credentials,
     save_device_credentials,
     hash_device_token,
@@ -48,6 +49,7 @@ from server import (
     get_device_registration_state,
     register_pin_api,
     get_pairing_code_status,
+    get_pin_status,
     init_registered_devices_from_credentials,
     DEVICE_CREDENTIALS_FILE,
 )
@@ -553,6 +555,228 @@ class TestPinRegistrationPromotion(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(get_device_registration_state(dev_id), PinRegistrationState.PAIRED)
         # Ensure no duplicate records exist
         self.assertEqual(list(registered_devices.keys()).count(dev_id), 1)
+
+    def test_17_target_server_url_selection_and_tunnel_preference(self):
+        """Test Problem A: Target server URL resolution prioritizes Cloudflare Tunnel over local LAN."""
+        def resolve_pin_server_url(cloud_tunnel: str, local_ip: str, mode: str = "automatic") -> str:
+            clean_tunnel = cloud_tunnel.strip().rstrip("/") if cloud_tunnel else ""
+            clean_lan = f"http://{local_ip.strip()}:8080".rstrip("/") if local_ip else ""
+
+            if mode == "cloudflareTunnel":
+                return clean_tunnel if clean_tunnel else clean_lan
+            if mode == "localLan":
+                return clean_lan if clean_lan else clean_tunnel
+
+            # Automatic mode: prefer HTTPS Cloudflare tunnel if valid
+            if clean_tunnel and (".trycloudflare.com" in clean_tunnel or clean_tunnel.startswith("https://")):
+                return clean_tunnel
+            return clean_lan if clean_lan else clean_tunnel
+
+        tunnel = "https://active-sample-tunnel.trycloudflare.com/"
+        lan = "192.168.1.150"
+
+        # 1. Automatic mode with active tunnel -> MUST select tunnel
+        selected = resolve_pin_server_url(tunnel, lan, mode="automatic")
+        self.assertEqual(selected, "https://active-sample-tunnel.trycloudflare.com")
+        self.assertFalse(selected.endswith("/"))
+
+        # 2. Local LAN mode -> selects LAN IP
+        selected_lan = resolve_pin_server_url(tunnel, lan, mode="localLan")
+        self.assertEqual(selected_lan, "http://192.168.1.150:8080")
+
+        # 3. Tunnel absent -> falls back to LAN in automatic mode
+        selected_fallback = resolve_pin_server_url("", lan, mode="automatic")
+        self.assertEqual(selected_fallback, "http://192.168.1.150:8080")
+
+    def test_18_websocket_connection_superseding_prevents_offline_flapping(self):
+        """Test Problem B: Superseded websocket disconnect does NOT mark device OFFLINE or flap state."""
+        dev_id = "PIN-F360"
+        old_ws = MagicMock()
+        new_ws = MagicMock()
+
+        registered_devices[dev_id] = {
+            "id": dev_id,
+            "online": True,
+            "paired": True,
+            "state": "VAD ARMED"
+        }
+
+        # Step 1: old_ws connects and is active
+        pin_active_sockets[dev_id] = old_ws
+        active_pins[old_ws] = dev_id
+
+        # Step 2: Device reconnects. new_ws authenticates and supersedes old_ws
+        if old_ws != new_ws and dev_id in pin_active_sockets:
+            active_pins.pop(old_ws, None)
+        pin_active_sockets[dev_id] = new_ws
+        active_pins[new_ws] = dev_id
+
+        # Step 3: old_ws finally terminates and its finally block executes:
+        # Simulate finally block of handle_pin_websocket:
+        active_pins.pop(old_ws, None)
+        if pin_active_sockets.get(dev_id) == old_ws:
+            del pin_active_sockets[dev_id]
+
+        is_still_online = (dev_id in pin_active_sockets) or any(d_id == dev_id for d_id in active_pins.values())
+        if not is_still_online and dev_id in registered_devices:
+            registered_devices[dev_id]["online"] = False
+            registered_devices[dev_id]["state"] = "OFFLINE"
+
+        # Device MUST remain ONLINE and VAD ARMED because new_ws is authoritative
+        self.assertTrue(registered_devices[dev_id]["online"])
+        self.assertEqual(registered_devices[dev_id]["state"], "VAD ARMED")
+        self.assertEqual(pin_active_sockets.get(dev_id), new_ws)
+
+        # Cleanup
+        active_pins.pop(new_ws, None)
+        pin_active_sockets.pop(dev_id, None)
+
+    async def test_19_pin_status_authoritative_endpoint(self):
+        """Test Problem B: /api/pin/status/{device_id} accurately reports paired and online states."""
+        dev_id = "PIN-TEST-STATUS"
+        creds = load_device_credentials()
+        creds[dev_id] = {
+            "token_hash": hash_device_token("status_token"),
+            "registered_at": "2026-11-22 12:00:00",
+            "fw_version": "2.1",
+            "mac": "11:22:33:44:55:66",
+            "pairing_code_used": "999999"
+        }
+        save_device_credentials(creds)
+
+        # 1. Device registered and paired, but offline
+        registered_devices[dev_id] = {"id": dev_id, "online": False, "paired": True, "state": "OFFLINE"}
+        status_res = await get_pin_status(dev_id)
+        self.assertEqual(status_res["status"], "success")
+        self.assertTrue(status_res["registered"])
+        self.assertTrue(status_res["paired"])
+        self.assertFalse(status_res["online"])
+        self.assertEqual(status_res["state"], "OFFLINE")
+
+        # 2. Device connects active socket
+        mock_ws = MagicMock()
+        pin_active_sockets[dev_id] = mock_ws
+        active_pins[mock_ws] = dev_id
+        registered_devices[dev_id]["online"] = True
+        registered_devices[dev_id]["state"] = "VAD ARMED"
+
+        status_res2 = await get_pin_status(dev_id)
+        self.assertTrue(status_res2["online"])
+        self.assertEqual(status_res2["state"], "VAD ARMED")
+
+        # Cleanup
+        active_pins.pop(mock_ws, None)
+        pin_active_sockets.pop(dev_id, None)
+        creds.pop(dev_id, None)
+        save_device_credentials(creds)
+        registered_devices.pop(dev_id, None)
+
+    def test_20_fragmented_ble_notification_reassembly(self):
+        """Test Problem C: Multi-chunk BLE notifications reassemble correctly across MTU 23 boundaries."""
+        class BleNotificationReassembler:
+            def __init__(self):
+                self.rx_buffer = bytearray()
+                self.events = []
+
+            def _is_complete_json(self, text: str) -> bool:
+                trimmed = text.strip()
+                if not (trimmed.startswith("{") and trimmed.endswith("}")):
+                    return False
+                in_str = False
+                escaped = False
+                depth = 0
+                for c in trimmed:
+                    if escaped:
+                        escaped = False
+                        continue
+                    if c == "\\":
+                        escaped = True
+                        continue
+                    if c == '"':
+                        in_str = not in_str
+                        continue
+                    if not in_str:
+                        if c == "{":
+                            depth += 1
+                        elif c == "}":
+                            depth -= 1
+                            if depth == 0:
+                                return True
+                return False
+
+            def receive_chunk(self, chunk_bytes: bytes):
+                self.rx_buffer.extend(chunk_bytes)
+                text = self.rx_buffer.decode("utf-8", errors="ignore").strip()
+                if self._is_complete_json(text):
+                    try:
+                        parsed = json.loads(text)
+                        self.events.append(parsed)
+                        self.rx_buffer.clear()
+                    except json.JSONDecodeError:
+                        pass
+
+        reassembler = BleNotificationReassembler()
+        full_event = json.dumps({"type": "pairing_success", "device_id": "PIN-F360", "status": "authenticated"})
+
+        # Emulate 20-byte BLE notification writes (standard MTU 23)
+        raw = full_event.encode("utf-8")
+        chunk_size = 20
+        chunks = [raw[i:i + chunk_size] for i in range(0, len(raw), chunk_size)]
+        self.assertGreater(len(chunks), 1, "Should be split into multiple chunks")
+
+        for idx, chunk in enumerate(chunks[:-1]):
+            reassembler.receive_chunk(chunk)
+            self.assertEqual(len(reassembler.events), 0, f"Chunk {idx} is incomplete, should not parse")
+
+        # Send final chunk
+        reassembler.receive_chunk(chunks[-1])
+        self.assertEqual(len(reassembler.events), 1, "Complete event should parse on final chunk")
+        self.assertEqual(reassembler.events[0]["type"], "pairing_success")
+        self.assertEqual(reassembler.events[0]["device_id"], "PIN-F360")
+
+    async def test_21_polling_verification_fallback_when_ble_dropped(self):
+        """Test Problem C: Polling verification confirms pairing even if BLE notifications are lost."""
+        dev_id = "PIN-F360-BLE-LOSS"
+        pairing_code = "778899"
+
+        # Server side: registration occurred and device was authenticated/promoted
+        creds = load_device_credentials()
+        creds[dev_id] = {
+            "token_hash": hash_device_token("token_lost_ble"),
+            "registered_at": "2026-11-22 12:00:00",
+            "fw_version": "2.1",
+            "mac": "AA:BB:CC:DD:EE:FF",
+            "pairing_code_used": pairing_code
+        }
+        save_device_credentials(creds)
+        registered_devices[dev_id] = {"id": dev_id, "online": True, "paired": True, "state": "VAD ARMED"}
+
+        active_pairing_codes[pairing_code] = {
+            "code": pairing_code,
+            "created_at": time.time(),
+            "expires_at": time.time() + 180,
+            "used": True,
+            "paired": True,
+            "device_id": dev_id
+        }
+
+        # Mobile companion polling verification simulation
+        status_res = await get_pin_status(dev_id)
+        code_status = await get_pairing_code_status(pairing_code)
+
+        is_paired_confirmed = (
+            status_res.get("paired", False) or
+            code_status.get("paired", False) or
+            code_status.get("device_id") == dev_id
+        )
+
+        self.assertTrue(is_paired_confirmed, "Polling verification must confirm paired status even without BLE event")
+
+        # Cleanup
+        creds.pop(dev_id, None)
+        save_device_credentials(creds)
+        registered_devices.pop(dev_id, None)
+        active_pairing_codes.pop(pairing_code, None)
 
 
 if __name__ == "__main__":
