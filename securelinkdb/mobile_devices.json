@@ -28,11 +28,23 @@
     "device_id": "MOBILE-6069",
     "device_name": "Mobile Companion (E-6069)",
     "user_name": "Teacher / Student",
-    "role": "Admin",
-    "token_hash": "66788d7b12f403608dddbf7e71a93e5360bf1b703ba05a7fe52f8d3ea726b0a1",
-    "paired_at": "2026-11-22 04:34:34",
+    "role": "Responder",
+    "token_hash": "f933bba2f40da48ae1755ac5dd738f56f6071eab129728a5cabb45b4f1d8b9c0",
+    "paired_at": "2026-11-22 15:46:00",
     "revoked": false,
-    "last_seen": "2026-11-22 04:35:19",
+    "last_seen": "2026-11-22 16:49:20",
+    "connection_type": "remote",
+    "paired_ip": "136.158.25.176"
+  },
+  "MOB-2070": {
+    "device_id": "MOB-2070",
+    "device_name": "Mobile Companion (B-2070)",
+    "user_name": "Teacher / Student",
+    "role": "Admin",
+    "token_hash": "f6c16a19494e4d69dbd1da74f2c7900742dd4c3faf5605f109ce57dc662e5859",
+    "paired_at": "2026-11-22 16:52:30",
+    "revoked": false,
+    "last_seen": "2026-11-22 16:55:04",
     "connection_type": "remote",
     "paired_ip": "136.158.25.176"
   }
