@@ -231,11 +231,37 @@ struct BleProvisionRequest {
 };
 
 static QueueHandle_t bleProvisionQueue = nullptr;
+static QueueHandle_t bleDeferredTxQueue = nullptr;  // Deferred BLE notifications from onWrite
 static SemaphoreHandle_t bleTxMutex = nullptr;
 static volatile bool isBleProvisioningActive = false;
 static String bleRxBuffer = "";
 static unsigned long lastBleRxChunkTime = 0;
 static constexpr size_t MAX_BLE_RX_BUFFER = 2048;
+
+// Deferred BLE TX message (sent outside onWrite callback to avoid Bluedroid deadlock)
+struct BleDeferredTxMsg {
+    char text[512];
+};
+
+// Queue a BLE notification to be sent OUTSIDE the onWrite callback.
+// On ESP32 Bluedroid, calling notify() inside onWrite blocks the write-response
+// ACK, causing the phone's write-with-response to time out after 15 seconds.
+void deferBleText(const String& txt) {
+    if (bleDeferredTxQueue == nullptr) return;
+    BleDeferredTxMsg msg;
+    memset(&msg, 0, sizeof(msg));
+    strncpy(msg.text, txt.c_str(), sizeof(msg.text) - 1);
+    xQueueSend(bleDeferredTxQueue, &msg, 0);
+}
+
+// Flush any deferred BLE TX messages (call from loop() or a task, never from onWrite)
+void flushDeferredBleTx() {
+    if (bleDeferredTxQueue == nullptr) return;
+    BleDeferredTxMsg msg;
+    while (xQueueReceive(bleDeferredTxQueue, &msg, 0) == pdTRUE) {
+        sendBleText(String(msg.text));
+    }
+}
 
 class BleServerCallbacks: public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) override {
@@ -341,19 +367,20 @@ class BleRxCallbacks: public BLECharacteristicCallbacks {
                                      "\",\"mac\":\"" + pin_mac_address + 
                                      "\",\"fw_version\":\"2.1\",\"paired\":" + (isDevicePaired ? "true" : "false") + "}";
                     Serial.printf("[BLE-PROV] Replying with device info: %s\n", infoMsg.c_str());
-                    sendBleText(infoMsg);
+                    // MUST defer: calling notify() inside onWrite deadlocks Bluedroid
+                    deferBleText(infoMsg);
                     return;
                 }
 
                 // 2. Wi-Fi & Pairing Provisioning Command: Enqueue to dedicated worker task!
                 if (fullJson.indexOf("\"provision\"") >= 0) {
-                    // Send immediate non-blocking ACK
-                    sendBleText("{\"type\":\"provision_received\"}");
+                    // Defer ACK: calling notify() inside onWrite blocks the write-response ACK
+                    deferBleText("{\"type\":\"provision_received\"}");
                     Serial.println("[BLE-PROV] Provisioning command received and acknowledged to phone.");
 
                     if (isBleProvisioningActive) {
                         Serial.println("[BLE-PROV] Provisioning already in progress. Rejecting concurrent attempt.");
-                        sendBleText("{\"type\":\"provision_error\",\"code\":\"ERR_BUSY\",\"message\":\"Provisioning task is already in progress\"}");
+                        deferBleText("{\"type\":\"provision_error\",\"code\":\"ERR_BUSY\",\"message\":\"Provisioning task is already in progress\"}");
                         return;
                     }
 
@@ -363,7 +390,7 @@ class BleRxCallbacks: public BLECharacteristicCallbacks {
                     String srvUrl = extractJsonField(fullJson, "server_url");
 
                     if (newSsid.length() == 0 || pCode.length() == 0) {
-                        sendBleText("{\"type\":\"provision_error\",\"code\":\"ERR_INVALID_PARAMS\",\"message\":\"SSID and pairing_code required\"}");
+                        deferBleText("{\"type\":\"provision_error\",\"code\":\"ERR_INVALID_PARAMS\",\"message\":\"SSID and pairing_code required\"}");
                         return;
                     }
 
@@ -378,10 +405,10 @@ class BleRxCallbacks: public BLECharacteristicCallbacks {
                         if (xQueueSend(bleProvisionQueue, &req, 0) == pdTRUE) {
                             Serial.println("[BLE-PROV] Provisioning parameters enqueued to worker task.");
                         } else {
-                            sendBleText("{\"type\":\"provision_error\",\"code\":\"ERR_QUEUE_FULL\",\"message\":\"Could not enqueue provisioning request\"}");
+                            deferBleText("{\"type\":\"provision_error\",\"code\":\"ERR_QUEUE_FULL\",\"message\":\"Could not enqueue provisioning request\"}");
                         }
                     } else {
-                        sendBleText("{\"type\":\"provision_error\",\"code\":\"ERR_INTERNAL\",\"message\":\"Provisioning queue not initialized\"}");
+                        deferBleText("{\"type\":\"provision_error\",\"code\":\"ERR_INTERNAL\",\"message\":\"Provisioning queue not initialized\"}");
                     }
                     return;
                 }
@@ -693,6 +720,7 @@ void setupBLE() {
 
     bleTxMutex = xSemaphoreCreateMutex();
     bleProvisionQueue = xQueueCreate(2, sizeof(BleProvisionRequest));
+    bleDeferredTxQueue = xQueueCreate(8, sizeof(BleDeferredTxMsg));
     xTaskCreatePinnedToCore(
         bleProvisionWorkerTask,
         "bleProvTask",
@@ -1816,6 +1844,10 @@ void setup() {
 
 void loop() {
     handleSerialCommands();
+
+    // Flush any deferred BLE notifications queued from inside onWrite callbacks.
+    // This MUST run from loop() context, never from inside a BLE callback.
+    flushDeferredBleTx();
 
     // Check for Boot button held for 2 seconds anytime to enter setup portal
     static unsigned long btnHoldStart = 0;

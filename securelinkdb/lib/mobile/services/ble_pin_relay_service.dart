@@ -521,8 +521,11 @@ class BlePinRelayService extends ChangeNotifier {
     }
 
     // Respect characteristic write properties.
-    // Prefer write-with-response for reliable command reception if supported, otherwise write-without-response.
-    final bool withoutResp = !canWriteWithResp;
+    // Prefer write-without-response (WRITE_NR) when available: on ESP32 Bluedroid,
+    // write-with-response blocks until the onWrite callback returns, and any
+    // notify() call inside that callback can deadlock the BLE stack, causing
+    // a 15-second timeout on the phone side.  WRITE_NR avoids that entirely.
+    final bool withoutResp = canWriteWithoutResp;
 
     try {
       final jsonStr = jsonEncode(jsonMap);
