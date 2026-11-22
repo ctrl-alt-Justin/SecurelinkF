@@ -521,12 +521,12 @@ void bleProvisionWorkerTask(void* param) {
             }
             connectWebSocket(server_host, server_port);
 
-            // Wait up to 10 seconds for WebSocket connection & authentication confirmation
+            // Wait up to 30 seconds for WebSocket connection & authentication confirmation
             unsigned long authWaitStart = millis();
             bool authConfirmed = false;
-            while (millis() - authWaitStart < 10000) {
+            while (millis() - authWaitStart < 30000) {
                 vTaskDelay(pdMS_TO_TICKS(150));
-                if (isDevicePaired && ws.isConnected()) {
+                if (isDevicePaired) {
                     authConfirmed = true;
                     break;
                 }
@@ -537,7 +537,7 @@ void bleProvisionWorkerTask(void* param) {
                 sendBleText("{\"type\":\"pairing_success\",\"device_id\":\"" + pin_device_id + "\"}");
             } else {
                 Serial.println("[BLE-PROV-TASK] WebSocket authentication did not confirm within timeout.");
-                sendBleText("{\"type\":\"provision_error\",\"code\":\"ERR_WS_AUTH\",\"message\":\"WebSocket authentication failed or timed out\"}");
+                sendBleText("{\"type\":\"provision_error\",\"code\":\"ERR_WS_TIMEOUT\",\"message\":\"WebSocket connection or authentication timed out\"}");
             }
 
             isBleProvisioningActive = false;
@@ -624,7 +624,7 @@ TaskHandle_t audioTaskHandle = NULL;
 
 unsigned long lastSpeechTime = 0;
 unsigned long SILENCE_TIMEOUT = 1400; // 1.4s silence timeout: returns to Standby promptly when speaker finishes sentence
-const unsigned long WS_CONNECT_TIMEOUT_MS = 5000;
+const unsigned long WS_CONNECT_TIMEOUT_MS = 25000;
 const unsigned long WIFI_CONNECT_TIMEOUT_MS = 8000;
 
 // VAD SENSITIVITY & CONTINUITY TUNING:

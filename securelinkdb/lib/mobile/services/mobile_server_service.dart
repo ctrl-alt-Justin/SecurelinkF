@@ -1037,6 +1037,13 @@ class MobileServerService extends ChangeNotifier {
         return;
       }
 
+      if (eventType == 'pin_registered' && json['device'] != null) {
+        final dev = DeviceStatus.fromJson(json['device']);
+        _devices[dev.id.toUpperCase()] = dev;
+        notifyListeners();
+        return;
+      }
+
       if (eventType == 'device_update' && json['device'] != null) {
         final dev = DeviceStatus.fromJson(json['device']);
         _devices[dev.id.toUpperCase()] = dev;
@@ -1512,6 +1519,50 @@ class MobileServerService extends ChangeNotifier {
     return pairPin(cleanId, alias: alias, method: 'Bluetooth Low Energy');
   }
 
+  /// Verifies if a Smart Pin is confirmed paired and registered with the Central System
+  Future<bool> verifyPinPairingWithServer(String cleanCode, String devId) async {
+    try {
+      final upperId = devId.toUpperCase();
+      // 1. In-memory devices check
+      if (_devices.containsKey(upperId)) {
+        return true;
+      }
+      // 2. Query code status REST endpoint
+      if (cleanCode.isNotEmpty) {
+        final codeUri = getApiUri('/pairing-code/status/$cleanCode');
+        final client = HttpClient()..connectionTimeout = const Duration(seconds: 4);
+        final req = await client.getUrl(codeUri);
+        final res = await req.close();
+        if (res.statusCode == 200) {
+          final bodyStr = await res.transform(utf8.decoder).join();
+          final data = jsonDecode(bodyStr);
+          if (data['paired'] == true && (data['device_id'] == null || data['device_id'].toString().toUpperCase() == upperId)) {
+            return true;
+          }
+        }
+      }
+      // 3. Query paired devices list
+      final listUri = getApiUri('/devices/paired');
+      final listClient = HttpClient()..connectionTimeout = const Duration(seconds: 4);
+      final listReq = await listClient.getUrl(listUri);
+      final listRes = await listReq.close();
+      if (listRes.statusCode == 200) {
+        final listBody = await listRes.transform(utf8.decoder).join();
+        final listData = jsonDecode(listBody);
+        if (listData['devices'] is List) {
+          for (final d in listData['devices']) {
+            if (d['device_id']?.toString().toUpperCase() == upperId) {
+              return true;
+            }
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('[BLE-PROV] Error verifying pairing status with server: $e');
+    }
+    return false;
+  }
+
   /// Complete button-free BLE onboarding & cryptographic provisioning workflow
   Future<Map<String, dynamic>> provisionPinViaBle({
     required BluetoothDevice device,
@@ -1539,14 +1590,26 @@ class MobileServerService extends ChangeNotifier {
     onProgress?.call('Transmitting Wi-Fi & Pairing Code to Pin...', 0.45);
 
     final completer = Completer<Map<String, dynamic>>();
+    final cleanCode = pairingCode.replaceAll(RegExp(r'[\s-]'), '').trim();
 
     StreamSubscription? sub;
-    Timer? timeoutTimer = Timer(const Duration(seconds: 35), () {
+    Timer? timeoutTimer = Timer(const Duration(seconds: 60), () async {
       if (!completer.isCompleted) {
         sub?.cancel();
+        final devId = relay.pinnedDeviceId.toUpperCase();
+        final isPaired = await verifyPinPairingWithServer(cleanCode, devId);
+        if (isPaired) {
+          await pairPin(devId, alias: alias, method: 'BLE Cryptographic Pairing');
+          completer.complete({
+            'success': true,
+            'device_id': devId,
+            'message': 'Smart Pin $devId successfully paired and authenticated with Central System!',
+          });
+          return;
+        }
         completer.complete({
           'success': false,
-          'error': 'Provisioning timed out after 35 seconds. Check Wi-Fi credentials or pairing code.',
+          'error': 'Provisioning timed out after 60 seconds. Check Wi-Fi credentials or pairing code.',
         });
       }
     });
@@ -1577,10 +1640,32 @@ class MobileServerService extends ChangeNotifier {
           });
         }
       } else if (type == 'provision_error') {
-        timeoutTimer.cancel();
-        sub?.cancel();
         final errCode = event['code'] as String? ?? 'ERR_UNKNOWN';
         String errMsg = event['message'] as String? ?? 'Provisioning failed';
+        final devId = (event['device_id'] ?? relay.pinnedDeviceId).toString().toUpperCase();
+
+        // If the error was WebSocket auth or timeout, verify if Central System already accepted & paired the device!
+        if (errCode == 'ERR_WS_AUTH' || errCode == 'ERR_WS_TIMEOUT') {
+          onProgress?.call('Verifying pairing confirmation with Central System...', 0.95);
+          final isConfirmedOnServer = await verifyPinPairingWithServer(cleanCode, devId);
+          if (isConfirmedOnServer) {
+            timeoutTimer.cancel();
+            sub?.cancel();
+            await pairPin(devId, alias: alias, method: 'BLE Cryptographic Pairing');
+            onProgress?.call('Pairing successful! Pin authenticated with Central System.', 1.0);
+            if (!completer.isCompleted) {
+              completer.complete({
+                'success': true,
+                'device_id': devId,
+                'message': 'Smart Pin $devId successfully paired and authenticated!',
+              });
+            }
+            return;
+          }
+        }
+
+        timeoutTimer.cancel();
+        sub?.cancel();
         if (errCode == 'ERR_WIFI_AUTH') {
           errMsg = 'Wi-Fi Connection Failed: Pin could not connect to "${event['ssid'] ?? ssid}". Check network SSID and password.';
         } else if (errCode == 'ERR_PAIRING_CODE') {
@@ -1589,6 +1674,8 @@ class MobileServerService extends ChangeNotifier {
           errMsg = 'Hardware Storage Error: Smart Pin failed to save credentials to flash memory.';
         } else if (errCode == 'ERR_WS_AUTH') {
           errMsg = 'WebSocket Authentication Failed: Central System rejected pin credentials.';
+        } else if (errCode == 'ERR_WS_TIMEOUT') {
+          errMsg = 'WebSocket Connection Timed Out: Smart Pin connected to Wi-Fi but timed out contacting Central System.';
         }
         if (!completer.isCompleted) {
           completer.complete({

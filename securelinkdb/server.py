@@ -1064,7 +1064,7 @@ async def get_pairing_code_status(code: str):
         }
     is_expired = now > code_data.get("expires_at", 0)
     dev_id = code_data.get("device_id")
-    is_paired = bool(dev_id and dev_id in registered_devices and registered_devices[dev_id].get("paired", False))
+    is_paired = bool(code_data.get("paired", False) or (dev_id and dev_id in registered_devices and registered_devices[dev_id].get("paired", False)))
     is_pending = bool(dev_id and dev_id in pending_registrations)
 
     return {
@@ -2189,7 +2189,7 @@ async def pin_websocket_endpoint(websocket: WebSocket):
             device_id = f"PIN-{pin_suffix}"
     
     # Authenticate device using cryptographically registered token
-    device_token = websocket.query_params.get("token") or websocket.headers.get("x-device-token")
+    device_token = websocket.query_params.get("token") or websocket.headers.get("x-device-token") or websocket.headers.get("X-Device-Token")
     now = time.time()
     is_authenticated = False
     is_pending_promotion = False
@@ -2218,8 +2218,8 @@ async def pin_websocket_endpoint(websocket: WebSocket):
         except Exception:
             pass
 
-        # Allow up to 5.0 seconds and process incoming frames (ignoring early PINGs)
-        t_auth_deadline = time.time() + 5.0
+        # Allow up to 10.0 seconds and process incoming frames (ignoring early PINGs)
+        t_auth_deadline = time.time() + 10.0
         while time.time() < t_auth_deadline and not is_authenticated:
             try:
                 remaining = max(0.5, t_auth_deadline - time.time())
@@ -2324,14 +2324,20 @@ async def pin_websocket_endpoint(websocket: WebSocket):
             pending_entry = pending_registrations.pop(device_id, pending_info)
             if pending_entry:
                 creds = load_device_credentials()
+                pcode = pending_entry.get("pairing_code", "")
                 creds[device_id] = {
                     "token_hash": pending_entry["token_hash"],
                     "registered_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "fw_version": pending_entry.get("fw_version", "2.1"),
                     "mac": pending_entry.get("mac", ""),
-                    "pairing_code_used": pending_entry.get("pairing_code", ""),
+                    "pairing_code_used": pcode,
                 }
                 save_device_credentials(creds)
+
+                if pcode and pcode in active_pairing_codes:
+                    active_pairing_codes[pcode]["paired"] = True
+                    active_pairing_codes[pcode]["device_id"] = device_id
+                    save_active_pairing_codes()
 
                 dev_record = registered_devices.get(device_id, {})
                 dev_record.update({
