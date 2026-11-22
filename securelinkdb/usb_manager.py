@@ -269,6 +269,7 @@ class USBDeviceManager:
                             raw_audio = bytes(buffer[newline_idx + 1 : total_needed])
                             del buffer[:total_needed]
                             self._handle_audio_chunk(seq_num, raw_audio)
+                            self._send_text(f"SL:AUDIO:ACK:{seq_num}\n")
                             continue
 
                 # Normal line-delimited message: consume header line
@@ -308,7 +309,12 @@ class USBDeviceManager:
             is_valid = True
             if self.verify_credential_fn:
                 try:
-                    is_valid = self.verify_credential_fn(dev_id)
+                    import inspect
+                    sig = inspect.signature(self.verify_credential_fn)
+                    if len(sig.parameters) >= 2:
+                        is_valid = self.verify_credential_fn(dev_id, mac)
+                    else:
+                        is_valid = self.verify_credential_fn(dev_id)
                 except Exception as e:
                     logger.error(f"Credential check failed: {e}")
                     is_valid = False

@@ -341,44 +341,53 @@ recent_incidents: collections.deque = collections.deque(maxlen=50)
 # --- USB SERIAL DEVICE MANAGER (DIRECT HARDWARE PIPELINE) ---
 from usb_manager import USBDeviceManager
 
+logger = logging.getLogger("securelink")
+fastapi_event_loop: Optional[asyncio.AbstractEventLoop] = None
+
 def _on_usb_device_update(dev_dict: dict):
     dev_id = dev_dict.get("id")
     if dev_id:
         registered_devices[dev_id] = dev_dict
-        try:
-            loop = asyncio.get_running_loop()
-            asyncio.run_coroutine_threadsafe(
-                broadcast_to_clients({"event_type": "device_update", "device": dev_dict}),
-                loop
-            )
-        except RuntimeError:
-            pass
+        global fastapi_event_loop
+        if fastapi_event_loop and fastapi_event_loop.is_running():
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    broadcast_to_clients({"event_type": "device_update", "device": dev_dict}),
+                    fastapi_event_loop
+                )
+            except Exception as e:
+                logger.error(f"[USB] Error scheduling device_update broadcast: {e}", exc_info=True)
+        else:
+            logger.debug("[USB] Event loop not active; stored device_update in registered_devices")
 
 def _on_usb_audio_complete(device_id: str, pcm_bytes: bytes):
-    try:
-        loop = asyncio.get_running_loop()
-        asyncio.run_coroutine_threadsafe(
-            handle_completed_audio(device_id, pcm_bytes, websocket=None, source="USB"),
-            loop
-        )
-    except RuntimeError:
-        pass
+    global fastapi_event_loop
+    if fastapi_event_loop and fastapi_event_loop.is_running():
+        try:
+            asyncio.run_coroutine_threadsafe(
+                handle_completed_audio(device_id, pcm_bytes, websocket=None, source="USB"),
+                fastapi_event_loop
+            )
+        except Exception as e:
+            logger.error(f"[USB] Error scheduling handle_completed_audio: {e}", exc_info=True)
+    else:
+        logger.error("[USB] Cannot dispatch completed audio: FastAPI main event loop is not running")
 
-def _verify_usb_credential(device_id: str) -> bool:
+def _verify_usb_credential(device_id: str, mac: Optional[str] = None) -> bool:
     creds = load_device_credentials()
-    if device_id in creds:
-        return True
-    if device_id in registered_devices or device_id.startswith("PIN-"):
-        creds[device_id] = {
-            "token_hash": "usb_direct_authorized",
-            "registered_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "fw_version": "2.1",
-            "mac": "",
-            "connection_source": "USB"
-        }
-        save_device_credentials(creds)
-        return True
-    return False
+    if device_id not in creds:
+        logger.warning(f"[USB-AUTH] Device ID '{device_id}' not found in device_credentials.json. Denying USB connection.")
+        return False
+    dev_entry = creds[device_id]
+    cred_mac = (dev_entry.get("mac") or "").strip().upper()
+    if cred_mac and mac:
+        clean_cred_mac = cred_mac.replace(":", "").replace("-", "")
+        clean_mac = mac.strip().upper().replace(":", "").replace("-", "")
+        if clean_cred_mac != clean_mac:
+            logger.warning(f"[USB-AUTH] Device ID '{device_id}' MAC mismatch: expected '{cred_mac}', received '{mac}'. Denying USB connection.")
+            return False
+    logger.info(f"[USB-AUTH] Device ID '{device_id}' authorized via matching credential record.")
+    return True
 
 usb_mgr = USBDeviceManager(
     on_device_update=_on_usb_device_update,
@@ -2119,10 +2128,15 @@ async def periodic_recordings_cleanup():
 
 @app.on_event("startup")
 async def startup_event():
+    # Capture FastAPI running event loop for thread-safe cross-thread scheduling
+    global fastapi_event_loop
+    fastapi_event_loop = asyncio.get_running_loop()
+    print(f"[SYS] Captured FastAPI main event loop: {fastapi_event_loop}")
+
     # Initialize previously paired devices from persistent credentials storage
     init_registered_devices_from_credentials()
 
-    loop = asyncio.get_running_loop()
+    loop = fastapi_event_loop
     try:
         await loop.create_datagram_endpoint(
             lambda: DiscoveryProtocol(),

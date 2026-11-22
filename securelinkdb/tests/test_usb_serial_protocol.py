@@ -216,6 +216,69 @@ class TestUSBSerialProtocol(unittest.TestCase):
         server.usb_mgr.is_authenticated = False
         server.usb_mgr.device_id = None
 
+    def test_08_audio_chunk_acknowledgment(self):
+        """Manager writes SL:AUDIO:ACK:<seq> upon receiving each binary audio frame."""
+        self.mgr.running = True
+        raw_pcm = b"\x11\x22" * 100 # 200 bytes
+        frame = f"SL:AUDIO:{len(raw_pcm)}:42\n".encode("utf-8") + raw_pcm
+        self.mock_serial.read_buffer.extend(frame)
+
+        # Run one parse iteration
+        buffer = bytearray()
+        chunk = self.mock_serial.read(self.mock_serial.in_waiting)
+        buffer.extend(chunk)
+        newline_idx = buffer.find(b"\n")
+        header_bytes = bytes(buffer[:newline_idx]).strip()
+        header_str = header_bytes.decode("utf-8")
+        parts = header_str.split(":")
+        payload_len = int(parts[2])
+        seq_num = int(parts[3])
+        total_needed = newline_idx + 1 + payload_len
+        raw_audio = bytes(buffer[newline_idx + 1: total_needed])
+        self.mgr._handle_audio_chunk(seq_num, raw_audio)
+        self.mgr._send_text(f"SL:AUDIO:ACK:{seq_num}\n")
+
+        self.assertIn(b"SL:AUDIO:ACK:42\n", bytes(self.mock_serial.write_buffer))
+
+    def test_09_mac_verification_and_credential_enforcement(self):
+        """Credential verification requires valid device in device_credentials.json and matching MAC."""
+        with patch("server.load_device_credentials") as mock_creds:
+            mock_creds.return_value = {
+                "PIN-F360": {
+                    "token_hash": "abc",
+                    "mac": "E8:F6:0A:8C:F3:60",
+                }
+            }
+            # 1. Matching device & MAC
+            self.assertTrue(server._verify_usb_credential("PIN-F360", "E8:F6:0A:8C:F3:60"))
+            # 2. Matching device with lowercase / hyphenated MAC
+            self.assertTrue(server._verify_usb_credential("PIN-F360", "e8-f6-0a-8c-f3-60"))
+            # 3. Mismatched MAC
+            self.assertFalse(server._verify_usb_credential("PIN-F360", "AA:BB:CC:DD:EE:FF"))
+            # 4. Unknown device ID without credentials (no auto-registration bypass!)
+            self.assertFalse(server._verify_usb_credential("PIN-UNREGISTERED", "E8:F6:0A:8C:F3:60"))
+
+    def test_10_cross_thread_event_loop_scheduling(self):
+        """Cross-thread callbacks dispatch via asyncio.run_coroutine_threadsafe when loop is active."""
+        mock_loop = MagicMock()
+        mock_loop.is_running.return_value = True
+
+        with patch("server.fastapi_event_loop", mock_loop):
+            with patch("asyncio.run_coroutine_threadsafe") as mock_threadsafe:
+                def fake_threadsafe(coro, loop):
+                    coro.close()
+                    fut = MagicMock()
+                    return fut
+                mock_threadsafe.side_effect = fake_threadsafe
+
+                # 1. Device update callback from USB thread
+                server._on_usb_device_update({"id": "PIN-F360", "state": "VAD ARMED"})
+                self.assertEqual(mock_threadsafe.call_count, 1)
+
+                # 2. Completed audio callback from USB thread
+                server._on_usb_audio_complete("PIN-F360", b"\x00" * 3200)
+                self.assertEqual(mock_threadsafe.call_count, 2)
+
 
 if __name__ == "__main__":
     unittest.main()
