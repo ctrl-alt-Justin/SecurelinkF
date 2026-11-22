@@ -242,11 +242,20 @@ active_pairing_codes: Dict[str, Dict[str, Any]] = load_active_pairing_codes()
 pairing_code_rate_limit: Dict[str, List[float]] = {}  # ip -> list of timestamps
 
 class PinRegistrationState:
-    UNREGISTERED = "UNREGISTERED"
-    PENDING = "PENDING"
+    UNPROVISIONED = "UNPROVISIONED"
+    PROVISIONING = "PROVISIONING"
+    WIFI_CONNECTED = "WIFI_CONNECTED"
+    REGISTERING = "REGISTERING"
+    AUTHENTICATING = "AUTHENTICATING"
     PAIRED = "PAIRED"
+    ONLINE = "ONLINE"
     OFFLINE = "OFFLINE"
     AUTHENTICATION_FAILED = "AUTHENTICATION_FAILED"
+    PROVISIONING_FAILED = "PROVISIONING_FAILED"
+
+    # Compatibility aliases
+    UNREGISTERED = "UNREGISTERED"
+    PENDING = "PENDING"
 
 PENDING_REGISTRATION_TIMEOUT = 180.0  # seconds (3 minutes)
 pending_registrations: Dict[str, Dict[str, Any]] = {}  # in-memory pending registrations awaiting WS authentication
@@ -763,7 +772,8 @@ async def deploy_checkpoint_api(payload: dict):
 async def provision_pin_serial(payload: dict):
     port = payload.get("port")
     ssid = str(payload.get("ssid", "")).strip()
-    password = str(payload.get("pass", "")).strip()
+    # Preserve exact password without stripping leading/trailing whitespace
+    password = str(payload.get("pass", ""))
     raw_ip = str(payload.get("server_ip", "")).strip()
     if not raw_ip or raw_ip in ("127.0.0.1", "localhost", "0.0.0.0", "::1"):
         server_ip = get_primary_ip()
@@ -775,52 +785,180 @@ async def provision_pin_serial(payload: dict):
         server_port = 8080
 
     if not port:
-        return {"status": "error", "message": "No USB COM port selected."}
+        return {"status": "error", "stage": "serial_failed", "message": "No USB COM port selected."}
     if not ssid:
-        return {"status": "error", "message": "Wi-Fi SSID cannot be empty."}
+        return {"status": "error", "stage": "serial_failed", "message": "Wi-Fi SSID cannot be empty."}
 
     import serial
+    ser = None
     try:
-        print(f"\n[PROVISION] Opening serial port {port} at 115200 baud...")
+        print(f"\n[PROVISION] Stage 1: Opening serial port {port} at 115200 baud...")
         ser = serial.Serial(port, 115200, timeout=1.5)
         time.sleep(0.3)
         ser.reset_input_buffer()
 
-        pcode = str(payload.get("pairing_code", "")).strip()
-        if pcode:
-            cmd = f"SET_WIFI:{ssid}:{password}:{server_ip}:{server_port}:{pcode}\n"
-            # Never log raw pairing code to console
-            print(f"[PROVISION] Sending command to Pin with pairing code: SET_WIFI:{ssid}:****:{server_ip}:{server_port}:{pcode[:2]}****")
-        else:
-            cmd = f"SET_WIFI:{ssid}:{password}:{server_ip}:{server_port}\n"
-            print(f"[PROVISION] Sending command to Pin: SET_WIFI:{ssid}:****:{server_ip}:{server_port}")
-        ser.write(cmd.encode("utf-8"))
+        pcode = str(payload.get("pairing_code", "")).strip().replace(" ", "").replace("-", "")
+
+        # Stage 2: Transmit JSON provisioning command
+        json_cmd = json.dumps({
+            "cmd": "provision",
+            "ssid": ssid,
+            "password": password,
+            "server": server_ip,
+            "port": server_port,
+            "pairing_code": pcode
+        }) + "\n"
+
+        pcode_masked = f"{pcode[:2]}****" if len(pcode) >= 4 else "****"
+        print(f"[PROVISION] Stage 2: Transmitting JSON provisioning command (SSID: '{ssid}', Server: {server_ip}:{server_port}, Pairing Code: {pcode_masked})")
+        ser.write(json_cmd.encode("utf-8"))
         ser.flush()
 
+        # Stage 3 & 4: Monitor ESP32 acknowledgments
         logs = []
-        start_t = time.time()
-        while time.time() - start_t < 2.5:
+        ack_received = False
+        ack_saved = False
+        start_ack_t = time.time()
+
+        while time.time() - start_ack_t < 3.5:
             if ser.in_waiting:
                 line = ser.readline().decode("utf-8", errors="ignore").strip()
                 if line:
                     logs.append(line)
                     print(f"[PIN-SERIAL] {line}")
-                    if "OK:CONFIG_SAVED" in line:
+                    if '"status":"received"' in line:
+                        ack_received = True
+                    if '"status":"saved"' in line or "OK:CONFIG_SAVED" in line:
+                        ack_saved = True
                         break
             time.sleep(0.04)
 
-        ser.close()
+        # Fallback to legacy protocol if JSON was not acknowledged
+        if not ack_saved and not ack_received:
+            print("[PROVISION] JSON unacknowledged, transmitting legacy SET_WIFI fallback...")
+            legacy_cmd = f"SET_WIFI:{ssid}:{password}:{server_ip}:{server_port}:{pcode}\n"
+            ser.write(legacy_cmd.encode("utf-8"))
+            ser.flush()
+            fallback_t = time.time()
+            while time.time() - fallback_t < 2.5:
+                if ser.in_waiting:
+                    line = ser.readline().decode("utf-8", errors="ignore").strip()
+                    if line:
+                        logs.append(line)
+                        print(f"[PIN-SERIAL] {line}")
+                        if "OK:CONFIG_SAVED" in line:
+                            ack_saved = True
+                            break
+                time.sleep(0.04)
+
+        if not ack_saved:
+            ser.close()
+            return {
+                "status": "error",
+                "stage": "serial_failed",
+                "code": "ERR_SERIAL_NO_ACK",
+                "message": f"Smart Pin on {port} did not acknowledge provisioning command.",
+                "logs": logs
+            }
+
+        print("[PROVISION] Stages 3 & 4 Passed: ESP32 acknowledged command and confirmed credentials saved.")
+
+        # Stage 5, 6, 7 & 8: Monitor reboot, Wi-Fi connection, and Central System authentication
+        wifi_connected = False
+        wifi_failed = False
+        wifi_err_msg = ""
+        pin_ip = ""
+        authenticated = False
+        paired_device_id = None
+
+        monitor_start = time.time()
+        while time.time() - monitor_start < 18.0:
+            # Read serial output if available
+            try:
+                if ser.in_waiting:
+                    line = ser.readline().decode("utf-8", errors="ignore").strip()
+                    if line:
+                        logs.append(line)
+                        print(f"[PIN-SERIAL] {line}")
+                        if "Got IP:" in line or "Smart Pin IP:" in line:
+                            wifi_connected = True
+                            parts = line.split(":")
+                            if len(parts) >= 2:
+                                pin_ip = parts[-1].strip().split(" ")[0]
+                        if "ERR_AUTH_REJECTED" in line or "Authentication rejected" in line:
+                            wifi_failed = True
+                            wifi_err_msg = "Wi-Fi password rejected by access point."
+                        elif "ERR_AP_NOT_FOUND" in line or "not found" in line:
+                            wifi_failed = True
+                            wifi_err_msg = f"Wi-Fi access point '{ssid}' not found (verify 2.4 GHz network)."
+            except Exception:
+                pass
+
+            # Check if Central System verified the pairing code and authenticated the WebSocket
+            if pcode:
+                code_data = active_pairing_codes.get(pcode)
+                if code_data:
+                    dev_id = code_data.get("device_id")
+                    if code_data.get("paired", False) or (dev_id and dev_id in registered_devices and registered_devices[dev_id].get("paired", False)):
+                        authenticated = True
+                        paired_device_id = dev_id
+                        break
+
+            if wifi_failed:
+                break
+
+            await asyncio.sleep(0.3)
+
+        try:
+            ser.close()
+        except Exception:
+            pass
+
+        if authenticated:
+            print(f"[PROVISION] Full Lifecycle Verified! Smart Pin '{paired_device_id}' authenticated with Central System.")
+            return {
+                "status": "success",
+                "stage": "authenticated",
+                "device_id": paired_device_id,
+                "server_ip": server_ip,
+                "server_port": server_port,
+                "message": f"Smart Pin {paired_device_id} successfully provisioned, connected to Wi-Fi '{ssid}', and authenticated with Central System!",
+                "logs": logs
+            }
+
+        if wifi_failed:
+            return {
+                "status": "error",
+                "stage": "wifi_failed",
+                "code": "ERR_WIFI_FAILED",
+                "message": f"Credentials saved, but Smart Pin Wi-Fi connection failed: {wifi_err_msg}",
+                "logs": logs
+            }
+
+        if wifi_connected:
+            return {
+                "status": "partial",
+                "stage": "wifi_connected_unauthenticated",
+                "message": f"Credentials saved and Smart Pin connected to Wi-Fi '{ssid}' (IP: {pin_ip}), but Central System WebSocket authentication did not complete within timeout. Verify server address and firewall.",
+                "logs": logs
+            }
+
         return {
-            "status": "success",
-            "serial_written": True,
+            "status": "partial",
+            "stage": "credentials_saved_pending_reboot",
             "server_ip": server_ip,
             "server_port": server_port,
-            "message": f"Wi-Fi credentials flashed to {port}! Pin is connecting to '{ssid}' at {server_ip}:{server_port}...",
+            "message": f"Wi-Fi credentials flashed to {port}! Pin is rebooting to connect to '{ssid}'. Check Dashboard in a few seconds.",
             "logs": logs
         }
     except Exception as e:
+        if ser:
+            try:
+                ser.close()
+            except Exception:
+                pass
         print(f"[PROVISION] Error on {port}: {e}")
-        return {"status": "error", "message": f"Could not communicate with {port}: {str(e)}"}
+        return {"status": "error", "stage": "serial_failed", "message": f"Could not communicate with {port}: {str(e)}"}
 
 
 @app.websocket("/ui")

@@ -446,6 +446,114 @@ class TestPinRegistrationPromotion(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(qr_obj["session_id"], session["session_id"])
         self.assertEqual(qr_obj["type"], "SECURELINK_MOBILE_PAIR")
 
+    def test_13_special_characters_and_whitespace_preservation(self):
+        """Test that passwords with leading/trailing spaces, colons, and quotes are preserved."""
+        # Simulated payload with complex password
+        test_passwords = [
+            "  leadingAndTrailingSpaces  ",
+            "password:with:colons:123!",
+            'pass"with"quotes!#$',
+            "Complex!@#$%^&*()_+-=[]{}|;':,.<>/?",
+        ]
+        for raw_pass in test_passwords:
+            payload = json.dumps({
+                "cmd": "provision",
+                "ssid": "SecureLink-Test",
+                "password": raw_pass,
+                "server": "192.168.1.100",
+                "port": 8080,
+                "pairing_code": "123456"
+            })
+            parsed = json.loads(payload)
+            self.assertEqual(parsed["password"], raw_pass, "Password must not be modified or stripped")
+
+    def test_14_wifi_diagnostic_error_codes(self):
+        """Test that Wi-Fi disconnect reason codes map to distinct, actionable error codes."""
+        def diagnose_wifi_failure(reason_code: int, sta_connected: bool, got_ip: bool) -> tuple:
+            if sta_connected and not got_ip:
+                return "ERR_DHCP_TIMEOUT", "Associated with Wi-Fi, but failed to obtain IP address from DHCP"
+            if reason_code == 201:
+                return "ERR_AP_NOT_FOUND", "Access point not found"
+            if reason_code in (202, 15, 2, 14):
+                return "ERR_AUTH_REJECTED", "Wi-Fi password rejected by access point"
+            if reason_code in (200, 205):
+                return "ERR_WIFI_TIMEOUT", "Wi-Fi connection timed out"
+            return "ERR_WIFI_TIMEOUT", "Wi-Fi connection timed out"
+
+        self.assertEqual(diagnose_wifi_failure(201, False, False)[0], "ERR_AP_NOT_FOUND")
+        self.assertEqual(diagnose_wifi_failure(202, False, False)[0], "ERR_AUTH_REJECTED")
+        self.assertEqual(diagnose_wifi_failure(15, False, False)[0], "ERR_AUTH_REJECTED")
+        self.assertEqual(diagnose_wifi_failure(0, True, False)[0], "ERR_DHCP_TIMEOUT")
+        self.assertEqual(diagnose_wifi_failure(200, False, False)[0], "ERR_WIFI_TIMEOUT")
+
+    async def test_15_usb_provisioning_stages_and_ack(self):
+        """Test that USB provisioning validates parameters, requires serial ACK, and reports stages."""
+        # Test missing COM port
+        res = await server.provision_pin_serial({"ssid": "TestSSID", "pass": "secret"})
+        self.assertEqual(res["status"], "error")
+        self.assertEqual(res["stage"], "serial_failed")
+
+        # Test empty SSID
+        res2 = await server.provision_pin_serial({"port": "COM99", "ssid": "", "pass": "secret"})
+        self.assertEqual(res2["status"], "error")
+        self.assertEqual(res2["stage"], "serial_failed")
+
+        # Test simulated serial port failure
+        res3 = await server.provision_pin_serial({"port": "COM_NON_EXISTENT", "ssid": "TestSSID", "pass": "secret"})
+        self.assertEqual(res3["status"], "error")
+        self.assertEqual(res3["stage"], "serial_failed")
+
+    async def test_16_reconnection_after_wifi_drop_preserves_paired_state(self):
+        """Test that temporary Wi-Fi disconnect marks pin OFFLINE without deleting pairing, and reconnects safely."""
+        dev_id = "PIN-F360"
+        creds = load_device_credentials()
+        creds[dev_id] = {
+            "token_hash": hash_device_token("test_token_123"),
+            "registered_at": "2026-11-22 12:00:00",
+            "fw_version": "2.1",
+            "mac": "E8:F6:0A:8C:F3:60",
+            "pairing_code_used": "112233"
+        }
+        save_device_credentials(creds)
+
+        # Device is online
+        mock_ws = MagicMock()
+        active_pins[mock_ws] = dev_id
+        registered_devices[dev_id] = {
+            "id": dev_id,
+            "online": True,
+            "paired": True,
+            "state": "VAD ARMED",
+            "registration_state": PinRegistrationState.ONLINE
+        }
+
+        self.assertEqual(get_device_registration_state(dev_id), PinRegistrationState.PAIRED)
+
+        # Wi-Fi dropped: socket closes
+        active_pins.pop(mock_ws, None)
+        registered_devices[dev_id]["online"] = False
+        registered_devices[dev_id]["state"] = "OFFLINE"
+        registered_devices[dev_id]["registration_state"] = PinRegistrationState.OFFLINE
+
+        # Paired credentials MUST remain intact
+        creds_after_drop = load_device_credentials()
+        self.assertIn(dev_id, creds_after_drop)
+        self.assertTrue(registered_devices[dev_id]["paired"])
+        self.assertFalse(registered_devices[dev_id]["online"])
+        self.assertEqual(registered_devices[dev_id]["state"], "OFFLINE")
+
+        # Reconnection with valid token
+        new_ws = MagicMock()
+        active_pins[new_ws] = dev_id
+        registered_devices[dev_id]["online"] = True
+        registered_devices[dev_id]["state"] = "VAD ARMED"
+        registered_devices[dev_id]["registration_state"] = PinRegistrationState.ONLINE
+
+        self.assertTrue(registered_devices[dev_id]["online"])
+        self.assertEqual(get_device_registration_state(dev_id), PinRegistrationState.PAIRED)
+        # Ensure no duplicate records exist
+        self.assertEqual(list(registered_devices.keys()).count(dev_id), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

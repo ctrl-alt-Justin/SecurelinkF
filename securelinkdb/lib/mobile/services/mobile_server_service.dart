@@ -1666,9 +1666,23 @@ class MobileServerService extends ChangeNotifier {
 
         timeoutTimer.cancel();
         sub?.cancel();
-        if (errCode == 'ERR_WIFI_AUTH') {
-          errMsg = 'Wi-Fi Connection Failed: Pin could not connect to "${event['ssid'] ?? ssid}". Check network SSID and password.';
-        } else if (errCode == 'ERR_PAIRING_CODE') {
+        if (errCode == 'ERR_AUTH_REJECTED' || errCode == 'ERR_WIFI_AUTH') {
+          errMsg = 'Wi-Fi Authentication Failed: Password rejected by access point "${event['ssid'] ?? ssid}". Please check your Wi-Fi password.';
+        } else if (errCode == 'ERR_AP_NOT_FOUND') {
+          errMsg = 'Network Not Found: Access point "${event['ssid'] ?? ssid}" was not detected. Ensure it is a 2.4 GHz network in range.';
+        } else if (errCode == 'ERR_DHCP_TIMEOUT') {
+          errMsg = 'IP Assignment Failed: Associated with "${event['ssid'] ?? ssid}", but DHCP failed to assign an IP address. Check router DHCP settings.';
+        } else if (errCode == 'ERR_WIFI_TIMEOUT') {
+          errMsg = 'Wi-Fi Connection Timed Out: Unable to establish link with "${event['ssid'] ?? ssid}".';
+        } else if (errCode == 'ERR_WIFI_UNSUPPORTED') {
+          errMsg = 'Unsupported Network: ESP32-S3 supports 2.4 GHz Wi-Fi only (5 GHz-only is not supported).';
+        } else if (errCode == 'ERR_PROVISIONING_INVALID') {
+          errMsg = 'Invalid Provisioning: ${event['message'] ?? 'SSID or credentials missing.'}';
+        } else if (errCode == 'ERR_SERVER_UNREACHABLE') {
+          errMsg = 'Server Unreachable: Smart Pin connected to Wi-Fi, but could not contact Central System. Verify server IP/tunnel.';
+        } else if (errCode == 'ERR_TUNNEL_DOWN') {
+          errMsg = 'Cloudflare Tunnel Unreachable: Remote tunnel is down (HTTP 502/503). Ensure Cloudflare tunnel is active.';
+        } else if (errCode == 'ERR_PAIRING_CODE' || errCode == 'ERR_INVALID_CODE') {
           errMsg = 'Pairing Code Rejected: ${event['message'] ?? 'Invalid or expired code.'}';
         } else if (errCode == 'ERR_NVS_FAILED') {
           errMsg = 'Hardware Storage Error: Smart Pin failed to save credentials to flash memory.';

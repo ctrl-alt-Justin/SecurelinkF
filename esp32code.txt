@@ -101,25 +101,52 @@ bool needImmediateHeartbeat = false;
 void onWebSocketEvent(WStype_t type, uint8_t * payload, size_t length);
 void captureIncidentSnapshot();
 
-// Lightweight JSON field extraction utility for memory-constrained ESP32
+// Robust JSON field extraction utility that preserves whitespace and handles escape sequences
 String extractJsonField(const String& json, const String& key) {
     int kIdx = json.indexOf("\"" + key + "\"");
     if (kIdx < 0) return "";
-    int colIdx = json.indexOf(":", kIdx);
+    int colIdx = json.indexOf(":", kIdx + key.length() + 2);
     if (colIdx < 0) return "";
-    int startQuote = json.indexOf("\"", colIdx);
-    if (startQuote < 0) {
-        int endComma = json.indexOf(",", colIdx);
-        int endBrace = json.indexOf("}", colIdx);
-        int end = (endComma > 0 && endComma < endBrace) ? endComma : endBrace;
-        if (end < 0) end = json.length();
-        String val = json.substring(colIdx + 1, end);
-        val.trim();
-        return val;
+    
+    // Find first non-whitespace character after colon
+    int valStart = colIdx + 1;
+    while (valStart < (int)json.length() && (json[valStart] == ' ' || json[valStart] == '\t' || json[valStart] == '\r' || json[valStart] == '\n')) {
+        valStart++;
     }
-    int endQuote = json.indexOf("\"", startQuote + 1);
-    if (endQuote < 0) return "";
-    return json.substring(startQuote + 1, endQuote);
+    if (valStart >= (int)json.length()) return "";
+
+    if (json[valStart] == '\"') {
+        // Quoted string value: preserve exact content between quotes, unescaping backslash sequences
+        int cur = valStart + 1;
+        String val = "";
+        while (cur < (int)json.length()) {
+            char c = json[cur];
+            if (c == '\\' && cur + 1 < (int)json.length()) {
+                char nextC = json[cur + 1];
+                if (nextC == '\"') { val += '\"'; cur += 2; continue; }
+                else if (nextC == '\\') { val += '\\'; cur += 2; continue; }
+                else if (nextC == '/') { val += '/'; cur += 2; continue; }
+                else if (nextC == 'b') { val += '\b'; cur += 2; continue; }
+                else if (nextC == 'f') { val += '\f'; cur += 2; continue; }
+                else if (nextC == 'n') { val += '\n'; cur += 2; continue; }
+                else if (nextC == 'r') { val += '\r'; cur += 2; continue; }
+                else if (nextC == 't') { val += '\t'; cur += 2; continue; }
+            } else if (c == '\"') {
+                // Closing quote found! Return exact string without trim!
+                return val;
+            }
+            val += c;
+            cur++;
+        }
+        return val;
+    } else {
+        // Unquoted value (number, boolean, null)
+        int end = valStart;
+        while (end < (int)json.length() && json[end] != ',' && json[end] != '}' && json[end] != ']' && json[end] != ' ' && json[end] != '\r' && json[end] != '\n') {
+            end++;
+        }
+        return json.substring(valStart, end);
+    }
 }
 
 // --- ISRG Root X1 Trust Anchor (Let's Encrypt / Cloudflare Edge TLS verification) ---
@@ -197,10 +224,10 @@ void connectWebSocket(const String& host, int port) {
 }
 
 struct BleProvisionRequest {
-    char ssid[64];
-    char password[64];
-    char pairing_code[32];
-    char server_url[128];
+    char ssid[65];
+    char password[129];
+    char pairing_code[33];
+    char server_url[256];
 };
 
 static QueueHandle_t bleProvisionQueue = nullptr;
@@ -369,6 +396,109 @@ class BleRxCallbacks: public BLECharacteristicCallbacks {
     }
 };
 
+// --- Wi-Fi Event Tracking & Diagnostic Reason Codes ---
+static volatile uint8_t lastWifiDisconnectReason = 0;
+static volatile bool wifiStaConnected = false;
+static volatile bool wifiGotIp = false;
+
+void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
+    if (event == ARDUINO_EVENT_WIFI_STA_CONNECTED) {
+        wifiStaConnected = true;
+        Serial.println("[WIFI-EVT] Associated with AP. Awaiting DHCP IP lease...");
+    } else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
+        wifiGotIp = true;
+        wifiStaConnected = true;
+        lastWifiDisconnectReason = 0;
+        Serial.printf("[WIFI-EVT] Got IP: %s\n", WiFi.localIP().toString().c_str());
+    } else if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+        wifiStaConnected = false;
+        wifiGotIp = false;
+        lastWifiDisconnectReason = info.wifi_sta_disconnected.reason;
+        Serial.printf("[WIFI-EVT] Disconnected! Reason code: %d\n", lastWifiDisconnectReason);
+    }
+}
+
+struct WifiConnectResult {
+    bool success;
+    String errorCode;
+    String errorMessage;
+    String ip;
+};
+
+WifiConnectResult connectToWifi(const String& targetSsid, const String& targetPass, unsigned long timeoutMs = 25000, int maxRetries = 2) {
+    if (targetSsid.length() == 0) {
+        return {false, "ERR_PROVISIONING_INVALID", "Wi-Fi SSID cannot be empty", ""};
+    }
+
+    Serial.printf("\n[WIFI-CONN] Attempting connection to '%s' (2.4 GHz, timeout: %lu ms, retries: %d)...\n", 
+                  targetSsid.c_str(), timeoutMs, maxRetries);
+
+    WiFi.disconnect(true);
+    vTaskDelay(pdMS_TO_TICKS(150));
+    WiFi.mode(WIFI_STA);
+
+    unsigned long perAttemptTimeout = timeoutMs / maxRetries;
+    if (perAttemptTimeout < 10000) perAttemptTimeout = 10000;
+
+    for (int attempt = 1; attempt <= maxRetries; attempt++) {
+        Serial.printf("[WIFI-CONN] Connection attempt %d/%d to '%s'...\n", attempt, maxRetries, targetSsid.c_str());
+        lastWifiDisconnectReason = 0;
+        wifiStaConnected = false;
+        wifiGotIp = false;
+
+        WiFi.begin(targetSsid.c_str(), targetPass.c_str());
+
+        unsigned long tStart = millis();
+        while (millis() - tStart < perAttemptTimeout) {
+            vTaskDelay(pdMS_TO_TICKS(150));
+            // Confirm BOTH status WL_CONNECTED and valid non-zero IP
+            if (WiFi.status() == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0)) {
+                WiFi.setSleep(false);
+                String assignedIp = WiFi.localIP().toString();
+                Serial.printf("[WIFI-CONN] Connection successful on attempt %d! IP: %s (RSSI: %d dBm)\n", 
+                              attempt, assignedIp.c_str(), WiFi.RSSI());
+                return {true, "", "", assignedIp};
+            }
+
+            // Early exit if access point explicitly rejects credentials
+            if (lastWifiDisconnectReason == 202 || lastWifiDisconnectReason == 15 || 
+                lastWifiDisconnectReason == 2 || lastWifiDisconnectReason == 14) {
+                Serial.printf("[WIFI-CONN] Authentication rejected by AP (reason %d)!\n", lastWifiDisconnectReason);
+                return {false, "ERR_AUTH_REJECTED", "Wi-Fi password rejected by access point '" + targetSsid + "'", ""};
+            }
+
+            // Early exit if AP does not exist / not found
+            if (lastWifiDisconnectReason == 201) {
+                Serial.printf("[WIFI-CONN] Access point '%s' not found (reason 201)!\n", targetSsid.c_str());
+                if (attempt == maxRetries) {
+                    return {false, "ERR_AP_NOT_FOUND", "Access point '" + targetSsid + "' not found. Ensure 2.4 GHz network is in range", ""};
+                }
+            }
+        }
+
+        if (attempt < maxRetries) {
+            Serial.printf("[WIFI-CONN] Attempt %d failed. Retrying in 1.5s...\n", attempt);
+            WiFi.disconnect(true);
+            vTaskDelay(pdMS_TO_TICKS(1500));
+        }
+    }
+
+    // Retries exhausted — diagnose specific failure mode
+    if (wifiStaConnected && !wifiGotIp) {
+        Serial.println("[WIFI-CONN] Associated with AP, but DHCP lease timed out!");
+        return {false, "ERR_DHCP_TIMEOUT", "Associated with Wi-Fi, but failed to obtain IP address from DHCP", ""};
+    }
+    if (lastWifiDisconnectReason == 201) {
+        return {false, "ERR_AP_NOT_FOUND", "Access point '" + targetSsid + "' was not found. Verify SSID and 2.4 GHz availability", ""};
+    }
+    if (lastWifiDisconnectReason == 202 || lastWifiDisconnectReason == 15 || 
+        lastWifiDisconnectReason == 2 || lastWifiDisconnectReason == 14) {
+        return {false, "ERR_AUTH_REJECTED", "Wi-Fi password rejected by access point", ""};
+    }
+
+    return {false, "ERR_WIFI_TIMEOUT", "Wi-Fi connection timed out while connecting to '" + targetSsid + "'", ""};
+}
+
 void bleProvisionWorkerTask(void* param) {
     BleProvisionRequest req;
     while (true) {
@@ -382,30 +512,15 @@ void bleProvisionWorkerTask(void* param) {
             Serial.printf("\n[BLE-PROV-TASK] Provisioning worker running for SSID: '%s'\n", newSsid.c_str());
             sendBleText("{\"type\":\"wifi_connecting\",\"ssid\":\"" + newSsid + "\"}");
 
-            // Attempt STA connection
-            WiFi.disconnect(true);
-            vTaskDelay(pdMS_TO_TICKS(100));
-            WiFi.mode(WIFI_STA);
-            WiFi.begin(newSsid.c_str(), newPass.c_str());
-
-            unsigned long tStart = millis();
-            bool wifiOk = false;
-            while (millis() - tStart < 12000) {
-                vTaskDelay(pdMS_TO_TICKS(150));
-                if (WiFi.status() == WL_CONNECTED) {
-                    wifiOk = true;
-                    break;
-                }
-            }
-
-            if (!wifiOk) {
-                Serial.println("[BLE-PROV-TASK] Wi-Fi connection timed out or credentials rejected!");
-                sendBleText("{\"type\":\"provision_error\",\"code\":\"ERR_WIFI_AUTH\",\"message\":\"Could not connect to Wi-Fi network\"}");
+            WifiConnectResult res = connectToWifi(newSsid, newPass, 25000, 2);
+            if (!res.success) {
+                Serial.printf("[BLE-PROV-TASK] Wi-Fi connection failed: [%s] %s\n", res.errorCode.c_str(), res.errorMessage.c_str());
+                sendBleText("{\"type\":\"provision_error\",\"code\":\"" + res.errorCode + "\",\"message\":\"" + res.errorMessage + "\"}");
                 isBleProvisioningActive = false;
                 continue;
             }
 
-            String localIp = WiFi.localIP().toString();
+            String localIp = res.ip;
             Serial.printf("[BLE-PROV-TASK] Wi-Fi connected! Smart Pin IP: %s\n", localIp.c_str());
             sendBleText("{\"type\":\"wifi_connected\",\"ip\":\"" + localIp + "\"}");
             sendBleText("{\"type\":\"registration_pending\"}");
@@ -1351,27 +1466,74 @@ void processArchiveUpload() {
 void handleSerialCommands() {
     if (Serial.available()) {
         String cmd = Serial.readStringUntil('\n');
-        cmd.trim();
-        if (cmd.startsWith("SET_WIFI:") || cmd.startsWith("CONFIG_WIFI:")) {
-            // Format: SET_WIFI:<ssid>:<pass>:<server_ip>:<port>[:<pairing_code>]
-            int p1 = cmd.indexOf(':');
-            int p2 = cmd.indexOf(':', p1 + 1);
-            int p3 = cmd.indexOf(':', p2 + 1);
-            int p4 = cmd.indexOf(':', p3 + 1);
-            int p5 = (p4 > 0) ? cmd.indexOf(':', p4 + 1) : -1;
+        String trimmed = cmd;
+        trimmed.trim();
+        if (trimmed.length() == 0) return;
+
+        // 1. Robust JSON Provisioning Protocol: {"cmd":"provision","ssid":"...","password":"...","server":"...","port":8080,"pairing_code":"..."}
+        if (trimmed.startsWith("{") && trimmed.indexOf("\"provision\"") >= 0) {
+            Serial.println("{\"type\":\"ack\",\"cmd\":\"provision\",\"status\":\"received\"}");
+            String n_ssid = extractJsonField(trimmed, "ssid");
+            String n_pass = extractJsonField(trimmed, "password");
+            String n_server = extractJsonField(trimmed, "server");
+            String n_pcode = extractJsonField(trimmed, "pairing_code");
+            String s_port = extractJsonField(trimmed, "port");
+            int n_port = s_port.length() > 0 ? s_port.toInt() : 8080;
+            if (n_port <= 0) n_port = 8080;
+
+            if (n_ssid.length() == 0) {
+                Serial.println("{\"type\":\"ack\",\"cmd\":\"provision\",\"status\":\"error\",\"code\":\"ERR_INVALID_PARAMS\",\"message\":\"SSID cannot be empty\"}");
+                return;
+            }
+
+            // If primary Wi-Fi is changing, save previous as secondary roaming backup
+            if (wifi_ssid.length() > 0 && wifi_ssid != n_ssid) {
+                prefs.putString("ssid2", wifi_ssid);
+                prefs.putString("pass2", wifi_pass);
+                wifi_ssid2 = wifi_ssid;
+                wifi_pass2 = wifi_pass;
+            }
+
+            prefs.putString("ssid", n_ssid);
+            prefs.putString("pass", n_pass);
+            if (n_server.length() > 0) prefs.putString("server", n_server);
+            prefs.putInt("port", n_port);
+            if (n_pcode.length() >= 6) {
+                prefs.putString("pcode_pending", n_pcode);
+            }
+
+            wifi_ssid = n_ssid;
+            wifi_pass = n_pass;
+            if (n_server.length() > 0) server_host = n_server;
+            server_port = n_port;
+            cachedServerIP = server_host;
+
+            Serial.printf("{\"type\":\"ack\",\"cmd\":\"provision\",\"status\":\"saved\",\"ssid\":\"%s\",\"server\":\"%s\",\"port\":%d}\n", wifi_ssid.c_str(), server_host.c_str(), server_port);
+            Serial.println("[SYS] OK:CONFIG_SAVED");
+            delay(400);
+            ESP.restart();
+            return;
+        }
+
+        // 2. Legacy Colon-Delimited Command: SET_WIFI:<ssid>:<pass>:<server_ip>:<port>[:<pairing_code>]
+        if (trimmed.startsWith("SET_WIFI:") || trimmed.startsWith("CONFIG_WIFI:")) {
+            int p1 = trimmed.indexOf(':');
+            int p2 = trimmed.indexOf(':', p1 + 1);
+            int p3 = trimmed.indexOf(':', p2 + 1);
+            int p4 = trimmed.indexOf(':', p3 + 1);
+            int p5 = (p4 > 0) ? trimmed.indexOf(':', p4 + 1) : -1;
             if (p1 > 0 && p2 > 0) {
-                String n_ssid = cmd.substring(p1 + 1, p2);
-                String n_pass = cmd.substring(p2 + 1, p3 > 0 ? p3 : cmd.length());
-                String n_server = p3 > 0 ? cmd.substring(p3 + 1, p4 > 0 ? p4 : cmd.length()) : server_host;
-                int n_port = p4 > 0 ? cmd.substring(p4 + 1, p5 > 0 ? p5 : cmd.length()).toInt() : server_port;
+                String n_ssid = trimmed.substring(p1 + 1, p2);
+                String n_pass = trimmed.substring(p2 + 1, p3 > 0 ? p3 : trimmed.length());
+                String n_server = p3 > 0 ? trimmed.substring(p3 + 1, p4 > 0 ? p4 : trimmed.length()) : server_host;
+                int n_port = p4 > 0 ? trimmed.substring(p4 + 1, p5 > 0 ? p5 : trimmed.length()).toInt() : server_port;
                 if (n_port <= 0) n_port = 8080;
-                String n_pcode = p5 > 0 ? cmd.substring(p5 + 1) : "";
+                String n_pcode = p5 > 0 ? trimmed.substring(p5 + 1) : "";
                 n_pcode.trim();
                 if (n_pcode.length() == 6) {
                     prefs.putString("pcode_pending", n_pcode);
                 }
 
-                // If primary Wi-Fi is changing, save previous as secondary roaming backup
                 if (wifi_ssid.length() > 0 && wifi_ssid != n_ssid) {
                     prefs.putString("ssid2", wifi_ssid);
                     prefs.putString("pass2", wifi_pass);
@@ -1390,12 +1552,14 @@ void handleSerialCommands() {
                 server_port = n_port;
                 cachedServerIP = n_server;
 
+                Serial.println("{\"type\":\"ack\",\"cmd\":\"provision\",\"status\":\"saved\"}");
                 Serial.printf("[SYS] OK:CONFIG_SAVED - Primary:'%s' Backup:'%s' Host:'%s:%d'\n", wifi_ssid.c_str(), wifi_ssid2.c_str(), server_host.c_str(), server_port);
                 delay(300);
                 ESP.restart();
             } else {
-                Serial.println("[ERR] Invalid SET_WIFI format. Use: SET_WIFI:<ssid>:<pass>:<server_ip>:<port>");
+                Serial.println("[ERR] Invalid SET_WIFI format. Use JSON: {\"cmd\":\"provision\",\"ssid\":\"...\",\"password\":\"...\",\"server\":\"...\",\"port\":8080}");
             }
+            return;
         } else if (cmd.equalsIgnoreCase("format")) {
             Serial.println("[FS] Formatting LittleFS. Please wait...");
             if (LittleFS.format()) {
@@ -1568,40 +1732,26 @@ void setup() {
         Serial.println("[ERR] LittleFS Mount Failed");
     }
 
+    // Register Wi-Fi event handler for accurate diagnostic codes
+    WiFi.onEvent(onWiFiEvent);
+
     // 4. BOOT WI-FI CONNECTION CHECK & ROAMING FALLBACK
     bool connected = false;
     if (wifi_ssid.length() > 0) {
         Serial.printf("\n[WIFI] Checking primary checkpoint '%s'...\n", wifi_ssid.c_str());
-        WiFi.mode(WIFI_STA);
-        WiFi.begin(wifi_ssid.c_str(), wifi_pass.c_str());
-        unsigned long t0 = millis();
-        while (WiFi.status() != WL_CONNECTED && millis() - t0 < 10000) {
-            delay(100);
-            Serial.print(".");
-            handleSerialCommands();
-        }
-        Serial.println();
-        if (WiFi.status() == WL_CONNECTED) {
+        WifiConnectResult r = connectToWifi(wifi_ssid, wifi_pass, 15000, 2);
+        if (r.success) {
             connected = true;
-            Serial.printf("[WIFI] Connected to Primary! Smart Pin IP: %s\n", WiFi.localIP().toString().c_str());
+            Serial.printf("[WIFI] Connected to Primary! Smart Pin IP: %s\n", r.ip.c_str());
         }
     }
 
     if (!connected && wifi_ssid2.length() > 0) {
         Serial.printf("\n[WIFI] Trying roaming backup checkpoint '%s'...\n", wifi_ssid2.c_str());
-        WiFi.disconnect(true);
-        delay(100);
-        WiFi.begin(wifi_ssid2.c_str(), wifi_pass2.c_str());
-        unsigned long t0 = millis();
-        while (WiFi.status() != WL_CONNECTED && millis() - t0 < 8000) {
-            delay(100);
-            Serial.print(".");
-            handleSerialCommands();
-        }
-        Serial.println();
-        if (WiFi.status() == WL_CONNECTED) {
+        WifiConnectResult r2 = connectToWifi(wifi_ssid2, wifi_pass2, 12000, 2);
+        if (r2.success) {
             connected = true;
-            Serial.printf("[WIFI] Connected to Backup Checkpoint! Smart Pin IP: %s\n", WiFi.localIP().toString().c_str());
+            Serial.printf("[WIFI] Connected to Backup Checkpoint! Smart Pin IP: %s\n", r2.ip.c_str());
         }
     }
 

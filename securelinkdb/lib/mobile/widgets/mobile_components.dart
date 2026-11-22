@@ -2002,7 +2002,7 @@ class _PairPinModalState extends State<PairPinModal> with SingleTickerProviderSt
                   ? null
                   : () async {
                       final ssid = _ssidCtrl.text.trim();
-                      final pass = _passCtrl.text.trim();
+                      final pass = _passCtrl.text; // Preserve exact password without trimming whitespace
                       final code = _pairingCodeCtrl.text.trim();
 
                       if (ssid.isEmpty) {

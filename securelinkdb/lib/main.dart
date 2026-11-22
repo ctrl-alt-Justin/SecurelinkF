@@ -8482,7 +8482,7 @@ class _PinSetupDialogState extends State<_PinSetupDialog> with SingleTickerProvi
 
     try {
       final client = HttpClient();
-      client.connectionTimeout = const Duration(seconds: 5);
+      client.connectionTimeout = const Duration(seconds: 30);
       final req = await client.postUrl(Uri.parse('http://127.0.0.1:8080/api/provision-pin'));
       req.headers.contentType = ContentType.json;
 
@@ -8495,7 +8495,7 @@ class _PinSetupDialogState extends State<_PinSetupDialog> with SingleTickerProvi
       req.write(jsonEncode({
         'port': _selectedPort,
         'ssid': _ssidController.text.trim(),
-        'pass': _passController.text.trim(),
+        'pass': _passController.text, // Preserve exact password without trimming whitespace
         'server_ip': srvIp,
         'server_port': int.tryParse(_serverPortController.text.trim()) ?? 8080,
         if (_pairingCode != null && _pairingCode!.isNotEmpty) 'pairing_code': _pairingCode,
@@ -8515,9 +8515,10 @@ class _PinSetupDialogState extends State<_PinSetupDialog> with SingleTickerProvi
         setState(() {
           _isProvisioning = false;
           _statusSuccess = success;
-          _statusMessage = success
-              ? 'Credentials flashed! Smart Pin is connecting to Wi-Fi and registering...'
-              : (data['message'] as String? ?? 'Failed');
+          _statusMessage = data['message'] as String? ??
+              (success
+                  ? 'Credentials flashed! Smart Pin is connecting to Wi-Fi and registering...'
+                  : 'Provisioning failed');
           _consoleLogs = logs;
         });
       }
