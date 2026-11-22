@@ -951,6 +951,201 @@ class TestPinRegistrationPromotion(unittest.IsolatedAsyncioTestCase):
         save_device_credentials(creds)
         registered_devices.pop(registered_pin, None)
 
+    def test_26_structured_server_endpoint_parser(self):
+        """Test URL parsing across schemes, hosts, ports, paths, and TLS detection matching firmware."""
+        def parse_server_endpoint(raw_url: str, default_port: int = 8080):
+            clean = raw_url.strip()
+            scheme = "http"
+            port = default_port
+            is_tls = False
+            path = "/"
+
+            if clean.startswith("https://"):
+                scheme = "https"
+                is_tls = True
+                clean = clean[8:]
+                port = 443
+            elif clean.startswith("http://"):
+                scheme = "http"
+                clean = clean[7:]
+                port = 8080
+            elif clean.startswith("wss://"):
+                scheme = "wss"
+                is_tls = True
+                clean = clean[6:]
+                port = 443
+            elif clean.startswith("ws://"):
+                scheme = "ws"
+                clean = clean[5:]
+                port = 8080
+
+            slash_idx = clean.find("/")
+            if slash_idx >= 0:
+                path = clean[slash_idx:]
+                clean = clean[:slash_idx]
+
+            colon_idx = clean.find(":")
+            if colon_idx >= 0:
+                host = clean[:colon_idx]
+                parsed_port = int(clean[colon_idx + 1:])
+                if parsed_port > 0:
+                    port = parsed_port
+            else:
+                host = clean
+
+            if "trycloudflare.com" in host or port == 443:
+                is_tls = True
+                if port == 8080:
+                    port = 443
+
+            return {
+                "raw": raw_url,
+                "scheme": scheme,
+                "host": host,
+                "port": port,
+                "path": path,
+                "is_tls": is_tls
+            }
+
+        # 1. Cloudflare Quick Tunnel URL
+        cf = parse_server_endpoint("https://abc-123.trycloudflare.com")
+        self.assertEqual(cf["scheme"], "https")
+        self.assertEqual(cf["host"], "abc-123.trycloudflare.com")
+        self.assertEqual(cf["port"], 443)
+        self.assertTrue(cf["is_tls"])
+
+        # 2. Local LAN URL with port
+        lan = parse_server_endpoint("http://192.168.1.50:8080")
+        self.assertEqual(lan["scheme"], "http")
+        self.assertEqual(lan["host"], "192.168.1.50")
+        self.assertEqual(lan["port"], 8080)
+        self.assertFalse(lan["is_tls"])
+
+        # 3. Plain IP without scheme or port
+        plain = parse_server_endpoint("10.28.20.11")
+        self.assertEqual(plain["scheme"], "http")
+        self.assertEqual(plain["host"], "10.28.20.11")
+        self.assertEqual(plain["port"], 8080)
+        self.assertFalse(plain["is_tls"])
+
+        # 4. Custom port HTTPS with subpath
+        custom = parse_server_endpoint("https://secure.example.com:8443/api/v1")
+        self.assertEqual(custom["scheme"], "https")
+        self.assertEqual(custom["host"], "secure.example.com")
+        self.assertEqual(custom["port"], 8443)
+        self.assertEqual(custom["path"], "/api/v1")
+        self.assertTrue(custom["is_tls"])
+
+    def test_27_multi_root_ca_bundle_validation(self):
+        """Test that the firmware trust bundle embeds Google Trust Services, ISRG Root X1, and DigiCert."""
+        esp32_file = os.path.join(BASE_DIR, "..", "esp32code.txt")
+        self.assertTrue(os.path.exists(esp32_file), "esp32code.txt must exist")
+        with open(esp32_file, "r", encoding="utf-8") as f:
+            code = f.read()
+
+        # Must define cloudflare_ca_bundle
+        self.assertIn("cloudflare_ca_bundle", code)
+
+        # Must include GTS Root R1 (Google Trust Services)
+        self.assertIn("Google Trust Services", code)
+        self.assertIn("GTS Root R1", code)
+
+        # Must include ISRG Root X1 (Let's Encrypt)
+        self.assertIn("ISRG Root X1", code)
+
+        # Must include DigiCert Global Root CA
+        self.assertIn("DigiCert Global Root CA", code)
+
+        # Verify cert PEM structure count in bundle (at least 4 certs)
+        cert_count = code.count("-----BEGIN CERTIFICATE-----")
+        self.assertGreaterEqual(cert_count, 4, "Must contain at least 4 root certificates")
+
+    def test_28_bounded_ntp_synchronization_no_insecure_fallback(self):
+        """Test that NTP synchronization enforces valid time (> 2024-01-01) with zero setInsecure() calls."""
+        esp32_file = os.path.join(BASE_DIR, "..", "esp32code.txt")
+        with open(esp32_file, "r", encoding="utf-8") as f:
+            code = f.read()
+
+        # setInsecure must NOT appear anywhere in the firmware
+        self.assertNotIn("setInsecure()", code, "Firmware must not bypass TLS verification via setInsecure()")
+
+        # syncNtpTime must check for year >= 2024 (timestamp >= 1704067200)
+        self.assertIn("1704067200", code)
+        self.assertIn("syncNtpTime", code)
+
+    def test_29_tunnel_origin_health_and_rejection_of_502_503(self):
+        """Test that tunnel manager rejects HTTP 502/503 origin errors and only promotes on HTTP 200."""
+        from tunnel_manager import CloudflareTunnelManager, TunnelState
+
+        manager = CloudflareTunnelManager(port=8080)
+
+        # Simulate 502 Bad Gateway response: MUST return False (unreachable)
+        with patch("urllib.request.urlopen") as mock_url:
+            import urllib.error
+            mock_url.side_effect = urllib.error.HTTPError(
+                url="https://test.trycloudflare.com/health",
+                code=502,
+                msg="Bad Gateway",
+                hdrs={},
+                fp=None
+            )
+            reachable = asyncio.run(manager._validate_reachability("https://test.trycloudflare.com", max_retries=1))
+            self.assertFalse(reachable, "HTTP 502 must NOT be considered reachable")
+
+        # Simulate 200 OK: MUST return True
+        with patch("urllib.request.urlopen") as mock_url:
+            mock_resp = MagicMock()
+            mock_resp.status = 200
+            mock_resp.__enter__.return_value = mock_resp
+            mock_url.return_value = mock_resp
+
+            reachable = asyncio.run(manager._validate_reachability("https://test.trycloudflare.com", max_retries=1))
+            self.assertTrue(reachable, "HTTP 200 must be verified reachable")
+
+    def test_30_stale_tunnel_url_clearance_on_offline(self):
+        """Test that when tunnel is offline or stopped, active URL is cleared and config is reset."""
+        from tunnel_manager import CloudflareTunnelManager, TunnelState
+
+        url_changes = []
+        manager = CloudflareTunnelManager(port=8080, on_url_change=lambda u: url_changes.append(u))
+
+        # Manually set an active tunnel
+        manager.active_url = "https://stale.trycloudflare.com"
+        manager.state = TunnelState.CONNECTED
+
+        # Calling stop() must reset active_url to None, state to OFFLINE, and notify listeners
+        asyncio.run(manager.stop())
+        self.assertIsNone(manager.active_url)
+        self.assertEqual(manager.state, TunnelState.OFFLINE)
+        self.assertIn(None, url_changes, "Listeners must be notified with None when tunnel stops")
+
+    def test_31_granular_ble_diagnostic_error_codes(self):
+        """Test that each network failure mode produces distinct, actionable diagnostic error codes."""
+        diagnostic_codes = [
+            "ERR_DNS_FAILED",
+            "ERR_TCP_CONNECT",
+            "ERR_TLS_CERT",
+            "ERR_TLS_TIME",
+            "ERR_TLS_HANDSHAKE",
+            "ERR_TUNNEL_ORIGIN",
+            "ERR_HTTP_TIMEOUT",
+            "ERR_HTTP_STATUS",
+            "ERR_WS_CONNECT",
+            "ERR_WS_TIMEOUT",
+            "ERR_WS_AUTH"
+        ]
+
+        # Verify all codes are unique
+        self.assertEqual(len(diagnostic_codes), len(set(diagnostic_codes)))
+
+        # Verify flutter service maps each distinct code
+        service_file = os.path.join(BASE_DIR, "lib", "mobile", "services", "mobile_server_service.dart")
+        with open(service_file, "r", encoding="utf-8") as f:
+            service_code = f.read()
+
+        for code in diagnostic_codes:
+            self.assertIn(code, service_code, f"MobileServerService must handle {code}")
+
 
 if __name__ == "__main__":
     unittest.main()

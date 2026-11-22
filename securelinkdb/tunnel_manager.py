@@ -185,27 +185,10 @@ class CloudflareTunnelManager:
                 match = URL_PATTERN.search(clean_line)
                 if match:
                     candidate_url = match.group(0).strip()
-                    logger.info(f"[TUNNEL] Captured candidate tunnel URL: {candidate_url}")
-                    
-                    # Accept candidate URL immediately so local server and mobile can pair
+                    logger.info(f"[TUNNEL] Captured candidate tunnel URL: {candidate_url}. Verifying origin health...")
                     tunnel_url = candidate_url
-                    self.active_url = tunnel_url
-                    self.state = TunnelState.CONNECTED
-                    self.started_at = time.time()
-                    self.consecutive_crashes = 0
-                    self.error_message = None
-                    self._save_config(tunnel_url)
-                    
-                    if self.on_url_change:
-                        try:
-                            res = self.on_url_change(tunnel_url)
-                            if asyncio.iscoroutine(res):
-                                await res
-                        except Exception as ex:
-                            logger.error(f"[TUNNEL] Callback error: {ex}")
-
-                    # Validate reachability in background without blocking stdout reader
-                    asyncio.create_task(self._validate_and_log_reachability(candidate_url))
+                    # Verify origin reachability asynchronously before promoting to CONNECTED
+                    asyncio.create_task(self._verify_and_activate_tunnel(candidate_url))
 
         exit_code = self.process.poll() if self.process else -1
         logger.warning(f"[TUNNEL] cloudflared process ended with exit code {exit_code}")
@@ -236,22 +219,48 @@ class CloudflareTunnelManager:
             self.active_url = None
             self._save_config(None)
 
-    async def _validate_and_log_reachability(self, candidate_url: str):
-        """Asynchronously tests reachability of candidate URL over Cloudflare Edge."""
-        is_reachable = await self._validate_reachability(candidate_url, max_retries=10)
-        if is_reachable:
-            logger.info(f"[TUNNEL] Quick Tunnel verified reachable! Active URL: {candidate_url}")
-        else:
-            logger.warning(
-                f"[TUNNEL] Tunnel URL {candidate_url} active on Cloudflare Edge, but local port {self.port} "
-                "is not responding yet. Make sure server.py or the dashboard is running!"
+    async def _verify_and_activate_tunnel(self, candidate_url: str):
+        """Asynchronously validates that the origin server responds HTTP 200 before advertising CONNECTED state."""
+        is_reachable = await self._validate_reachability(candidate_url, max_retries=15)
+        if is_reachable and not self._stop_requested:
+            self.active_url = candidate_url
+            self.state = TunnelState.CONNECTED
+            self.started_at = time.time()
+            self.consecutive_crashes = 0
+            self.error_message = None
+            self._save_config(candidate_url)
+            logger.info(f"[TUNNEL] Quick Tunnel verified healthy and reachable! Active URL: {candidate_url}")
+            if self.on_url_change:
+                try:
+                    res = self.on_url_change(candidate_url)
+                    if asyncio.iscoroutine(res):
+                        await res
+                except Exception as ex:
+                    logger.error(f"[TUNNEL] Callback error: {ex}")
+        elif not self._stop_requested:
+            self.state = TunnelState.ERROR
+            self.active_url = None
+            self.error_message = (
+                f"Cloudflare Edge active at {candidate_url}, but local origin port {self.port} "
+                "is unreachable (HTTP 502/503). Ensure server.py is running!"
             )
+            self._save_config(None)
+            logger.error(f"[TUNNEL] {self.error_message}")
+            if self.on_url_change:
+                try:
+                    res = self.on_url_change(None)
+                    if asyncio.iscoroutine(res):
+                        await res
+                except Exception:
+                    pass
 
-    async def _validate_reachability(self, candidate_url: str, max_retries: int = 10) -> bool:
-        """Validates that candidate tunnel URL is genuinely online and tunneling to local server."""
+    async def _validate_reachability(self, candidate_url: str, max_retries: int = 15) -> bool:
+        """Validates that candidate tunnel URL is genuinely online and local origin returns HTTP 200."""
         check_endpoint = f"{candidate_url}/health"
 
         for attempt in range(max_retries):
+            if self._stop_requested:
+                return False
             try:
                 loop = asyncio.get_running_loop()
                 def probe():
@@ -262,10 +271,12 @@ class CloudflareTunnelManager:
                     try:
                         with urllib.request.urlopen(req, timeout=3.0) as resp:
                             status = getattr(resp, "status", None) or (resp.getcode() if hasattr(resp, "getcode") else None)
-                            return status in [200, 307, 401, 404]
+                            # Only HTTP 200 (or acceptable redirect 307) confirms origin is genuinely responsive
+                            return status in [200, 307]
                     except urllib.error.HTTPError as he:
-                        # 502/503 from Cloudflare indicates the tunnel connection to edge is alive, but origin 8080 is starting
-                        return he.code in [200, 307, 401, 404, 502, 503]
+                        # 502/503 indicates Cloudflare Edge is up but origin is not answering yet
+                        logger.debug(f"[TUNNEL-PROBE] Origin not ready yet (HTTP {he.code})")
+                        return False
                 ok = await loop.run_in_executor(None, probe)
                 if ok:
                     return True

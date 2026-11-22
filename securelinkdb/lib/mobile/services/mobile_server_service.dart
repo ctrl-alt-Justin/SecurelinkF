@@ -1125,12 +1125,21 @@ class MobileServerService extends ChangeNotifier {
           _savePreferences();
         }
         notifyListeners();
-      } else if (eventType == 'cloud_tunnel_update' && json['cloud_tunnel_url'] != null) {
+      } else if (eventType == 'cloud_tunnel_update') {
         final newUrl = json['cloud_tunnel_url'] as String?;
-        if (newUrl != null && newUrl.isNotEmpty && newUrl != _cloudTunnelUrl) {
-          _cloudTunnelUrl = newUrl;
-          _savePreferences();
-          notifyListeners();
+        final state = json['state'] as String?;
+        if (newUrl != null && newUrl.isNotEmpty && state != 'Offline' && state != 'Error') {
+          if (newUrl != _cloudTunnelUrl) {
+            _cloudTunnelUrl = newUrl;
+            _savePreferences();
+            notifyListeners();
+          }
+        } else {
+          if (_cloudTunnelUrl != null) {
+            _cloudTunnelUrl = null;
+            _savePreferences();
+            notifyListeners();
+          }
         }
       } else if (eventType == 'checkpoints_updated' && json['checkpoints'] != null) {
         final list = (json['checkpoints'] as List)
@@ -1208,13 +1217,29 @@ class MobileServerService extends ChangeNotifier {
       if (res.statusCode == 200) {
         final body = await res.transform(utf8.decoder).join();
         final json = jsonDecode(body);
-        if (json['cloud_tunnel_url'] != null) {
-          final tunnel = json['cloud_tunnel_url'] as String;
-          if (tunnel.isNotEmpty && tunnel != _cloudTunnelUrl) {
+        final tunnel = json['cloud_tunnel_url'] as String?;
+        final state = json['state'] as String?;
+        if (tunnel != null && tunnel.isNotEmpty && state != 'Offline' && state != 'Error') {
+          if (tunnel != _cloudTunnelUrl) {
             _cloudTunnelUrl = tunnel;
             _savePreferences();
             notifyListeners();
           }
+        } else {
+          // Clear stale tunnel URL if backend reports offline or none
+          if (_cloudTunnelUrl != null) {
+            _cloudTunnelUrl = null;
+            final prefs = await SharedPreferences.getInstance();
+            await prefs.remove('cloud_tunnel_url');
+            notifyListeners();
+          }
+        }
+      } else {
+        if (_cloudTunnelUrl != null) {
+          _cloudTunnelUrl = null;
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.remove('cloud_tunnel_url');
+          notifyListeners();
         }
       }
       client.close();
@@ -1718,6 +1743,22 @@ class MobileServerService extends ChangeNotifier {
       };
     }
 
+    String activeProvisionServerUrl = targetServerUrl;
+    onProgress?.call('Testing server reachability ($activeProvisionServerUrl)...', 0.38);
+    final preflightOk = await preflightPinServerUrl(activeProvisionServerUrl, timeoutMs: 3000);
+    if (!preflightOk) {
+      debugPrint('[BLE-PROV] Warning: Preflight check failed for primary URL: $activeProvisionServerUrl');
+      // If primary URL was a tunnel and failed preflight, try local LAN fallback if reachable
+      if (routeMode == PinServerRouteMode.automatic && _host.isNotEmpty && _host != '0.0.0.0') {
+        final localLanUrl = 'http://$_host:$_port';
+        final localOk = await preflightPinServerUrl(localLanUrl, timeoutMs: 2000);
+        if (localOk) {
+          debugPrint('[BLE-PROV] Falling back to reachable local LAN server: $localLanUrl');
+          activeProvisionServerUrl = localLanUrl;
+        }
+      }
+    }
+
     onProgress?.call('Transmitting Wi-Fi & Pairing Code to Pin...', 0.45);
 
     final completer = Completer<Map<String, dynamic>>();
@@ -1873,18 +1914,34 @@ class MobileServerService extends ChangeNotifier {
           errMsg = 'Unsupported Network: ESP32-S3 supports 2.4 GHz Wi-Fi only (5 GHz-only is not supported).';
         } else if (errCode == 'ERR_PROVISIONING_INVALID') {
           errMsg = 'Invalid Provisioning: ${event['message'] ?? 'SSID or credentials missing.'}';
+        } else if (errCode == 'ERR_DNS_FAILED') {
+          errMsg = 'DNS Resolution Failed: Smart Pin could not resolve server hostname ($activeProvisionServerUrl). Check internet and DNS.';
+        } else if (errCode == 'ERR_TCP_CONNECT') {
+          errMsg = 'TCP Connection Refused: Smart Pin could not connect to server port at $activeProvisionServerUrl. Check host IP and firewall.';
+        } else if (errCode == 'ERR_TLS_CERT') {
+          errMsg = 'TLS Certificate Untrusted: Smart Pin rejected server TLS certificate for $activeProvisionServerUrl.';
+        } else if (errCode == 'ERR_TLS_TIME') {
+          errMsg = 'Clock Synchronization Failed: Smart Pin could not sync time via NTP; TLS certificate cannot be validated.';
+        } else if (errCode == 'ERR_TLS_HANDSHAKE') {
+          errMsg = 'TLS Handshake Failed: Secure connection failed between Smart Pin and $activeProvisionServerUrl.';
+        } else if (errCode == 'ERR_TUNNEL_ORIGIN' || errCode == 'ERR_TUNNEL_DOWN') {
+          errMsg = 'Cloudflare Origin Unreachable: Remote tunnel is active, but Central System backend (port 8080) is not responding (HTTP 502/503). Ensure server.py is running.';
+        } else if (errCode == 'ERR_HTTP_TIMEOUT') {
+          errMsg = 'HTTP Registration Timed Out: Central System at $activeProvisionServerUrl did not respond within timeout.';
+        } else if (errCode == 'ERR_HTTP_STATUS') {
+          errMsg = 'HTTP Registration Error: Central System returned ${event['message'] ?? 'an unexpected response code'}.';
         } else if (errCode == 'ERR_SERVER_UNREACHABLE') {
-          errMsg = 'Server Unreachable: Smart Pin connected to Wi-Fi, but could not contact Central System ($targetServerUrl). Verify server IP/tunnel.';
-        } else if (errCode == 'ERR_TUNNEL_DOWN') {
-          errMsg = 'Cloudflare Tunnel Unreachable: Remote tunnel is down (HTTP 502/503). Ensure Cloudflare tunnel is active.';
+          errMsg = 'Server Unreachable: Smart Pin connected to Wi-Fi, but could not contact Central System ($activeProvisionServerUrl). Verify server IP/tunnel.';
         } else if (errCode == 'ERR_PAIRING_CODE' || errCode == 'ERR_INVALID_CODE') {
           errMsg = 'Pairing Code Rejected: ${event['message'] ?? 'Invalid or expired code.'}';
         } else if (errCode == 'ERR_NVS_FAILED') {
           errMsg = 'Hardware Storage Error: Smart Pin failed to save credentials to flash memory.';
+        } else if (errCode == 'ERR_WS_CONNECT') {
+          errMsg = 'WebSocket Connection Failed: Smart Pin could not establish WebSocket transport to $activeProvisionServerUrl.';
         } else if (errCode == 'ERR_WS_AUTH') {
           errMsg = 'WebSocket Authentication Failed: Central System rejected pin credentials.';
         } else if (errCode == 'ERR_WS_TIMEOUT') {
-          errMsg = 'WebSocket Connection Timed Out: Smart Pin connected to Wi-Fi but timed out contacting Central System ($targetServerUrl).';
+          errMsg = 'WebSocket Connection Timed Out: Smart Pin connected to Wi-Fi but timed out contacting Central System ($activeProvisionServerUrl).';
         }
         if (!completer.isCompleted) {
           completer.complete({
@@ -1901,7 +1958,7 @@ class MobileServerService extends ChangeNotifier {
       ssid: ssid,
       password: password,
       pairingCode: pairingCode,
-      serverUrl: targetServerUrl,
+      serverUrl: activeProvisionServerUrl,
     );
 
     if (!sendResult.success) {

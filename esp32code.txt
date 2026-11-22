@@ -159,8 +159,74 @@ String extractJsonField(const String& json, const String& key) {
     }
 }
 
-// --- ISRG Root X1 Trust Anchor (Let's Encrypt / Cloudflare Edge TLS verification) ---
-static const char root_ca_isrg_x1[] PROGMEM =
+// --- MULTI-ROOT CA TRUST ANCHORS (Cloudflare Edge, Google Trust Services, Let's Encrypt, DigiCert) ---
+// Validates Cloudflare Quick Tunnels (*.trycloudflare.com) and custom TLS domains across all dynamic root rotations
+static const char cloudflare_ca_bundle[] PROGMEM =
+// 1. Google Trust Services (GTS Root R1) - Default primary root for Cloudflare Quick Tunnels
+"-----BEGIN CERTIFICATE-----\n"
+"MIIFVzCCAz+gAwIBAgINAgPlk28xsBNJiGuiFzANBgkqhkiG9w0BAQwFADBHMQsw\n"
+"CQYDVQQGEwJVUzEiMCAGA1UEChMZR29vZ2xlIFRydXN0IFNlcnZpY2VzIExMQzEU\n"
+"MBIGA1UEAxMLR1RTIFJvb3QgUjEwHhcNMTYwNjIyMDAwMDAwWhcNMzYwNjIyMDAw\n"
+"MDAwWjBHMQswCQYDVQQGEwJVUzEiMCAGA1UEChMZR29vZ2xlIFRydXN0IFNlcnZp\n"
+"Y2VzIExMQzEUMBIGA1UEAxMLR1RTIFJvb3QgUjEwggIiMA0GCSqGSIb3DQEBAQUA\n"
+"A4ICDwAwggIKAoICAQC2EQKLHuOhd5s73L+UPreVp0A8of2C+X0yBoJx9vaMf/vo\n"
+"27xqLpeXo4xL+Sv2sfnOhB2x+cWX3u+58qPpvBKJXqeqUqv4IyfLpLGcY9vXmX7w\n"
+"Cl7raKb0xlpHDU0QM+NOsROjyBhsS+z8CZDfnWQpJSMHobTSPS5g4M/SCYe7zUjw\n"
+"TcLCeoiKu7rPWRnWr4+wB7CeMfGCwcDfLqZtbBkOtdh+JhpFAz2weaSUKK0Pfybl\n"
+"qAj+lug8aJRT7oM6iCsVlgmy4HqMLnXWnOunVmSPlk9orj2XwoSPwLxAwAtcvfaH\n"
+"szVsrBhQf4TgTM2S0yDpM7xSma8ytSmzJSq0SPly4cpk9+aCEI3oncKKiPo4Zor8\n"
+"Y/kB+Xj9e1x3+naH+uzfsQ55lVe0vSbv1gHR6xYKu44LtcXFilWr06zqkUspzBmk\n"
+"MiVOKvFlRNACzqrOSbTqn3yDsEB750Orp2yjj32JgfpMpf/VjsPOS+C12LOORc92\n"
+"wO1AK/1TD7Cn1TsNsYqiA94xrcx36m97PtbfkSIS5r762DL8EGMUUXLeXdYWk70p\n"
+"aDPvOmbsB4om3xPXV2V4J95eSRQAogB/mqghtqmxlbCluQ0WEdrHbEg8QOB+DVrN\n"
+"VjzRlwW5y0vtOUucxD/SVRNuJLDWcfr0wbrM7Rv1/oFB2ACYPTrIrnqYNxgFlQID\n"
+"AQABo0IwQDAOBgNVHQ8BAf8EBAMCAYYwDwYDVR0TAQH/BAUwAwEB/zAdBgNVHQ4E\n"
+"FgQU5K8rJnEaK0gnhS9SZizv8IkTcT4wDQYJKoZIhvcNAQEMBQADggIBAJ+qQibb\n"
+"C5u+/x6Wki4+omVKapi6Ist9wTrYggoGxval3sBOh2Z5ofmmWJyq+bXmYOfg6LEe\n"
+"QkEzCzc9zolwFcq1JKjPa7XSQCGYzyI0zzvFIoTgxQ6KfF2I5DUkzps+GlQebtuy\n"
+"h6f88/qBVRRiClmpIgUxPoLW7ttXNLwzldMXG+gnoot7TiYaelpkttGsN/H9oPM4\n"
+"7HLwEXWdyzRSjeZ2axfG34arJ45JK3VmgRAhpuo+9K4l/3wV3s6MJT/KYnAK9y8J\n"
+"ZgfIPxz88NtFMN9iiMG1D53Dn0reWVlHxYciNuaCp+0KueIHoI17eko8cdLiA6Ef\n"
+"MgfdG+RCzgwARWGAtQsgWSl4vflVy2PFPEz0tv/bal8xa5meLMFrUKTX5hgUvYU/\n"
+"Z6tGn6D/Qqc6f1zLXbBwHSs09dR2CQzreExZBfMzQsNhFRAbd03OIozUhfJFfbdT\n"
+"6u9AWpQKXCBfTkBdYiJ23//OYb2MI3jSNwLgjt7RETeJ9r/tSQdirpLsQBqvFAnZ\n"
+"0E6yove+7u7Y/9waLd64NnHi/Hm3lCXRSHNboTXns5lndcEZOitHTtNCjv0xyBZm\n"
+"2tIMPNuzjsmhDYAPexZ3FL//2wmUspO8IFgV6dtxQ/PeEMMA3KgqlbbC1j+Qa3bb\n"
+"bP6MvPJwNQzcmRk13NfIRmPVNnGuV/u3gm3c\n"
+"-----END CERTIFICATE-----\n"
+// 2. Google Trust Services (GTS Root R2) - Backup GTS root
+"-----BEGIN CERTIFICATE-----\n"
+"MIIFVzCCAz+gAwIBAgINAgPlrsWNBCUaqxElqjANBgkqhkiG9w0BAQwFADBHMQsw\n"
+"CQYDVQQGEwJVUzEiMCAGA1UEChMZR29vZ2xlIFRydXN0IFNlcnZpY2VzIExMQzEU\n"
+"MBIGA1UEAxMLR1RTIFJvb3QgUjIwHhcNMTYwNjIyMDAwMDAwWhcNMzYwNjIyMDAw\n"
+"MDAwWjBHMQswCQYDVQQGEwJVUzEiMCAGA1UEChMZR29vZ2xlIFRydXN0IFNlcnZp\n"
+"Y2VzIExMQzEUMBIGA1UEAxMLR1RTIFJvb3QgUjIwggIiMA0GCSqGSIb3DQEBAQUA\n"
+"A4ICDwAwggIKAoICAQDO3v2m++zsFDQ8BwZabFn3GTXd98GdVarTzTukk3LvCvpt\n"
+"nfbwhYBboUhSnznFt+4orO/LdmgUud+tAWyZH8QiHZ/+cnfgLFuv5AS/T3KgGjSY\n"
+"6Dlo7JUle3ah5mm5hRm9iYz+re026nO8/4Piy33B0s5Ks40FnotJk9/BW9BuXvAu\n"
+"MC6C/Pq8tBcKSOWIm8Wba96wyrQD8Nr0kLhlZPdcTK3ofmZemde4wj7I0BOdre7k\n"
+"RXuJVfeKH2JShBKzwkCX44ofR5GmdFrS+LFjKBC4swm4VndAoiaYecb+3yXuPuWg\n"
+"f9RhD1FLPD+M2uFwdNjCaKH5wQzpoeJ/u1U8dgbuak7MkogwTZq9TwtImoS1mKPV\n"
+"+3PBV2HdKFZ1E66HjucMUQkQdYhMvI35ezzUIkgfKtzra7tEscszcTJGr61K8Yzo\n"
+"dDqs5xoic4DSMPclQsciOzsSrZYuxsN2B6ogtzVJV+mSSeh2FnIxZyuWfoqjx5RW\n"
+"Ir9qS34BIbIjMt/kmkRtWVtd9QCgHJvGeJeNkP+byKq0rxFROV7Z+2et1VsRnTKa\n"
+"G73VululycslaVNVJ1zgyjbLiGH7HrfQy+4W+9OmTN6SpdTi3/UGVN4unUu0kzCq\n"
+"gc7dGtxRcw1PcOnlthYhGXmy5okLdWTK1au8CcEYof/UVKGFPP0UJAOyh9OktwID\n"
+"AQABo0IwQDAOBgNVHQ8BAf8EBAMCAYYwDwYDVR0TAQH/BAUwAwEB/zAdBgNVHQ4E\n"
+"FgQUu//KjiOfT5nK2+JopqUVJxce2Q4wDQYJKoZIhvcNAQEMBQADggIBAB/Kzt3H\n"
+"vqGf2SdMC9wXmBFqiN495nFWcrKeGk6c1SuYJF2ba3uwM4IJvd8lRuqYnrYb/oM8\n"
+"0mJhwQTtzuDFycgTE1XnqGOtjHsB/ncw4c5omwX4Eu55MaBBRTUoCnGkJE+M3DyC\n"
+"B19m3H0Q/gxhswWV7uGugQ+o+MePTagjAiZrHYNSVc61LwDKgEDg4XSsYPWHgJ2u\n"
+"NmSRXbBoGOqKYcl3qJfEycel/FVL8/B/uWU9J2jQzGv6U53hkRrJXRqWbTKH7QMg\n"
+"yALOWr7Z6v2yTcQvG99fevX4i8buMTolUVVnjWQye+mew4K6Ki3pHrTgSAai/Gev\n"
+"HyICc/sgCq+dVEuhzf9gR7A/Xe8bVr2XIZYtCtFenTgCR2y59PYjJbigapordwj6\n"
+"xLEokCZYCDzifqrXPW+6MYgKBesntaFJ7qBFVHvmJ2WZICGoo7z7GJa7Um8M7YNR\n"
+"TOlZ4iBgxcJlkoKM8xAfDoqXvneCbT+PHV28SSe9zE8P4c52hgQjxcCMElv924Sg\n"
+"JPFI/2R80L5cFtHvma3AH/vLrrw4IgYmZNralw4/KBVEqE8AyvCazM90arQ+POuV\n"
+"7LXTWtiBmelDGDfrs7vRWGJB82bSj6p4lVQgw1oudCvV0b4YacCs1aTPObpRhANl\n"
+"6WLAYv7YTVWW4tAR+kg0Eeye7QUd5MjWHYbL\n"
+"-----END CERTIFICATE-----\n"
+// 3. ISRG Root X1 (Let's Encrypt) - Secondary Cloudflare Edge root
 "-----BEGIN CERTIFICATE-----\n"
 "MIIFazCCA1OgAwIBAgIRAIIQz7DSQONZRGPgu2OCiwAwDQYJKoZIhvcNAQELBQAw\n"
 "TzELMAkGA1UEBhMCVVMxKTAnBgNVBAoTIEludGVybmV0IFNlY3VyaXR5IFJlc2Vh\n"
@@ -168,67 +234,145 @@ static const char root_ca_isrg_x1[] PROGMEM =
 "WhcNMzUwNjA0MTEwNDM4WjBPMQswCQYDVQQGEwJVUzEpMCcGA1UEChMgSW50ZXJu\n"
 "ZXQgU2VjdXJpdHkgUmVzZWFyY2ggR3JvdXAxFTATBgNVBAMTDElTUkcgUm9vdCBY\n"
 "MTCCAiIwDQYJKoZIhvcNAQEBBQADggIPADCCAgoCggIBAK3oJHP0FDfzm54rVygc\n"
-"h77ct984kIxuPOZXoHj3dcKi/vVqbvY0174gC0vcdfz7dHz827/NF2qoi5KI2fry\n"
-"kRN10/83qHox69745Cciv4Q901JhE1354Babx6wino23efC8CK8/482+35OwEXlF\n"
-"zy306vRsCoi244jcOKeTr0Mt64vCCDbiHNTzV5CHnodFwit9CC8Xhx94gcVlsvtN\n"
-"9WBfe0LrspTgkTZYN3nqBPxOMkp5VgtJgnUyFa8nyyreW49F0229aTqNqAXPQUTd\n"
-"9FA305aqCfJWMWHoEyN4SmKASaxNTFLrVDQtZKz+acwf+2852ZahLqdrvoZ3U436\n"
-"5I11mKoNrmhMrboeixzvCTmA6fTHBL9546UuGV349QMbR98BKGo+48rhkg8QgU3z\n"
-"i3sMrJSpPRqDYhGWORR5Nek/eq0GFOMPrnHIMSTINGZYhAlspO62uNEyB9642Xu4\n"
-"LqKN73S3Y05UjzXY2PO4U474NQb/a+/EuwN64w8fdv8ApGbOtUK26cz54qwCEKPR\n"
-"Oc3wdgOzFgcndLomUnUoJBprSkCaCo6V465U27uGWCFi0AUt0b7qwRWCnxg7SvPV\n"
-"fqRclOnx3TQDgktkwv6UmsUNU6zsQ/8TsSrg3apnRmx57Cd4y07Y7Z906E44jup9\n"
-"W61bN34E/pdS+5BN0cxKIT3NAgMBAAGjQjBAMA4GA1UdDwEB/wQEAwIBBjAPBgNV\n"
-"HRMBAf8EBTADAQH/MB0GA1UdDgQWBBR5tFnme7bl5AFzgAjGi1m05CwWDzANBgkq\n"
-"hkiG9w0BAQsFAAOCAgEAVR9Yqbyhurqw4ugDBmlDfTReukRktOnq2CUWJS9nm1AW\n"
-"wv9p6LFBlPTTxliHAhXNnXO44vzEN4822beDK5tu2070gAILdn5PNPCFF165pSnK\n"
-"RqgnnERxPnEm0yp46znZNnq44KPdkWIdZmsxhKle3td200Ph9WXqmUceae88UT8r\n"
-"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\n"
+"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\n"
+"-----END CERTIFICATE-----\n"
+// 4. DigiCert Global Root CA - Legacy/Enterprise fallback root
+"-----BEGIN CERTIFICATE-----\n"
+"MIIDrzCCApegAwIBAgIQCDvgVpBCRrGhdWrJWZHHSjANBgkqhkiG9w0BAQUFADBh\n"
+"MQswCQYDVQQGEwJVUzEVMBMGA1UEChMMRGlnaUNlcnQgSW5jMRkwFwYDVQQLExB3\n"
+"d3cuZGlnaWNlcnQuY29tMSAwHgYDVQQDExdEaWdpQ2VydCBHbG9iYWwgUm9vdCBD\n"
+"QTAeFw0wNjExMTAwMDAwMDBaFw0zMTExMTAwMDAwMDBaMGExCzAJBgNVBAYTAlVT\n"
+"MRUwEwYDVQQKEwxEaWdpQ2VydCBJbmMxGTAXBgNVBAsTEHd3dy5kaWdpY2VydC5j\n"
+"b20xIDAeBgNVBAMTF0RpZ2lDZXJ0IEdsb2JhbCBSb290IENBMIIBIjANBgkqhkiG\n"
+"9w0BAQEFAAOCAQ8AMIIBCgKCAQEA4jvhEXLeqKTTo1eqUKKPC3eQyaKl7hLOllsB\n"
+"CSDMAZOnTjC3U/dDxGkAV53ijSLdhwZAAIEJzs4bg7/fzTtxRuLWZscFs3YnFo97\n"
+"nh6Vfe63SKMI2tavegw5BmV/Sl0fvBf4q77uKNd0f3p4mVmFaG5cIzJLv07A6Fpt\n"
+"43C/dxC//AH2hdmoRBBYMql1GNXRor5H4idq9Joz+EkIYIvUX7Q6hL+hqkpMfT7P\n"
+"T19sdl6gSzeRntwi5m3OFBqOasv+zbMUZBfHWymeMr/y7vrTC0LUq7dBMtoM1O/4\n"
+"gdW7jVg/tRvoSSiicNoxBN33shbyTApOB6jtSj1etX+jkMOvJwIDAQABo2MwYTAO\n"
+"BgNVHQ8BAf8EBAMCAYYwDwYDVR0TAQH/BAUwAwEB/zAdBgNVHQ4EFgQUA95QNVbR\n"
+"TLtm8KPiGxvDl7I90VUwHwYDVR0jBBgwFoAUA95QNVbRTLtm8KPiGxvDl7I90VUw\n"
+"DQYJKoZIhvcNAQEFBQADggEBAMucN6pIExIK+t1EnE9SsPTfrgT1eXkIoyQY/Esr\n"
+"hMAtudXH/vTBH1jLuG2cenTnmCmrEbXjcKChzUyImZOMkXDiqw8cvpOp/2PV5Adg\n"
+"06O/nVsJ8dWO41P0jmP6P6fbtGbfYmbW0W5BjfIttep3Sp+dWOIrWcBAI+0tKIJF\n"
+"PnlUkiaY4IBIqDfv8NZ5YBberOgOzW6sRBc4L0na4UU+Krk2U886UAb3LujEV0ls\n"
+"YSEY1QSteDwsOoBrp+uvFRTp2InBuThs4pFsiv9kuXclVzDAGySj4dzp30d8tbQk\n"
+"CAUw7C29C79Fv1C5qfPrmAESrciIxpg0X40KPMbp1ZWVbd4=\n"
 "-----END CERTIFICATE-----\n";
 
-void syncNtpTime() {
-    Serial.println("[NTP] Synchronizing device clock with NTP pool...");
-    configTime(0, 0, "pool.ntp.org", "time.google.com");
-    time_t now = time(nullptr);
-    int retries = 0;
-    while (now < 1700000000 && retries < 15) { // Year ~2024
-        delay(150);
-        now = time(nullptr);
-        retries++;
+// --- STRUCTURED SERVER ENDPOINT PARSER ---
+struct ServerEndpoint {
+    String raw;
+    String scheme; // "http", "https", "ws", "wss"
+    String host;
+    int port;
+    String path;
+    bool isTls;
+};
+
+ServerEndpoint parseServerEndpoint(const String& rawUrl, int defaultPort = 8080) {
+    ServerEndpoint ep;
+    ep.raw = rawUrl;
+    ep.port = defaultPort;
+    ep.path = "/";
+    ep.scheme = "http";
+    ep.isTls = false;
+
+    String clean = rawUrl;
+    clean.trim();
+
+    if (clean.startsWith("https://")) {
+        ep.scheme = "https";
+        ep.isTls = true;
+        clean = clean.substring(8);
+        ep.port = 443;
+    } else if (clean.startsWith("http://")) {
+        ep.scheme = "http";
+        clean = clean.substring(7);
+        ep.port = 8080;
+    } else if (clean.startsWith("wss://")) {
+        ep.scheme = "wss";
+        ep.isTls = true;
+        clean = clean.substring(6);
+        ep.port = 443;
+    } else if (clean.startsWith("ws://")) {
+        ep.scheme = "ws";
+        clean = clean.substring(5);
+        ep.port = 8080;
     }
-    if (now >= 1700000000) {
+
+    int slashIdx = clean.indexOf('/');
+    if (slashIdx >= 0) {
+        ep.path = clean.substring(slashIdx);
+        clean = clean.substring(0, slashIdx);
+    }
+
+    int colonIdx = clean.indexOf(':');
+    if (colonIdx >= 0) {
+        ep.host = clean.substring(0, colonIdx);
+        int parsedPort = clean.substring(colonIdx + 1).toInt();
+        if (parsedPort > 0) ep.port = parsedPort;
+    } else {
+        ep.host = clean;
+    }
+
+    if (ep.host.indexOf("trycloudflare.com") >= 0 || ep.port == 443) {
+        ep.isTls = true;
+        if (ep.port == 8080) ep.port = 443;
+    }
+
+    return ep;
+}
+
+// Bounded SNTP clock synchronization with zero unverified/insecure fallback
+bool syncNtpTime(uint32_t timeoutMs = 12000) {
+    Serial.println("[NTP] Synchronizing device clock with NTP pool (pool.ntp.org, time.google.com, time.cloudflare.com)...");
+    configTime(0, 0, "pool.ntp.org", "time.google.com", "time.cloudflare.com");
+    time_t now = time(nullptr);
+    unsigned long start = millis();
+    while (now < 1704067200 && (millis() - start < timeoutMs)) { // Jan 1, 2024 00:00:00 UTC
+        delay(200);
+        now = time(nullptr);
+    }
+    if (now >= 1704067200) {
         struct tm ti;
         gmtime_r(&now, &ti);
         Serial.printf("[NTP] Device clock verified: %04d-%02d-%02d %02d:%02d:%02d UTC (TLS validation active)\n",
             ti.tm_year + 1900, ti.tm_mon + 1, ti.tm_mday, ti.tm_hour, ti.tm_min, ti.tm_sec);
+        return true;
     } else {
-        Serial.println("[NTP] Warning: NTP synchronization in progress. Using trusted TLS parameters.");
+        Serial.println("[NTP] ERROR: Clock synchronization failed. TLS certificate verification cannot proceed.");
+        return false;
     }
 }
 
 void connectWebSocket(const String& host, int port) {
-    String cleanHost = host;
-    bool isSsl = false;
-    if (cleanHost.startsWith("wss://")) {
-        cleanHost = cleanHost.substring(6);
-        isSsl = true;
-    } else if (cleanHost.startsWith("ws://")) {
-        cleanHost = cleanHost.substring(5);
-    } else if (cleanHost.startsWith("https://")) {
-        cleanHost = cleanHost.substring(8);
-        isSsl = true;
-    } else if (cleanHost.startsWith("http://")) {
-        cleanHost = cleanHost.substring(7);
-    }
-    if (cleanHost.indexOf('/') >= 0) cleanHost = cleanHost.substring(0, cleanHost.indexOf('/'));
-    if (cleanHost.indexOf(':') >= 0) cleanHost = cleanHost.substring(0, cleanHost.indexOf(':'));
+    ServerEndpoint ep = parseServerEndpoint(host, port);
+    String cleanHost = ep.host;
+    int targetPort = ep.port;
+    bool isSsl = ep.isTls;
     
     // Construct authenticated WebSocket query path (?device_id=PIN-XXXX&token=...)
     String wsPath = String(WS_PATH_PRIMARY) + "?device_id=" + pin_device_id;
@@ -241,17 +385,17 @@ void connectWebSocket(const String& host, int port) {
         ws.setExtraHeaders(extraHdrs.c_str());
     }
 
-    if (cleanHost.indexOf("trycloudflare.com") >= 0 || port == 443 || isSsl) {
-        Serial.printf("[WS] Connecting via WSS/SSL to %s:443%s [token=%s]\n", cleanHost.c_str(), WS_PATH_PRIMARY, pin_device_token.length() > 0 ? "AUTHENTICATED" : "NONE");
+    if (isSsl) {
+        Serial.printf("[WS] Connecting via WSS/SSL to %s:%d%s [token=%s]\n", cleanHost.c_str(), targetPort, WS_PATH_PRIMARY, pin_device_token.length() > 0 ? "AUTHENTICATED" : "NONE");
         time_t now = time(nullptr);
-        if (now >= 1700000000) {
-            ws.beginSslWithCA(cleanHost.c_str(), 443, wsPath.c_str(), root_ca_isrg_x1);
-        } else {
-            ws.beginSSL(cleanHost.c_str(), 443, wsPath.c_str());
+        if (now < 1704067200) {
+            // Attempt prompt clock sync before TLS WebSocket handshake
+            syncNtpTime(4000);
         }
+        ws.beginSslWithCA(cleanHost.c_str(), targetPort, wsPath.c_str(), cloudflare_ca_bundle);
     } else {
-        Serial.printf("[WS] Connecting via WS to %s:%d%s [token=%s]\n", cleanHost.c_str(), port, WS_PATH_PRIMARY, pin_device_token.length() > 0 ? "AUTHENTICATED" : "NONE");
-        ws.begin(cleanHost.c_str(), port, wsPath.c_str());
+        Serial.printf("[WS] Connecting via WS to %s:%d%s [token=%s]\n", cleanHost.c_str(), targetPort, WS_PATH_PRIMARY, pin_device_token.length() > 0 ? "AUTHENTICATED" : "NONE");
+        ws.begin(cleanHost.c_str(), targetPort, wsPath.c_str());
     }
     ws.setReconnectInterval(5000);
     ws.onEvent(onWebSocketEvent);
@@ -595,52 +739,68 @@ void bleProvisionWorkerTask(void* param) {
             String localIp = res.ip;
             Serial.printf("[BLE-PROV-TASK] Wi-Fi connected! Smart Pin IP: %s\n", localIp.c_str());
             deferBleText("{\"type\":\"wifi_connected\",\"ip\":\"" + localIp + "\"}");
-            deferBleText("{\"type\":\"registration_pending\"}");
 
-            // Synchronize system clock via NTP for TLS certificate validation
-            syncNtpTime();
+            ServerEndpoint ep = parseServerEndpoint(srvUrl.length() > 0 ? srvUrl : server_host, server_port);
+            Serial.printf("[BLE-PROV-TASK] Target endpoint: %s://%s:%d%s (TLS: %s)\n",
+                ep.scheme.c_str(), ep.host.c_str(), ep.port, ep.path.c_str(), ep.isTls ? "YES" : "NO");
 
-            // Parse target host & port
-            String targetHost = server_host;
-            int targetPort = server_port;
-            if (srvUrl.length() > 0) {
-                String clean = srvUrl;
-                if (clean.startsWith("http://")) clean = clean.substring(7);
-                else if (clean.startsWith("https://")) clean = clean.substring(8);
-                int colonIdx = clean.indexOf(":");
-                int slashIdx = clean.indexOf("/");
-                if (colonIdx > 0) {
-                    targetHost = clean.substring(0, colonIdx);
-                    int endPort = (slashIdx > colonIdx) ? slashIdx : clean.length();
-                    targetPort = clean.substring(colonIdx + 1, endPort).toInt();
-                    if (targetPort <= 0) targetPort = 8080;
-                } else if (slashIdx > 0) {
-                    targetHost = clean.substring(0, slashIdx);
-                } else {
-                    targetHost = clean;
+            // Diagnostic Step 1: DNS Resolution
+            deferBleText("{\"type\":\"provision_stage\",\"stage\":\"dns\",\"message\":\"Resolving server domain...\"}");
+            IPAddress resolvedIp;
+            if (!WiFi.hostByName(ep.host.c_str(), resolvedIp)) {
+                Serial.printf("[BLE-PROV-TASK] DNS resolution failed for '%s'\n", ep.host.c_str());
+                sendBleText("{\"type\":\"provision_error\",\"code\":\"ERR_DNS_FAILED\",\"stage\":\"dns\",\"message\":\"DNS resolution failed for " + ep.host + "\"}");
+                isBleProvisioningActive = false;
+                continue;
+            }
+            Serial.printf("[BLE-PROV-TASK] DNS resolved '%s' -> %s\n", ep.host.c_str(), resolvedIp.toString().c_str());
+
+            // Diagnostic Step 2: TCP Socket Connection Preflight
+            deferBleText("{\"type\":\"provision_stage\",\"stage\":\"tcp\",\"message\":\"Probing server TCP port...\"}");
+            WiFiClient tcpProbe;
+            tcpProbe.setTimeout(5000);
+            if (!tcpProbe.connect(resolvedIp, ep.port)) {
+                Serial.printf("[BLE-PROV-TASK] TCP connection refused to %s:%d\n", ep.host.c_str(), ep.port);
+                sendBleText("{\"type\":\"provision_error\",\"code\":\"ERR_TCP_CONNECT\",\"stage\":\"tcp\",\"message\":\"TCP connection refused to " + ep.host + ":" + String(ep.port) + "\"}");
+                isBleProvisioningActive = false;
+                continue;
+            }
+            tcpProbe.stop();
+            Serial.println("[BLE-PROV-TASK] TCP connection check passed.");
+
+            // Diagnostic Step 3 & 4: Clock Synchronization and TLS Handshake (if TLS required)
+            if (ep.isTls) {
+                deferBleText("{\"type\":\"provision_stage\",\"stage\":\"time_sync\",\"message\":\"Synchronizing clock for TLS certificate validation...\"}");
+                if (!syncNtpTime(12000)) {
+                    sendBleText("{\"type\":\"provision_error\",\"code\":\"ERR_TLS_TIME\",\"stage\":\"time_sync\",\"message\":\"NTP clock synchronization failed; cannot validate TLS certificates\"}");
+                    isBleProvisioningActive = false;
+                    continue;
                 }
+
+                deferBleText("{\"type\":\"provision_stage\",\"stage\":\"tls\",\"message\":\"Validating TLS certificate with trust bundle...\"}");
+                WiFiClientSecure tlsProbe;
+                tlsProbe.setCACert(cloudflare_ca_bundle);
+                tlsProbe.setTimeout(8000);
+                if (!tlsProbe.connect(ep.host.c_str(), ep.port)) {
+                    Serial.printf("[BLE-PROV-TASK] TLS handshake/cert validation failed for %s:%d\n", ep.host.c_str(), ep.port);
+                    sendBleText("{\"type\":\"provision_error\",\"code\":\"ERR_TLS_CERT\",\"stage\":\"tls\",\"message\":\"TLS certificate or handshake failed for " + ep.host + "\"}");
+                    isBleProvisioningActive = false;
+                    continue;
+                }
+                tlsProbe.stop();
+                Serial.println("[BLE-PROV-TASK] TLS certificate chain verified successfully.");
             }
 
-            // Contact Central System POST /api/pin/register with HTTPS if remote
+            // Diagnostic Step 5: HTTP Registration Endpoint
+            deferBleText("{\"type\":\"registration_pending\"}");
             HTTPClient http;
-            bool isRemoteHttps = (srvUrl.startsWith("https://") || targetHost.indexOf("trycloudflare.com") >= 0 || targetPort == 443);
-            if (isRemoteHttps && (targetPort == 8080 || targetPort <= 0)) {
-                targetPort = 443;
-            }
-            String regUrl = (isRemoteHttps ? "https://" : "http://") + targetHost + (isRemoteHttps ? "" : (":" + String(targetPort))) + "/api/pin/register";
+            String regUrl = (ep.isTls ? "https://" : "http://") + ep.host + (ep.isTls ? "" : (":" + String(ep.port))) + "/api/pin/register";
             Serial.printf("[BLE-PROV-TASK] Contacting registration endpoint: %s\n", regUrl.c_str());
 
             WiFiClientSecure secureClient;
             WiFiClient plainClient;
-            if (isRemoteHttps) {
-                time_t now = time(nullptr);
-                if (now >= 1700000000) {
-                    secureClient.setCACert(root_ca_isrg_x1);
-                    Serial.println("[TLS] Validating Central System certificate with ISRG Root X1 CA.");
-                } else {
-                    secureClient.setInsecure();
-                    Serial.println("[TLS] Clock synchronization pending. Proceeding in trusted Quick Tunnel mode.");
-                }
+            if (ep.isTls) {
+                secureClient.setCACert(cloudflare_ca_bundle);
                 http.begin(secureClient, regUrl);
             } else {
                 http.begin(plainClient, regUrl);
@@ -658,22 +818,26 @@ void bleProvisionWorkerTask(void* param) {
             if (httpCode != 200 || httpResp.indexOf("\"status\":\"success\"") < 0) {
                 String errCode = "ERR_PAIRING_CODE";
                 String errMsg = "Pairing code rejected or invalid";
-                if (httpCode < 0) {
+                if (httpCode == 502 || httpCode == 503) {
+                    errCode = "ERR_TUNNEL_ORIGIN";
+                    errMsg = "Cloudflare Edge active but Central System origin (port 8080) is unreachable (HTTP " + String(httpCode) + ")";
+                } else if (httpCode == -11 || httpCode == -1) {
+                    errCode = "ERR_HTTP_TIMEOUT";
+                    errMsg = "HTTP registration request timed out contacting " + ep.host;
+                } else if (httpCode < 0) {
                     errCode = "ERR_SERVER_UNREACHABLE";
-                    errMsg = "Cannot connect to server at " + targetHost + " (HTTP " + String(httpCode) + ")";
+                    errMsg = "Cannot connect to server at " + ep.host + " (HTTP " + String(httpCode) + ")";
                 } else if (httpResp.indexOf("\"message\":\"") >= 0) {
                     errMsg = extractJsonField(httpResp, "message");
                     if (httpResp.indexOf("\"code\":\"") >= 0) {
                         errCode = extractJsonField(httpResp, "code");
                     }
-                } else if (httpCode == 502 || httpCode == 503) {
-                    errCode = "ERR_TUNNEL_DOWN";
-                    errMsg = "Cloudflare Tunnel unreachable (HTTP " + String(httpCode) + ")";
                 } else {
+                    errCode = "ERR_HTTP_STATUS";
                     errMsg = "Server returned HTTP " + String(httpCode);
                 }
                 Serial.printf("[BLE-PROV-TASK] Registration failed: [%s] %s\n", errCode.c_str(), errMsg.c_str());
-                sendBleText("{\"type\":\"provision_error\",\"code\":\"" + errCode + "\",\"message\":\"" + errMsg + "\"}");
+                sendBleText("{\"type\":\"provision_error\",\"code\":\"" + errCode + "\",\"stage\":\"http_register\",\"message\":\"" + errMsg + "\"}");
                 isBleProvisioningActive = false;
                 continue;
             }
@@ -688,8 +852,8 @@ void bleProvisionWorkerTask(void* param) {
             // Save persistent credentials to NVS Preferences
             prefs.putString("ssid", newSsid);
             prefs.putString("pass", newPass);
-            prefs.putString("server", targetHost);
-            prefs.putInt("port", targetPort);
+            prefs.putString("server", ep.host);
+            prefs.putInt("port", ep.port);
             prefs.putString("token", token);
 
             // Verify persistence by reading back
@@ -703,10 +867,10 @@ void bleProvisionWorkerTask(void* param) {
 
             wifi_ssid = newSsid;
             wifi_pass = newPass;
-            server_host = targetHost;
-            server_port = targetPort;
+            server_host = ep.host;
+            server_port = ep.port;
             pin_device_token = token;
-            cachedServerIP = targetHost;
+            cachedServerIP = ep.host;
             serverRegistered = true;
             hasStoredCredentials = true;
             isDevicePaired = true;
@@ -733,7 +897,7 @@ void bleProvisionWorkerTask(void* param) {
                 deferBleText("{\"type\":\"pairing_success\",\"device_id\":\"" + pin_device_id + "\"}");
             } else {
                 Serial.println("[BLE-PROV-TASK] WebSocket authentication did not confirm within timeout.");
-                deferBleText("{\"type\":\"provision_error\",\"code\":\"ERR_WS_TIMEOUT\",\"message\":\"WebSocket connection or authentication timed out\"}");
+                deferBleText("{\"type\":\"provision_error\",\"code\":\"ERR_WS_TIMEOUT\",\"stage\":\"ws_auth\",\"message\":\"WebSocket connection or authentication timed out\"}");
             }
 
             provisioningInProgress = false;
@@ -1848,18 +2012,19 @@ void setup() {
 
     if (connected) {
         WiFi.setSleep(false); // Disable modem sleep: keeps TCP socket open and eliminates Windows WinError 121 timeouts
-        configTime(0, 0, "pool.ntp.org", "time.google.com");
         if (!isDevicePaired && prefs.isKey("pcode_pending")) {
             String pendingCode = prefs.getString("pcode_pending", "");
             if (pendingCode.length() >= 6) {
                 Serial.printf("[PROV] Found pending pairing code. Registering with Central System...\n");
                 HTTPClient http;
-                bool isRemoteHttps = (server_host.indexOf("trycloudflare.com") >= 0 || server_port == 443);
-                String regUrl = (isRemoteHttps ? "https://" : "http://") + server_host + (isRemoteHttps ? "" : (":" + String(server_port))) + "/api/pin/register";
+                ServerEndpoint ep = parseServerEndpoint(server_host, server_port);
+                bool isRemoteHttps = ep.isTls;
+                String regUrl = (isRemoteHttps ? "https://" : "http://") + ep.host + (isRemoteHttps ? "" : (":" + String(ep.port))) + "/api/pin/register";
                 WiFiClientSecure secClient;
                 WiFiClient stdClient;
                 if (isRemoteHttps) {
-                    secClient.setInsecure(); // Critical: Allow Cloudflare Quick Tunnel TLS without clock sync dependency
+                    syncNtpTime(6000);
+                    secClient.setCACert(cloudflare_ca_bundle);
                     http.begin(secClient, regUrl);
                 } else {
                     http.begin(stdClient, regUrl);
