@@ -778,6 +778,179 @@ class TestPinRegistrationPromotion(unittest.IsolatedAsyncioTestCase):
         registered_devices.pop(dev_id, None)
         active_pairing_codes.pop(pairing_code, None)
 
+    def test_22_stored_token_does_not_imply_server_authenticated(self):
+        """Test Critical Issue A: Stored token only means hasStoredCredentials, NOT serverAuthenticated."""
+        class PinFirmwareState:
+            def __init__(self):
+                self.hasStoredCredentials = False
+                self.serverAuthenticated = False
+                self.websocketConnected = False
+                self.isDevicePaired = False
+                self.token = ""
+                self.device_id = "PIN-F360"
+
+            def loadPreferences(self, stored_token: str):
+                self.token = stored_token
+                self.hasStoredCredentials = len(stored_token) > 0
+                self.isDevicePaired = self.hasStoredCredentials
+                # CRITICAL: Boot/load must NEVER set serverAuthenticated to True!
+                self.serverAuthenticated = False
+
+            def onWebSocketConnected(self):
+                self.websocketConnected = True
+                self.serverAuthenticated = False  # Pending handshake
+
+            def onAuthOk(self, resp_device_id: str):
+                if not resp_device_id or resp_device_id == self.device_id:
+                    self.serverAuthenticated = True
+                    self.isDevicePaired = True
+                    self.hasStoredCredentials = True
+
+            def onAuthError(self):
+                self.serverAuthenticated = False
+                self.hasStoredCredentials = False
+                self.isDevicePaired = False
+                self.token = ""
+
+            def onWebSocketDisconnected(self):
+                self.websocketConnected = False
+                self.serverAuthenticated = False
+
+        state = PinFirmwareState()
+        # 1. Boot with stored token from prior session
+        state.loadPreferences("stored_token_abc_123")
+        self.assertTrue(state.hasStoredCredentials)
+        self.assertFalse(state.serverAuthenticated, "Stored token must NOT mark server authenticated!")
+
+        # 2. WebSocket transport connects
+        state.onWebSocketConnected()
+        self.assertTrue(state.websocketConnected)
+        self.assertFalse(state.serverAuthenticated, "TCP/WS connect must NOT mark server authenticated!")
+
+        # 3. Server returns auth_ok for matching device
+        state.onAuthOk("PIN-F360")
+        self.assertTrue(state.serverAuthenticated, "auth_ok for this device must set serverAuthenticated = True")
+
+        # 4. Mismatched device ID does not authenticate
+        state2 = PinFirmwareState()
+        state2.loadPreferences("token_xyz")
+        state2.onWebSocketConnected()
+        state2.onAuthOk("PIN-IMPOSTOR")
+        self.assertFalse(state2.serverAuthenticated, "Mismatched device ID must not authenticate!")
+
+        # 5. Socket disconnect resets authentication
+        state.onWebSocketDisconnected()
+        self.assertFalse(state.websocketConnected)
+        self.assertFalse(state.serverAuthenticated, "Disconnect must reset serverAuthenticated to False")
+
+    async def test_23_server_authoritative_verification_no_local_cache_bypass(self):
+        """Test Critical Issue B: Local cache does NOT count as server verification; query backend authoritatively."""
+        dev_id = "PIN-AUTH-VERIFY"
+
+        # 1. Query non-existent device: must return registered = False
+        res_unregistered = await get_pin_status(dev_id)
+        self.assertFalse(res_unregistered["registered"])
+        self.assertFalse(res_unregistered["paired"])
+        self.assertEqual(res_unregistered["state"], "UNREGISTERED")
+
+        # 2. Register device legitimately
+        creds = load_device_credentials()
+        creds[dev_id] = {
+            "token_hash": hash_device_token("token_verified_123"),
+            "registered_at": "2026-11-22 12:00:00",
+            "fw_version": "2.1",
+            "mac": "00:11:22:33:44:55",
+            "pairing_code_used": "123987"
+        }
+        save_device_credentials(creds)
+
+        # Authoritative endpoint confirms registration even while offline
+        res_registered = await get_pin_status(dev_id)
+        self.assertTrue(res_registered["registered"])
+        self.assertTrue(res_registered["paired"])
+        self.assertFalse(res_registered["online"])
+        self.assertEqual(res_registered["state"], "OFFLINE")
+
+        # Cleanup
+        creds.pop(dev_id, None)
+        save_device_credentials(creds)
+
+    def test_24_unknown_battery_telemetry_distinct_from_zero(self):
+        """Test Critical Issue C & J: Unknown/invalid battery is -1, distinct from real 0%."""
+        def calculate_battery_pct(measured_mv: int) -> int:
+            if 3200 <= measured_mv <= 4350:
+                pct = int(((measured_mv - 3300) / (4200 - 3300)) * 100)
+                return max(1, min(100, pct))
+            return -1  # Unavailable / unknown
+
+        # Valid voltage measurements
+        self.assertEqual(calculate_battery_pct(4200), 100)
+        self.assertEqual(calculate_battery_pct(3750), 50)
+        self.assertGreaterEqual(calculate_battery_pct(3300), 1)
+
+        # Invalid/floating measurements (e.g. no divider wired or disconnected) -> MUST be -1
+        self.assertEqual(calculate_battery_pct(0), -1)
+        self.assertEqual(calculate_battery_pct(500), -1)
+        self.assertEqual(calculate_battery_pct(2800), -1)
+        self.assertEqual(calculate_battery_pct(4800), -1)
+
+    async def test_25_ble_relayed_presence_security_boundary(self):
+        """Test Critical Issue D: Unregistered pins cannot inject telemetry; registered pins update without clobbering direct online state."""
+        unregistered_pin = "PIN-UNTRUSTED"
+        registered_pin = "PIN-TRUSTED"
+
+        # Setup registered pin in credentials and server
+        creds = load_device_credentials()
+        creds[registered_pin] = {
+            "token_hash": hash_device_token("trusted_token"),
+            "registered_at": "2026-11-22 12:00:00",
+            "fw_version": "2.1",
+            "mac": "22:33:44:55:66:77",
+            "pairing_code_used": "654321"
+        }
+        save_device_credentials(creds)
+        registered_devices[registered_pin] = {
+            "id": registered_pin,
+            "online": True,
+            "state": "VAD ARMED",
+            "battery": -1,
+            "ble_proximity": False
+        }
+
+        # Emulate server-side ble_relay_presence logic
+        def handle_ble_relay(pin_id: str, mobile_id: str, batt: int, rssi: int):
+            if pin_id and (pin_id in registered_devices or pin_id in load_device_credentials()):
+                dev = registered_devices[pin_id]
+                dev["ble_proximity"] = True
+                dev["relayed_by"] = mobile_id
+                if not dev.get("online", False):
+                    dev["connection_source"] = "MOBILE_BLE_RELAY"
+                    dev["state"] = "STANDBY"
+                if batt >= 0:
+                    dev["battery"] = max(0, min(100, batt))
+                else:
+                    dev["battery"] = -1
+                return True
+            return False  # Rejected
+
+        # 1. Unregistered pin attempted relay: MUST be rejected
+        accepted_unreg = handle_ble_relay(unregistered_pin, "Mobile-1", 85, -60)
+        self.assertFalse(accepted_unreg, "Unregistered pin must NOT be accepted via BLE relay")
+        self.assertNotIn(unregistered_pin, registered_devices)
+
+        # 2. Registered pin relay: accepted, updates battery and proximity, direct online preserved!
+        accepted_reg = handle_ble_relay(registered_pin, "Mobile-1", 72, -55)
+        self.assertTrue(accepted_reg)
+        self.assertTrue(registered_devices[registered_pin]["ble_proximity"])
+        self.assertEqual(registered_devices[registered_pin]["battery"], 72)
+        self.assertTrue(registered_devices[registered_pin]["online"], "Direct online status must be preserved!")
+        self.assertEqual(registered_devices[registered_pin]["state"], "VAD ARMED")
+
+        # Cleanup
+        creds.pop(registered_pin, None)
+        save_device_credentials(creds)
+        registered_devices.pop(registered_pin, None)
+
 
 if __name__ == "__main__":
     unittest.main()

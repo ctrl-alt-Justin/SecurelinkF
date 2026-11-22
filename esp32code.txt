@@ -58,8 +58,16 @@ const char* WS_PATH_PRIMARY = "/";
 String pin_device_id = "PIN-001";
 String ble_device_name = "SecureLink-PIN";
 String pin_device_token = "";
-bool isDevicePaired = false;
 String pin_mac_address = "";
+
+// Explicit State Management
+bool hasStoredCredentials = false;    // Token exists in NVS Preferences
+bool wifiConnected = false;           // Wi-Fi STA has obtained IP address
+bool websocketConnected = false;      // WebSocket transport connected (WStype_CONNECTED)
+bool serverAuthenticated = false;     // Valid auth_ok received from server for THIS device_id
+bool serverRegistered = false;        // HTTP /api/pin/register returned success & token
+bool provisioningInProgress = false;  // Active BLE/USB provisioning in progress
+bool isDevicePaired = false;          // Backward-compatible alias for hasStoredCredentials
 
 void initDeviceIdentity() {
     uint8_t mac[6];
@@ -393,7 +401,9 @@ class BleRxCallbacks: public BLECharacteristicCallbacks {
                 if (fullJson.indexOf("get_device_info") >= 0) {
                     String infoMsg = "{\"type\":\"device_info\",\"device_id\":\"" + pin_device_id + 
                                      "\",\"mac\":\"" + pin_mac_address + 
-                                     "\",\"fw_version\":\"2.1\",\"paired\":" + (isDevicePaired ? "true" : "false") + "}";
+                                     "\",\"fw_version\":\"2.1\",\"has_credentials\":" + (hasStoredCredentials ? "true" : "false") +
+                                     ",\"authenticated\":" + (serverAuthenticated ? "true" : "false") +
+                                     ",\"paired\":" + (hasStoredCredentials ? "true" : "false") + "}";
                     Serial.printf("[BLE-PROV] Replying with device info: %s\n", infoMsg.c_str());
                     // MUST defer: calling notify() inside onWrite deadlocks Bluedroid
                     deferBleText(infoMsg);
@@ -463,11 +473,15 @@ void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
     } else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
         wifiGotIp = true;
         wifiStaConnected = true;
+        wifiConnected = true;
         lastWifiDisconnectReason = 0;
         Serial.printf("[WIFI-EVT] Got IP: %s\n", WiFi.localIP().toString().c_str());
     } else if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
         wifiStaConnected = false;
         wifiGotIp = false;
+        wifiConnected = false;
+        serverAuthenticated = false;
+        websocketConnected = false;
         lastWifiDisconnectReason = info.wifi_sta_disconnected.reason;
         Serial.printf("[WIFI-EVT] Disconnected! Reason code: %d\n", lastWifiDisconnectReason);
     }
@@ -559,6 +573,9 @@ void bleProvisionWorkerTask(void* param) {
     while (true) {
         if (xQueueReceive(bleProvisionQueue, &req, portMAX_DELAY) == pdTRUE) {
             isBleProvisioningActive = true;
+            provisioningInProgress = true;
+            serverAuthenticated = false;
+            serverRegistered = false;
             String newSsid = String(req.ssid);
             String newPass = String(req.password);
             String pCode = String(req.pairing_code);
@@ -690,18 +707,22 @@ void bleProvisionWorkerTask(void* param) {
             server_port = targetPort;
             pin_device_token = token;
             cachedServerIP = targetHost;
+            serverRegistered = true;
+            hasStoredCredentials = true;
+            isDevicePaired = true;
+            serverAuthenticated = false; // Must be reset before awaiting fresh WebSocket auth!
             Serial.println("[BLE-PROV-TASK] Token and Wi-Fi credentials persisted to NVS.");
 
             // Signal main loop on Core 1 to connect WebSocket
             Serial.println("[BLE-PROV-TASK] Signaling main loop to connect WebSocket for authentication...");
             triggerWsConnect = true;
 
-            // Wait up to 30 seconds for WebSocket connection & authentication confirmation
+            // Wait up to 35 seconds for genuine WebSocket connection & authentication confirmation (auth_ok)
             unsigned long authWaitStart = millis();
             bool authConfirmed = false;
-            while (millis() - authWaitStart < 30000) {
+            while (millis() - authWaitStart < 35000) {
                 vTaskDelay(pdMS_TO_TICKS(150));
-                if (isDevicePaired) {
+                if (serverAuthenticated) {
                     authConfirmed = true;
                     break;
                 }
@@ -715,6 +736,7 @@ void bleProvisionWorkerTask(void* param) {
                 deferBleText("{\"type\":\"provision_error\",\"code\":\"ERR_WS_TIMEOUT\",\"message\":\"WebSocket connection or authentication timed out\"}");
             }
 
+            provisioningInProgress = false;
             isBleProvisioningActive = false;
         }
     }
@@ -867,8 +889,7 @@ inline int16_t applySoftLimiter(int32_t sample) {
 }
 
 // --- BATTERY TELEMETRY (XIAO ESP32S3 Sense) ---
-// Reads physical battery voltage from ADC (GPIO 1 / A0) with 1:2 divider,
-// or calculates realistic Coulomb discharge based on 200mAh LiPo operational runtime.
+// Reads physical battery voltage from ADC (GPIO 1 / A0) with 1:2 divider.
 #define BATTERY_PIN 1
 
 static unsigned long totalStreamTimeMs = 0;
@@ -883,7 +904,7 @@ int readBatteryMv() {
         delayMicroseconds(50);
     }
     uint32_t raw = rawSum / 8;
-    // With 11dB attenuation, range is ~0-3100mV.
+    // With 11dB attenuation, range is ~0-3100mV on ADC pin.
     // If a 1:2 divider (e.g. 2x 100k resistors) is wired to GPIO 1:
     int mv = (int)((raw / 4095.0f) * 3100.0f * 2.0f);
     return mv;
@@ -891,26 +912,14 @@ int readBatteryMv() {
 
 int calculateBatteryPct() {
     int mv = readBatteryMv();
-    // If a valid physical LiPo voltage (3.0V - 4.35V) is measured via hardware divider:
-    if (mv >= 3000 && mv <= 4350) {
+    // Valid LiPo operating voltage under load/charging is 3200mV (cut-off) to 4250mV (max)
+    if (mv >= 3200 && mv <= 4350) {
         int pct = (int)(((float)(mv - 3300) / (4200 - 3300)) * 100.0f);
-        return constrain(pct, 0, 100);
+        return constrain(pct, 1, 100);
     }
-
-    // Dynamic Coulomb discharge model for 200mAh LiPo:
-    // Standby: ~35mA (160MHz CPU + Modem Sleep + OV2640 in powersave) -> ~5.7h total
-    // Active Voice Streaming: ~115mA -> ~1.7h total
-    unsigned long now = millis();
-    unsigned long activeStreamMs = totalStreamTimeMs;
-    if (isStreaming && streamStartMs > 0) {
-        activeStreamMs += (now - streamStartMs);
-    }
-    unsigned long standbyMs = (now > activeStreamMs) ? (now - activeStreamMs) : 0;
-
-    float consumedMah = ((float)standbyMs / 3600000.0f) * 35.0f + ((float)activeStreamMs / 3600000.0f) * 115.0f;
-    float remainingMah = 200.0f - consumedMah;
-    int pct = (int)((remainingMah / 200.0f) * 100.0f);
-    return constrain(pct, 0, 100);
+    // If voltage measurement is invalid or no physical divider wired, return -1 (UNKNOWN)
+    // Never report fake 0% or simulated percentages!
+    return -1;
 }
 
 // --- CAMERA SUBSYSTEM (OV3660 Dedicated Calibration) ---
@@ -1031,12 +1040,14 @@ void captureIncidentSnapshot() {
 void onWebSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
     switch (type) {
         case WStype_CONNECTED:
+            websocketConnected = true;
+            serverAuthenticated = false; // Transport connected, but authentication handshake pending!
             hasActiveStream = false; // Standby connection ready! Audio streaming begins only when voice is detected
             hasPendingWsConnect = false;
             isStreaming = false; // Always clear stale streaming state on connect
             ringTail = (ringHead + RING_BUFFER_SIZE - PRE_ROLL_BYTES) % RING_BUFFER_SIZE;
             needImmediateHeartbeat = false; // Heartbeats sent only after authentication handshake succeeds
-            Serial.println("[WS] Connected to Checkpoint. Sending authentication handshake...");
+            Serial.println("[WS] Connected to Central System. Sending authentication handshake...");
             if (pin_device_token.length() > 0) {
                 String authPayload = "{\"type\":\"auth\",\"device_id\":\"" + pin_device_id + "\",\"token\":\"" + pin_device_token + "\"}";
                 ws.sendTXT(authPayload);
@@ -1109,29 +1120,46 @@ void onWebSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
                     wifi_ssid2 = "";
                     wifi_pass2 = "";
                     pin_device_token = "";
+                    hasStoredCredentials = false;
+                    serverAuthenticated = false;
                     isDevicePaired = false;
                     ws.disconnect();
                     delay(500);
                     Serial.println("[SYS] Rebooting into Setup Portal...");
                     ESP.restart();
                 } else if (msg.indexOf("\"type\":\"auth_ok\"") >= 0) {
-                    isDevicePaired = true;
-                    needImmediateHeartbeat = true; // Safe to send heartbeats now
-                    Serial.println("[WS-AUTH] WebSocket Authentication Confirmed by Central System!");
-                    deferBleText("{\"type\":\"pairing_success\",\"device_id\":\"" + pin_device_id + "\"}");
+                    String authDevId = extractJsonField(msg, "device_id");
+                    if (authDevId.length() == 0 || authDevId == pin_device_id) {
+                        serverAuthenticated = true;
+                        isDevicePaired = true;
+                        hasStoredCredentials = true;
+                        needImmediateHeartbeat = true; // Safe to send heartbeats now
+                        Serial.printf("[WS-AUTH] WebSocket Authentication Confirmed by Central System for %s!\n", pin_device_id.c_str());
+                        deferBleText("{\"type\":\"pairing_success\",\"device_id\":\"" + pin_device_id + "\"}");
+                    } else {
+                        Serial.printf("[WS-AUTH] Rejected auth_ok for mismatched device_id: %s (expected %s)\n", authDevId.c_str(), pin_device_id.c_str());
+                    }
                 } else if (msg.indexOf("\"type\":\"auth_challenge\"") >= 0) {
                     if (pin_device_token.length() > 0) {
                         String authPayload = "{\"type\":\"auth\",\"device_id\":\"" + pin_device_id + "\",\"token\":\"" + pin_device_token + "\"}";
                         ws.sendTXT(authPayload);
                         Serial.println("[WS-AUTH] Responded to auth challenge with token frame.");
                     }
-                } else if (msg.indexOf("\"type\":\"auth_error\"") >= 0) {
-                    Serial.println("[WS-AUTH] WebSocket Authentication Rejected by Central System!");
-                    deferBleText("{\"type\":\"provision_error\",\"code\":\"ERR_WS_AUTH\",\"message\":\"Central System rejected token\"}");
+                } else if (msg.indexOf("\"type\":\"auth_error\"") >= 0 || msg.indexOf("\"ERR_AUTH_FAILED\"") >= 0) {
+                    Serial.println("[WS-AUTH] WebSocket Authentication Rejected by Central System! Invalid or revoked token.");
+                    serverAuthenticated = false;
+                    hasStoredCredentials = false;
+                    isDevicePaired = false;
+                    prefs.remove("token");
+                    pin_device_token = "";
+                    ws.disconnect();
+                    deferBleText("{\"type\":\"provision_error\",\"code\":\"ERR_WS_AUTH\",\"message\":\"Central System rejected device token\"}");
                 }
             }
             break;
         case WStype_DISCONNECTED:
+            websocketConnected = false;
+            serverAuthenticated = false;
             hasActiveStream = false;
             hasPendingWsConnect = false;
             isStreaming = false; // Always clear streaming state on disconnect
@@ -1174,15 +1202,17 @@ void loadPreferences() {
     server_host = prefs.getString("server", "10.28.20.28");
     server_port = prefs.getInt("port", 8080);
     pin_device_token = prefs.getString("token", "");
-    isDevicePaired = (pin_device_token.length() > 0);
+    hasStoredCredentials = (pin_device_token.length() > 0);
+    isDevicePaired = hasStoredCredentials;
+    serverAuthenticated = false; // Fresh boot/load must NEVER assume server is authenticated!
     cachedServerIP = server_host;
     Serial.printf("[CFG] Primary Wi-Fi SSID: '%s'\n", wifi_ssid.c_str());
     if (wifi_ssid2.length() > 0) {
         Serial.printf("[CFG] Backup/Roaming Wi-Fi SSID: '%s'\n", wifi_ssid2.c_str());
     }
     Serial.printf("[CFG] Stored Server Host: '%s:%d'\n", server_host.c_str(), server_port);
-    Serial.printf("[CFG] Device Token: %s (Paired: %s)\n",
-        pin_device_token.length() > 0 ? "[AUTHENTICATED]" : "[NONE]", isDevicePaired ? "YES" : "NO");
+    Serial.printf("[CFG] Device Token: %s (Has Credentials: %s | Server Authenticated: NO)\n",
+        pin_device_token.length() > 0 ? "[STORED]" : "[NONE]", hasStoredCredentials ? "YES" : "NO");
 }
 
 void startConfigPortal() {
@@ -1402,7 +1432,7 @@ void startConfigPortal() {
 void discoverCheckpoint() {
     if (hasActiveStream || hasPendingWsConnect || ws.isConnected() || wifiConnectInProgress) return;
 
-    if (!isDevicePaired || pin_device_token.length() == 0) {
+    if (!hasStoredCredentials || pin_device_token.length() == 0) {
         static unsigned long lastUnpairedLog = 0;
         if (millis() - lastUnpairedLog > 10000) {
             lastUnpairedLog = millis();
@@ -1952,8 +1982,8 @@ void loop() {
             hasPendingWsConnect = false;
             cachedServerIP = server_host; 
         }
-        // Auto-reconnect to checkpoint server on standby so streaming is instantaneous (only if device is paired)
-        if (!ws.isConnected() && !hasPendingWsConnect && cachedServerIP != "" && !wifiConnectInProgress && isDevicePaired && pin_device_token.length() > 0) {
+        // Auto-reconnect to checkpoint server on standby so streaming is instantaneous (only if device has stored credentials)
+        if (!ws.isConnected() && !hasPendingWsConnect && cachedServerIP != "" && !wifiConnectInProgress && hasStoredCredentials && pin_device_token.length() > 0) {
             static unsigned long lastWsRetry = 0;
             if (millis() - lastWsRetry > 10000) {
                 lastWsRetry = millis();
@@ -2123,10 +2153,10 @@ void loop() {
         }
     }
 
-    // --- PIN KEEP-ALIVE & TELEMETRY HEARTBEAT (3.0 seconds) ---
-    // Transmits regular keep-alive pings over Wi-Fi WebSocket or BLE Audio Bridge
+    // --- PIN KEEP-ALIVE & TELEMETRY HEARTBEAT ---
+    // 1. Authoritative direct channel: ONLY when serverAuthenticated == true!
     static unsigned long lastHeartbeatMs = 0;
-    if (ws.isConnected() && isDevicePaired) {
+    if (ws.isConnected() && serverAuthenticated) {
         if (needImmediateHeartbeat || (millis() - lastHeartbeatMs >= 3000)) {
             needImmediateHeartbeat = false;
             lastHeartbeatMs = millis();
@@ -2135,13 +2165,21 @@ void loop() {
             int batMv = readBatteryMv();
             ws.sendTXT("PING:" + String(rssi) + ":" + String(batPct) + ":" + String(batMv));
         }
-    } else if (bleClientConnected) {
-        if (needImmediateHeartbeat || (millis() - lastHeartbeatMs >= 3000)) {
-            needImmediateHeartbeat = false;
-            lastHeartbeatMs = millis();
+    }
+
+    // 2. BLE Telemetry / Keep-alive:
+    // If mobile companion is connected over BLE, transmit regular BLE heartbeats!
+    // Unauthenticated: every 3s so mobile can relay presence & battery to server.
+    // Authenticated: every 6s so mobile local UI has live battery info without flooding.
+    static unsigned long lastBleHeartbeatMs = 0;
+    if (bleClientConnected) {
+        unsigned long bleInterval = serverAuthenticated ? 6000 : 3000;
+        if (needImmediateHeartbeat || (millis() - lastBleHeartbeatMs >= bleInterval)) {
+            lastBleHeartbeatMs = millis();
             int batPct = calculateBatteryPct();
             int batMv = readBatteryMv();
-            sendBleText("PING:-55:" + String(batPct) + ":" + String(batMv));
+            int rssi = ws.isConnected() ? WiFi.RSSI() : -55;
+            deferBleText("PING:" + String(rssi) + ":" + String(batPct) + ":" + String(batMv));
         }
     }
 

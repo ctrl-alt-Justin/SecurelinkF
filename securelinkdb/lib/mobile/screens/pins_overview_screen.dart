@@ -179,9 +179,9 @@ class _PinsOverviewScreenState extends State<PinsOverviewScreen> {
                 children: [
                   _specRow('Operating State', dev.state, dev.stateColor),
                   const Divider(color: Colors.white10, height: 16),
-                  _specRow('Battery Level', '${dev.battery}% (${dev.estRuntime})', dev.batteryColor),
+                  _specRow('Battery Level', dev.batteryWithRuntime, dev.batteryColor),
                   const Divider(color: Colors.white10, height: 16),
-                  _specRow('Voltage Nominal', '${dev.voltageEstimate}V (LiPo)', Colors.white),
+                  _specRow('Voltage Nominal', dev.voltageDisplay, Colors.white),
                   const Divider(color: Colors.white10, height: 16),
                   _specRow('Connected Network', dev.network, Colors.white),
                   const Divider(color: Colors.white10, height: 16),
@@ -1455,7 +1455,7 @@ class _PinsOverviewScreenState extends State<PinsOverviewScreen> {
                             Icon(dev.batteryIcon, color: dev.batteryColor, size: 17),
                             const SizedBox(width: 6),
                             Text(
-                              '${dev.battery}% (${dev.estRuntime})',
+                              dev.batteryWithRuntime,
                               style: TextStyle(
                                 color: dev.batteryColor,
                                 fontSize: 12.5,
@@ -1464,7 +1464,7 @@ class _PinsOverviewScreenState extends State<PinsOverviewScreen> {
                             ),
                             const Spacer(),
                             Text(
-                              '${dev.voltageEstimate}V LiPo',
+                              dev.voltageDisplay,
                               style: TextStyle(
                                 color: Colors.white.withValues(alpha: 0.6),
                                 fontSize: 11,
@@ -1477,9 +1477,9 @@ class _PinsOverviewScreenState extends State<PinsOverviewScreen> {
                         ClipRRect(
                           borderRadius: BorderRadius.circular(4),
                           child: LinearProgressIndicator(
-                            value: (dev.battery / 100.0).clamp(0.0, 1.0),
+                            value: dev.isBatteryValid ? (dev.battery / 100.0).clamp(0.0, 1.0) : 0.0,
                             backgroundColor: Colors.white.withValues(alpha: 0.08),
-                            valueColor: AlwaysStoppedAnimation<Color>(dev.batteryColor),
+                            valueColor: AlwaysStoppedAnimation<Color>(dev.isBatteryValid ? dev.batteryColor : Colors.white24),
                             minHeight: 4.5,
                           ),
                         ),

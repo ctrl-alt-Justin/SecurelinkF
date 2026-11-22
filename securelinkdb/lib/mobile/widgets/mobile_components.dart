@@ -338,6 +338,7 @@ class MobileBatteryMeter extends StatelessWidget {
   });
 
   Color get _color {
+    if (battery < 0) return const Color(0xFF9CA3AF);
     if (battery <= 15) return MobileDesignSystem.statusDanger;
     if (battery <= 25) return const Color(0xFFFF5E72);
     if (battery <= 45) return MobileDesignSystem.statusWarning;
@@ -355,15 +356,17 @@ class MobileBatteryMeter extends StatelessWidget {
             Row(
               children: [
                 Icon(
-                  battery <= 20
-                      ? Icons.battery_alert_rounded
-                      : Icons.battery_charging_full_rounded,
+                  battery < 0
+                      ? Icons.battery_unknown_rounded
+                      : (battery <= 20
+                          ? Icons.battery_alert_rounded
+                          : Icons.battery_charging_full_rounded),
                   size: 15,
                   color: _color,
                 ),
                 const SizedBox(width: 5),
                 Text(
-                  '$battery%',
+                  battery >= 0 ? '$battery%' : '--',
                   style: TextStyle(
                     color: _color,
                     fontSize: 13.5,
@@ -375,7 +378,7 @@ class MobileBatteryMeter extends StatelessWidget {
             ),
             if (showEstRuntime)
               Text(
-                estRuntime,
+                battery >= 0 ? estRuntime : 'Telemetry Pending',
                 style: TextStyle(
                   color: Colors.white.withValues(alpha: 0.65),
                   fontSize: 11,
@@ -395,18 +398,18 @@ class MobileBatteryMeter extends StatelessWidget {
                 color: Colors.white.withValues(alpha: 0.06),
               ),
               FractionallySizedBox(
-                widthFactor: (battery.clamp(0, 100)) / 100.0,
+                widthFactor: battery >= 0 ? ((battery.clamp(0, 100)) / 100.0) : 0.0,
                 child: Container(
                   height: height,
                   decoration: BoxDecoration(
                     color: _color,
                     borderRadius: BorderRadius.circular(10),
-                    boxShadow: [
+                    boxShadow: battery >= 0 ? [
                       BoxShadow(
                         color: _color.withValues(alpha: 0.6),
                         blurRadius: 8,
                       ),
-                    ],
+                    ] : null,
                   ),
                 ),
               ),
@@ -1474,7 +1477,7 @@ class _PairPinModalState extends State<PairPinModal> with SingleTickerProviderSt
                         ),
                         const SizedBox(height: 2),
                         Text(
-                          '${dev.state} • ${dev.battery}% (${dev.estRuntime}) • ${dev.network}',
+                          '${dev.state} • ${dev.batteryWithRuntime} • ${dev.network}',
                           style: TextStyle(
                             color: Colors.white.withValues(alpha: 0.6),
                             fontSize: 10.5,

@@ -35,7 +35,7 @@ class _BatteryTrackerScreenState extends State<BatteryTrackerScreen> {
   }
 
   double get _fleetAverageBattery {
-    final pool = _targetPool;
+    final pool = _targetPool.where((d) => d.isBatteryValid).toList();
     if (pool.isEmpty) return 0.0;
     final total = pool.fold<int>(0, (sum, d) => sum + d.battery);
     return total / pool.length;
@@ -335,7 +335,7 @@ class _BatteryTrackerScreenState extends State<BatteryTrackerScreen> {
                             crossAxisAlignment: CrossAxisAlignment.end,
                             children: [
                               Text(
-                                '${dev.battery}%',
+                                dev.batteryFormatted,
                                 style: TextStyle(
                                   color: dev.batteryColor,
                                   fontSize: 18,

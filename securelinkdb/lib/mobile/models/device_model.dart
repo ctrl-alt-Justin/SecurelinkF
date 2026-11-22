@@ -34,16 +34,29 @@ class DeviceStatus {
   });
 
   factory DeviceStatus.fromJson(Map<String, dynamic> json) {
-    final batt = json['battery'] is int ? json['battery'] as int : int.tryParse('${json['battery']}') ?? 100;
-    final hours = (batt / 100.0 * 7.5);
-    final h = hours.floor();
-    final m = ((hours - h) * 60).round();
-    final runtime = '${h}h ${m}m';
+    int batt = -1;
+    final rawBatt = json['battery'];
+    if (rawBatt is int) {
+      batt = rawBatt >= 0 ? rawBatt.clamp(0, 100) : -1;
+    } else if (rawBatt != null) {
+      final parsed = int.tryParse('$rawBatt');
+      if (parsed != null) {
+        batt = parsed >= 0 ? parsed.clamp(0, 100) : -1;
+      }
+    }
+
+    String runtime = '--';
+    if (batt >= 0) {
+      final hours = (batt / 100.0 * 7.5);
+      final h = hours.floor();
+      final m = ((hours - h) * 60).round();
+      runtime = '${h}h ${m}m';
+    }
 
     return DeviceStatus(
       id: json['id'] as String? ?? 'PIN-001',
       online: json['online'] as bool? ?? false,
-      battery: batt.clamp(0, 100),
+      battery: batt,
       state: json['state'] as String? ?? 'STANDBY',
       network: json['network'] as String? ?? 'Campus Wi-Fi',
       lastSeen: json['lastSeen'] as String? ?? 'Just now',
@@ -109,10 +122,15 @@ class DeviceStatus {
     );
   }
 
-  bool get isLowBattery => battery <= 20;
-  bool get isCriticalBattery => battery <= 10;
+  bool get isBatteryValid => battery >= 0;
+  bool get isLowBattery => isBatteryValid && battery <= 20;
+  bool get isCriticalBattery => isBatteryValid && battery <= 10;
+
+  String get batteryFormatted => isBatteryValid ? '$battery%' : '--';
+  String get batteryWithRuntime => isBatteryValid ? '$battery% ($estRuntime)' : 'Telemetry Pending';
 
   Color get batteryColor {
+    if (!isBatteryValid) return const Color(0xFF9CA3AF);
     if (isCriticalBattery) return const Color(0xFFFF3B5C);
     if (isLowBattery) return const Color(0xFFFF5E72);
     if (battery <= 45) return const Color(0xFFFFB800);
@@ -120,6 +138,7 @@ class DeviceStatus {
   }
 
   IconData get batteryIcon {
+    if (!isBatteryValid) return Icons.battery_unknown_rounded;
     if (battery >= 90) return Icons.battery_full_rounded;
     if (battery >= 75) return Icons.battery_6_bar_rounded;
     if (battery >= 50) return Icons.battery_4_bar_rounded;
@@ -151,9 +170,15 @@ class DeviceStatus {
   }
 
   double get voltageEstimate {
+    if (!isBatteryValid) return 3.70;
     // 3.7V - 4.2V LiPo curve estimation
     final v = 3.45 + (battery / 100.0) * 0.75;
     return double.parse(v.toStringAsFixed(2));
+  }
+
+  String get voltageDisplay {
+    if (!isBatteryValid) return '-- V';
+    return '${voltageEstimate.toStringAsFixed(2)}V (LiPo)';
   }
 }
 

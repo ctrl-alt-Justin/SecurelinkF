@@ -320,7 +320,7 @@ def init_registered_devices_from_credentials():
             registered_devices[dev_id] = {
                 "id": dev_id,
                 "online": False,
-                "battery": 100,
+                "battery": -1,
                 "state": "OFFLINE",
                 "network": "Campus Wi-Fi",
                 "lastSeen": info.get("registered_at", "Registered"),
@@ -1395,7 +1395,7 @@ async def get_pin_status(device_id: str):
         "paired": is_paired,
         "online": is_active,
         "state": state_str,
-        "battery": dev.get("battery", 100) if dev else None,
+        "battery": dev.get("battery", -1) if dev else -1,
         "rssi": dev.get("rssi", -60) if dev else None,
         "last_seen": dev.get("lastSeen", "") if dev else "",
     }
@@ -1651,27 +1651,60 @@ async def mobile_websocket_endpoint(websocket: WebSocket):
                 # 1. BLE Relay: Presence and telemetry from nearby Smart Pins
                 if mtype == "ble_relay_presence":
                     pin_id = str(msg.get("pin_id", "")).strip().upper()
-                    # CRITICAL: Do NOT create or register a physical ESP32 from a mobile BLE relay!
-                    # Only update proximity and telemetry if the pin is already legitimately registered.
-                    if pin_id and pin_id in registered_devices:
-                        dev_record = registered_devices[pin_id]
-                        dev_record["ble_proximity"] = True
-                        dev_record["relayed_by"] = device_id
-                        dev_record["last_ble_seen"] = datetime.now().strftime("%H:%M:%S")
-                        if "battery" in msg:
-                            dev_record["battery"] = int(msg["battery"])
-                        if "battery_mv" in msg:
-                            dev_record["batteryMv"] = int(msg["battery_mv"])
-                        if "rssi" in msg:
-                            dev_record["rssi"] = int(msg["rssi"])
+                    if pin_id:
+                        if pin_id not in registered_devices:
+                            creds = load_device_credentials()
+                            if pin_id in creds:
+                                registered_devices[pin_id] = {
+                                    "id": pin_id,
+                                    "online": False,
+                                    "battery": -1,
+                                    "state": "OFFLINE",
+                                    "network": "Campus Wi-Fi",
+                                    "lastSeen": creds[pin_id].get("registered_at", "Registered"),
+                                    "cpuMhz": 160,
+                                    "rssi": -70,
+                                    "estRuntime": "--",
+                                    "paired": True,
+                                }
 
-                        await broadcast_to_ui({
-                            "event_type": "pin_ble_relayed",
-                            "pin_id": pin_id,
-                            "relayed_by": device_id,
-                            "device": dev_record,
-                            "timestamp": datetime.now().strftime("%H:%M:%S")
-                        })
+                        if pin_id in registered_devices:
+                            dev_record = registered_devices[pin_id]
+                            dev_record["ble_proximity"] = True
+                            dev_record["relayed_by"] = device_id
+                            dev_record["last_ble_seen"] = datetime.now().strftime("%H:%M:%S")
+
+                            # If device is not directly connected over Wi-Fi, mark connection source as BLE relay
+                            if not dev_record.get("online", False):
+                                dev_record["connection_source"] = "MOBILE_BLE_RELAY"
+                                if dev_record.get("state") in ("OFFLINE", "STANDBY"):
+                                    dev_record["state"] = "STANDBY"
+
+                            if "battery" in msg:
+                                raw_b = int(msg["battery"])
+                                if raw_b >= 0:
+                                    dev_record["battery"] = max(0, min(100, raw_b))
+                                    rem_mins = int((dev_record["battery"] / 100.0) * 315)
+                                    dev_record["estRuntime"] = f"{rem_mins // 60}h {rem_mins % 60:02d}m"
+                                else:
+                                    dev_record["battery"] = -1
+                                    dev_record["estRuntime"] = "--"
+                            if "battery_mv" in msg:
+                                raw_mv = int(msg["battery_mv"])
+                                dev_record["batteryMv"] = raw_mv if raw_mv >= 2500 else -1
+                            if "rssi" in msg:
+                                dev_record["rssi"] = int(msg["rssi"])
+
+                            print(f"[BLE-RELAY] Updated presence & telemetry for registered pin '{pin_id}' via mobile '{device_id}' (battery={dev_record.get('battery')}%).")
+                            await broadcast_to_ui({
+                                "event_type": "pin_ble_relayed",
+                                "pin_id": pin_id,
+                                "relayed_by": device_id,
+                                "device": dev_record,
+                                "timestamp": datetime.now().strftime("%H:%M:%S")
+                            })
+                        else:
+                            print(f"[BLE-RELAY] Rejected presence for unregistered pin '{pin_id}' from mobile '{device_id}'. Only registered pins can relay telemetry.")
 
                 # 2. BLE Relay: BLE Disconnection notification
                 elif mtype == "ble_relay_disconnect":
@@ -2644,22 +2677,23 @@ async def pin_websocket_endpoint(websocket: WebSocket):
                             pass
                     if len(parts) >= 3:
                         try:
-                            batt_pct = int(parts[2])
-                            batt_pct = max(0, min(100, batt_pct))
-                            registered_devices[device_id]["battery"] = batt_pct
-                            # Realistic runtime estimation:
-                            # 200mAh LiPo in 160MHz VAD Standby with modem sleep + camera sleep (~38mA avg):
-                            # Total battery life is ~5.3h = ~315 minutes from 100% to 0%.
-                            rem_mins = int((batt_pct / 100.0) * 315)
-                            hours = rem_mins // 60
-                            mins = rem_mins % 60
-                            registered_devices[device_id]["estRuntime"] = f"{hours}h {mins:02d}m"
+                            raw_b = int(parts[2])
+                            if raw_b >= 0:
+                                batt_pct = max(0, min(100, raw_b))
+                                registered_devices[device_id]["battery"] = batt_pct
+                                rem_mins = int((batt_pct / 100.0) * 315)
+                                hours = rem_mins // 60
+                                mins = rem_mins % 60
+                                registered_devices[device_id]["estRuntime"] = f"{hours}h {mins:02d}m"
+                            else:
+                                registered_devices[device_id]["battery"] = -1
+                                registered_devices[device_id]["estRuntime"] = "--"
                         except Exception:
                             pass
                     if len(parts) >= 4:
                         try:
                             batt_mv = int(parts[3])
-                            registered_devices[device_id]["batteryMv"] = batt_mv
+                            registered_devices[device_id]["batteryMv"] = batt_mv if batt_mv >= 2500 else -1
                         except Exception:
                             pass
                     now_str = datetime.now().strftime("%H:%M:%S")

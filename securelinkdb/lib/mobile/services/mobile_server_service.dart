@@ -1376,10 +1376,10 @@ class MobileServerService extends ChangeNotifier {
       _devices[cleanId] = DeviceStatus(
         id: cleanId,
         online: false,
-        battery: 0,
+        battery: -1, // Unknown/unavailable until real telemetry is received!
         state: 'STANDBY',
         network: method.contains('Bluetooth') ? 'BLE Audio Bridge' : (_checkpoints.isNotEmpty ? _checkpoints.first.ssid : 'Campus Wi-Fi'),
-        lastSeen: 'Paired just now ($method)',
+        lastSeen: 'Paired ($method)',
         cpuMhz: 160,
         rssi: 0,
         estRuntime: '--',
@@ -1402,10 +1402,17 @@ class MobileServerService extends ChangeNotifier {
     if (cleanId.isEmpty) return;
 
     final existing = _devices[cleanId];
-    final bat = battery ?? existing?.battery ?? 0;
-    final remMins = (bat / 100.0) * 315;
-    final hours = remMins ~/ 60;
-    final mins = (remMins % 60).toInt();
+    final int bat = (battery != null && battery >= 0)
+        ? battery
+        : (existing != null && existing.battery >= 0 ? existing.battery : -1);
+
+    String runtimeStr = '--';
+    if (bat >= 0) {
+      final remMins = (bat / 100.0) * 315;
+      final hours = remMins ~/ 60;
+      final mins = (remMins % 60).toInt();
+      runtimeStr = '${hours}h ${mins.toString().padLeft(2, '0')}m';
+    }
 
     _devices[cleanId] = DeviceStatus(
       id: cleanId,
@@ -1416,7 +1423,7 @@ class MobileServerService extends ChangeNotifier {
       lastSeen: existing?.lastSeen ?? 'Active over BLE',
       cpuMhz: existing?.cpuMhz ?? 160,
       rssi: rssi,
-      estRuntime: bat > 0 ? '${hours}h ${mins.toString().padLeft(2, '0')}m' : '--',
+      estRuntime: runtimeStr,
       bleProximity: true,
       relayedBy: _mobileId,
       lastBleSeen: 'Active over BLE just now',
@@ -1597,12 +1604,8 @@ class MobileServerService extends ChangeNotifier {
   Future<bool> verifyPinPairingWithServer(String cleanCode, String devId) async {
     try {
       final upperId = devId.toUpperCase().trim();
-      // 1. In-memory devices check
-      if (upperId.isNotEmpty && _devices.containsKey(upperId)) {
-        return true;
-      }
 
-      // 2. Query direct authoritative pin status REST endpoint: /api/pin/status/<device_id>
+      // 1. Query direct authoritative pin status REST endpoint: /api/pin/status/<device_id>
       if (upperId.isNotEmpty) {
         try {
           final pinStatusUri = getApiUri('/pin/status/$upperId');
@@ -1612,14 +1615,28 @@ class MobileServerService extends ChangeNotifier {
           if (res.statusCode == 200) {
             final bodyStr = await res.transform(utf8.decoder).join();
             final data = jsonDecode(bodyStr);
-            if (data['paired'] == true || data['registered'] == true) {
-              return true;
+            if (data['device_id']?.toString().toUpperCase() == upperId) {
+              if (data['paired'] == true || data['registered'] == true) {
+                final isOnline = data['online'] == true;
+                final serverState = data['state'] as String? ?? (isOnline ? 'VAD ARMED' : 'OFFLINE');
+                final rawBatt = data['battery'];
+                final int batt = (rawBatt is int && rawBatt >= 0) ? rawBatt : -1;
+
+                if (_devices.containsKey(upperId)) {
+                  _devices[upperId] = _devices[upperId]!.copyWith(
+                    online: isOnline,
+                    state: serverState,
+                    battery: batt >= 0 ? batt : _devices[upperId]!.battery,
+                  );
+                }
+                return true;
+              }
             }
           }
         } catch (_) {}
       }
 
-      // 3. Query code status REST endpoint: /api/pairing-code/status/<code>
+      // 2. Query code status REST endpoint: /api/pairing-code/status/<code>
       if (cleanCode.isNotEmpty) {
         try {
           final codeUri = getApiUri('/pairing-code/status/$cleanCode');
@@ -1631,7 +1648,7 @@ class MobileServerService extends ChangeNotifier {
             final data = jsonDecode(bodyStr);
             if (data['paired'] == true) {
               final regId = data['device_id']?.toString().toUpperCase();
-              if (regId == null || regId == upperId || upperId.isEmpty) {
+              if (regId != null && (upperId.isEmpty || regId == upperId)) {
                 return true;
               }
             }
@@ -1639,7 +1656,7 @@ class MobileServerService extends ChangeNotifier {
         } catch (_) {}
       }
 
-      // 4. Query paired devices list: /api/devices/paired
+      // 3. Query paired devices list: /api/devices/paired
       try {
         final listUri = getApiUri('/devices/paired');
         final listClient = HttpClient()..connectionTimeout = const Duration(seconds: 3);
@@ -1784,17 +1801,39 @@ class MobileServerService extends ChangeNotifier {
       } else if (type == 'registration_pending' || type == 'pairing_pending') {
         onProgress?.call('Central System verifying single-use code...', 0.85);
       } else if (type == 'pairing_success') {
-        cleanup();
         final devId = (event['device_id'] ?? relay.lastPinnedDeviceId).toString().toUpperCase();
         final finalId = devId.isNotEmpty ? devId : (knownDevId.isNotEmpty ? knownDevId : 'PIN-F360');
-        await pairPin(finalId, alias: alias, method: 'BLE Cryptographic Pairing');
-        onProgress?.call('Pairing successful! Pin authenticated with Central System.', 1.0);
-        if (!completer.isCompleted) {
-          completer.complete({
-            'success': true,
-            'device_id': finalId,
-            'message': 'Smart Pin $finalId successfully paired and authenticated!',
-          });
+        onProgress?.call('Smart Pin reported pairing complete. Confirming with Central System...', 0.90);
+
+        // Explicitly verify with Central System that registration and promotion succeeded
+        bool isConfirmed = await verifyPinPairingWithServer(cleanCode, finalId);
+        if (!isConfirmed) {
+          for (int retry = 0; retry < 4 && !isConfirmed; retry++) {
+            await Future.delayed(const Duration(milliseconds: 1000));
+            isConfirmed = await verifyPinPairingWithServer(cleanCode, finalId);
+          }
+        }
+
+        cleanup();
+        if (isConfirmed) {
+          await pairPin(finalId, alias: alias, method: 'BLE Cryptographic Pairing');
+          onProgress?.call('Pairing successful! Pin registered and authenticated with Central System.', 1.0);
+          if (!completer.isCompleted) {
+            completer.complete({
+              'success': true,
+              'device_id': finalId,
+              'message': 'Smart Pin $finalId successfully paired and registered with Central System!',
+            });
+          }
+        } else {
+          onProgress?.call('Central System registration unconfirmed.', 1.0);
+          if (!completer.isCompleted) {
+            completer.complete({
+              'success': false,
+              'code': 'ERR_SERVER_UNVERIFIED',
+              'error': 'Smart Pin completed BLE stage, but Central System ($targetServerUrl) did not confirm registration for $finalId. Check dashboard.',
+            });
+          }
         }
       } else if (type == 'provision_error') {
         final errCode = event['code'] as String? ?? 'ERR_UNKNOWN';
