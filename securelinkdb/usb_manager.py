@@ -14,6 +14,7 @@ import queue
 from typing import Optional, Callable, Dict, Any, List
 import serial
 import serial.tools.list_ports
+import numpy as np
 
 logger = logging.getLogger("securelink.usb")
 if not logger.handlers:
@@ -106,9 +107,31 @@ class USBDeviceManager:
         self.battery_mv: int = -1
         self.vad_state: str = "OFFLINE"
         self.audio_streaming: bool = False
+        self.audio_analyzing: bool = False
         self.audio_accumulator = bytearray()
         self.seen_chunk_seqs: set = set()
         self.current_stream_seq: int = 0
+
+        # Authoritative Audio & VAD Pipeline Telemetry (Requirements 2, 3, 5)
+        self.mic_initialized: bool = False
+        self.vad_initialized: bool = False
+        self.vad_explicitly_disarmed: bool = False
+        self.vad_disarm_reason: Optional[str] = None
+        self.audio_frames_captured: int = 0
+        self.firmware_peak: int = 0
+        self.audio_frames_received: int = 0
+        self.audio_chunks_received: int = 0
+        self.current_chunk_seq: int = 0
+        self.missing_chunks: int = 0
+        self.duplicate_chunks: int = 0
+        self.last_chunk_time: float = 0.0
+        self.time_between_chunks_ms: float = 0.0
+        self.last_audio_peak: float = 0.0
+        self.last_audio_rms: float = 0.0
+        self.sample_rate: int = 16000
+        self.bit_depth: int = 16
+        self.channels: int = 1
+        self.buffer_size_bytes: int = 3200
 
         # Connection Lifecycle & Error States
         # States: "OFFLINE", "REQUESTED", "OPENING PORT", "PORT OPEN", "HANDSHAKE WAITING", "AUTHENTICATED", "ONLINE", "ERROR"
@@ -136,6 +159,57 @@ class USBDeviceManager:
         if self.battery_valid:
             return "VALID"
         return "UNAVAILABLE"
+
+    @property
+    def is_vad_armed(self) -> bool:
+        """Authoritative VAD armed state (Requirement 2).
+        Returns True ONLY if device is online, microphone initialized, VAD initialized,
+        not explicitly disarmed, and VAD engine is actively monitoring or detecting speech."""
+        now = time.time()
+        heartbeat_fresh = (now - self.last_heartbeat_ts <= HEARTBEAT_TIMEOUT_SEC) if self.last_heartbeat_ts > 0 else False
+        port_open = bool(self.serial_port and self.serial_port.is_open)
+        is_online = port_open and self.is_authenticated and heartbeat_fresh
+        if not is_online:
+            return False
+        # Do not mark VAD as operational simply because device is connected
+        if not self.mic_initialized or not self.vad_initialized:
+            return False
+        if self.vad_explicitly_disarmed or self.vad_state == "VAD DISARMED":
+            return False
+        return (self.vad_state in ("VAD ARMED", "SPEECH DETECTED") or self.audio_streaming)
+
+    @property
+    def speech_detected(self) -> bool:
+        """Returns True if speech is actively detected or audio is streaming."""
+        return self.is_vad_armed and (self.vad_state == "SPEECH DETECTED" or self.audio_streaming)
+
+    @property
+    def vad_status_reason(self) -> str:
+        """Provides an authoritative explanatory diagnostic reason for the VAD and audio pipeline."""
+        now = time.time()
+        port_open = bool(self.serial_port and self.serial_port.is_open)
+        if not port_open:
+            return "Serial port closed"
+        if not self.is_authenticated:
+            return "Awaiting device identity & cryptographic authorization"
+        heartbeat_fresh = (now - self.last_heartbeat_ts <= HEARTBEAT_TIMEOUT_SEC) if self.last_heartbeat_ts > 0 else False
+        if not heartbeat_fresh:
+            return "Heartbeat timed out (> 6.0s)"
+        if not self.mic_initialized:
+            return "Microphone hardware initialization failed (I2S PDM error)"
+        if not self.vad_initialized:
+            return "Speex VAD initialization failed on Core 1"
+        if self.vad_explicitly_disarmed or self.vad_state == "VAD DISARMED":
+            return f"VAD explicitly disarmed: {self.vad_disarm_reason or 'User request'}"
+        if self.audio_analyzing:
+            return "Audio analysis running on server (NSNet2 + Whisper + TagalogBERT)"
+        if self.audio_streaming:
+            return f"Binary speech streaming active ({len(self.audio_accumulator)} bytes captured)"
+        if self.speech_detected:
+            return "Speech activity detected by Core 1 VAD"
+        if self.is_vad_armed:
+            return "VAD armed and actively monitoring Core 1 PDM frames"
+        return f"VAD state: {self.vad_state}"
 
     def scan_ports(self) -> List[Dict[str, str]]:
         """Scans all available COM ports and flags likely XIAO ESP32-S3 Sense devices."""
@@ -210,6 +284,7 @@ class USBDeviceManager:
         old_id = self.device_id
         self.is_authenticated = False
         self.vad_state = "OFFLINE"
+        self.vad_disarm_reason = reason
         self.audio_streaming = False
         self.audio_accumulator.clear()
         self.seen_chunk_seqs.clear()
@@ -286,6 +361,35 @@ class USBDeviceManager:
 
         self.disconnect_event.wait(timeout=timeout)
         return True, "Disconnected"
+
+    def disarm_vad(self, reason: str = "User requested disarm") -> bool:
+        """Sends explicit VAD disarm command to connected hardware pin."""
+        self.vad_explicitly_disarmed = True
+        self.vad_disarm_reason = reason
+        self.vad_state = "VAD DISARMED"
+        logger.info(f"[VAD-STATE] Disarming VAD: {reason}")
+        self._send_text(f"SL:VAD:DISARM:{reason}\n")
+        self._emit_device_update(state="VAD DISARMED")
+        return True
+
+    def arm_vad(self) -> bool:
+        """Sends explicit VAD arm command to connected hardware pin."""
+        if not self.mic_initialized or not self.vad_initialized:
+            logger.warning("[VAD-STATE] Cannot arm VAD: Hardware or Speex engine uninitialized.")
+            return False
+        self.vad_explicitly_disarmed = False
+        self.vad_disarm_reason = None
+        self.vad_state = "VAD ARMED"
+        logger.info("[VAD-STATE] Arming VAD on device.")
+        self._send_text("SL:VAD:ARM\n")
+        self._emit_device_update(state="VAD ARMED")
+        return True
+
+    def recover_audio_vad(self) -> bool:
+        """Attempts to recover audio hardware and VAD engine on device."""
+        logger.info("[VAD-STATE] Triggering audio hardware and VAD recovery...")
+        self._send_text("SL:VAD:RECOVER\n")
+        return True
 
     def _open_port(self, port_name: str) -> bool:
         try:
@@ -529,6 +633,7 @@ class USBDeviceManager:
 
         # 2. Heartbeat Ping: SL:PING:<batt_pct>:<batt_mv>:<vad_state>
         elif cmd == "PING":
+            logger.info(f"[PING-RAW] Received: '{cmd_str}'")
             if not self.is_authenticated:
                 # Prompt pin to re-authenticate
                 self._send_text("SL:HANDSHAKE:REQ\n")
@@ -565,6 +670,44 @@ class USBDeviceManager:
             if len(parts) >= 5:
                 self.vad_state = parts[4].strip()
 
+            # Parse extended hardware and VAD diagnostics from firmware (SL:PING:<batt>:<mv>:<vad>:<mic_ok>:<vad_ok>:<frames>:<peak>)
+            if len(parts) >= 6:
+                try:
+                    self.mic_initialized = bool(int(parts[5]))
+                except ValueError:
+                    pass
+            elif self.is_authenticated and self.vad_state in ("VAD ARMED", "SPEECH DETECTED"):
+                self.mic_initialized = True
+
+            if len(parts) >= 7:
+                try:
+                    self.vad_initialized = bool(int(parts[6]))
+                except ValueError:
+                    pass
+            elif self.is_authenticated and self.vad_state in ("VAD ARMED", "SPEECH DETECTED"):
+                self.vad_initialized = True
+
+            if len(parts) >= 8:
+                try:
+                    self.audio_frames_captured = int(parts[7])
+                except ValueError:
+                    pass
+
+            if len(parts) >= 9:
+                try:
+                    self.firmware_peak = int(parts[8])
+                except ValueError:
+                    pass
+
+            if len(parts) >= 10:
+                reason = parts[9].strip()
+                if self.vad_state == "VAD DISARMED":
+                    self.vad_explicitly_disarmed = True
+                    self.vad_disarm_reason = reason
+                elif self.vad_state in ("VAD ARMED", "SPEECH DETECTED"):
+                    self.vad_explicitly_disarmed = False
+                    self.vad_disarm_reason = None
+
             self._send_text("SL:PONG\n")
             if not self.audio_streaming:
                 self._emit_device_update(state=self.vad_state or "VAD ARMED")
@@ -574,29 +717,36 @@ class USBDeviceManager:
             seq = int(parts[2]) if len(parts) >= 3 else 0
             self.current_stream_seq = seq
             self.audio_streaming = True
+            self.audio_analyzing = False
+            self.vad_state = "STREAMING AUDIO (USB)"
             self.audio_accumulator.clear()
             self.seen_chunk_seqs.clear()
-            logger.info(f"Audio stream #{seq} started over USB from '{self.device_id}'.")
+            self.current_chunk_seq = 0
+            logger.info(f"[USB-AUDIO] Audio stream #{seq} started from '{self.device_id}'. (Sample rate: {self.sample_rate}Hz, 16-bit Mono, Buffer: {self.buffer_size_bytes}B)")
             self._emit_device_update(state="STREAMING AUDIO (USB)")
 
         # 4. Audio Stream End: SL:STREAM_END:<seq>:<total_bytes>
         elif cmd in ("STREAM_END", "AUDIO_END"):
             seq = int(parts[2]) if len(parts) >= 3 else 0
-            logger.info(f"Audio stream #{seq} finished over USB. Accumulated {len(self.audio_accumulator)} bytes.")
+            logger.info(f"[USB-AUDIO] Audio stream #{seq} finished over USB. Accumulated {len(self.audio_accumulator)} bytes ({self.audio_chunks_received} chunks).")
             self.audio_streaming = False
             self.seen_chunk_seqs.clear()
             pcm_data = bytes(self.audio_accumulator)
             self.audio_accumulator.clear()
 
+            self.vad_state = "ANALYZING SPEECH"
+            self.audio_analyzing = True
             self._emit_device_update(state="ANALYZING SPEECH")
 
             if self.on_audio_complete and self.device_id and len(pcm_data) >= 3200:
                 try:
                     self.on_audio_complete(self.device_id, pcm_data)
                 except Exception as e:
-                    logger.error(f"Error invoking on_audio_complete: {e}")
+                    logger.error(f"[USB-AUDIO] Error invoking on_audio_complete: {e}")
 
-            # Return state to VAD ARMED
+            # Safely return authoritative state to VAD ARMED
+            self.vad_state = "VAD ARMED"
+            self.audio_analyzing = False
             self._emit_device_update(state="VAD ARMED")
 
         # 5. Diagnostic Log: SL:LOG:<message>
@@ -604,16 +754,61 @@ class USBDeviceManager:
             msg = ":".join(parts[2:])
             logger.debug(f"[PIN-FW] {msg}")
 
+        # 6. Explicit VAD Protocol Handlers: SL:VAD:<action>
+        elif cmd == "VAD":
+            sub_action = parts[2].strip().upper() if len(parts) >= 3 else ""
+            if sub_action == "DISARMED":
+                self.vad_explicitly_disarmed = True
+                self.vad_state = "VAD DISARMED"
+                self.vad_disarm_reason = parts[3].strip() if len(parts) >= 4 else "Hardware request"
+                logger.warning(f"[VAD-STATE] Device reports VAD DISARMED: {self.vad_disarm_reason}")
+                self._emit_device_update(state="VAD DISARMED")
+            elif sub_action == "ARMED":
+                self.vad_explicitly_disarmed = False
+                self.vad_state = "VAD ARMED"
+                self.vad_disarm_reason = None
+                logger.info("[VAD-STATE] Device reports VAD ARMED.")
+                self._emit_device_update(state="VAD ARMED")
+
     def _handle_audio_chunk(self, seq: int, raw_bytes: bytes):
-        """Appends verified binary PCM chunk to stream accumulator with deduplication."""
-        self.last_heartbeat_ts = time.time()
+        """Appends verified binary PCM chunk to stream accumulator with sequence & metric tracking."""
+        now = time.time()
+        self.last_heartbeat_ts = now
+        if self.last_chunk_time > 0:
+            self.time_between_chunks_ms = (now - self.last_chunk_time) * 1000.0
+        self.last_chunk_time = now
+
         if seq in self.seen_chunk_seqs:
-            logger.info(f"Duplicate audio chunk #{seq} ignored; re-acknowledging.")
+            self.duplicate_chunks += 1
+            logger.info(f"[USB-AUDIO] Duplicate audio chunk #{seq} ignored; re-acknowledging.")
             return
+
+        # Sequence gap detection
+        if self.current_chunk_seq > 0 and seq > self.current_chunk_seq + 1:
+            gap = seq - (self.current_chunk_seq + 1)
+            self.missing_chunks += gap
+            logger.warning(f"[USB-AUDIO] Chunk sequence gap! Expected #{self.current_chunk_seq + 1}, received #{seq} (Gap: {gap}, Total missing: {self.missing_chunks})")
+        self.current_chunk_seq = seq
         self.seen_chunk_seqs.add(seq)
+
+        self.audio_chunks_received += 1
+        self.audio_frames_received += max(1, len(raw_bytes) // 640)
+
+        # Audio RMS and Peak Calculation
+        if len(raw_bytes) >= 2:
+            try:
+                audio_np = np.frombuffer(raw_bytes, dtype=np.int16)
+                peak_val = float(np.max(np.abs(audio_np))) / 32768.0
+                rms_val = float(np.sqrt(np.mean(audio_np.astype(np.float32) ** 2))) / 32768.0
+                self.last_audio_peak = round(peak_val, 4)
+                self.last_audio_rms = round(rms_val, 4)
+            except Exception:
+                pass
+
         self.audio_accumulator.extend(raw_bytes)
         if not self.audio_streaming:
             self.audio_streaming = True
+            self.vad_state = "STREAMING AUDIO (USB)"
             self._emit_device_update(state="STREAMING AUDIO (USB)")
 
     def _emit_device_update(self, state: str = "VAD ARMED"):
@@ -640,6 +835,12 @@ class USBDeviceManager:
             "batteryMv": self.battery_mv,
             "battery_valid": self.battery_valid,
             "battery_status": self.battery_status,
+            "vad_armed": self.is_vad_armed,
+            "speech_detected": self.speech_detected,
+            "mic_initialized": self.mic_initialized,
+            "vad_initialized": self.vad_initialized,
+            "audio_frames_received": self.audio_frames_received,
+            "audio_chunks_received": self.audio_chunks_received,
             "paired": True,
             "port": self.current_port_name,
             "fwVersion": self.fw_version or "2.1",
@@ -689,6 +890,28 @@ class USBDeviceManager:
             "battery_status": self.battery_status,
             "heartbeat_fresh": heartbeat_fresh,
             "last_heartbeat_sec_ago": sec_since_heartbeat,
+            # Audio & VAD Pipeline Diagnostics (Requirements 2, 3, 5)
+            "mic_initialized": self.mic_initialized,
+            "vad_initialized": self.vad_initialized,
+            "vad_armed": self.is_vad_armed,
+            "speech_detected": self.speech_detected,
+            "audio_analyzing": self.audio_analyzing,
+            "audio_frames_captured": self.audio_frames_captured,
+            "audio_frames_received": self.audio_frames_received,
+            "audio_chunks_received": self.audio_chunks_received,
+            "audio_peak": self.last_audio_peak,
+            "audio_rms": self.last_audio_rms,
+            "firmware_peak": self.firmware_peak,
+            "sequence_gaps": self.missing_chunks,
+            "duplicate_chunks": self.duplicate_chunks,
+            "time_between_chunks_ms": round(self.time_between_chunks_ms, 1),
+            "sample_rate": self.sample_rate,
+            "bit_depth": self.bit_depth,
+            "channels": self.channels,
+            "buffer_size_bytes": self.buffer_size_bytes,
+            "vad_explicitly_disarmed": self.vad_explicitly_disarmed,
+            "vad_disarm_reason": self.vad_disarm_reason,
+            "vad_status_reason": self.vad_status_reason,
             # 9-stage pipeline diagnostics
             "stages": {
                 "1_port_detected": pin_candidate,
@@ -697,9 +920,17 @@ class USBDeviceManager:
                 "4_auth_accepted": self.is_authenticated,
                 "5_heartbeat_received": self.last_heartbeat_ts > 0,
                 "6_pin_online": is_online,
-                "7_vad_armed": self.vad_state == "VAD ARMED" and is_online,
+                "7_vad_armed": self.is_vad_armed,
                 "8_audio_streaming": self.audio_streaming,
-                "9_audio_processing": self.vad_state == "ANALYZING SPEECH",
+                "9_audio_processing": self.audio_analyzing,
+                # Explicit separate pipeline states (Requirement 5)
+                "device_connected": is_online,
+                "mic_initialized": self.mic_initialized,
+                "audio_frames_received": (self.audio_chunks_received > 0 or self.audio_frames_captured > 0),
+                "vad_initialized": self.vad_initialized,
+                "vad_armed": self.is_vad_armed,
+                "speech_detected": self.speech_detected,
+                "audio_analyzing": self.audio_analyzing,
             },
             "available_ports": available_ports,
         }

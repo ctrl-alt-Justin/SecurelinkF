@@ -558,6 +558,14 @@ volatile int hangoverFrames = 0;
 volatile bool lastVadState = false;
 TaskHandle_t audioTaskHandle = NULL;
 
+// Hardware & Audio Engine State Tracking
+bool micInitialized = false;
+bool vadInitialized = false;
+volatile bool vadExplicitlyDisarmed = false;
+String vadDisarmReason = "OPERATIONAL";
+volatile uint32_t audioFramesCaptured = 0;
+volatile int32_t lastFramePeak = 0;
+
 unsigned long lastSpeechTime = 0;
 unsigned long SILENCE_TIMEOUT = 1400; // 1.4s silence timeout: returns to Standby promptly when speaker finishes sentence
 const unsigned long WS_CONNECT_TIMEOUT_MS = 25000;
@@ -983,16 +991,21 @@ void onWebSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
 void setupMicrophone() {
     I2S.setPinsPdmRx(42, 41);
     if (!I2S.begin(I2S_MODE_PDM_RX, SAMPLE_RATE, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO)) {
-        Serial.println("[ERR] I2S Init Failed!");
-        while(1) delay(100);
+        Serial.println("[ERR] I2S PDM Microphone Init Failed!");
+        micInitialized = false;
+    } else {
+        micInitialized = true;
+        Serial.println("[AUDIO] MSM261D PDM Microphone initialized (16kHz 16-bit Mono).");
     }
     speex_st = speex_preprocess_state_init(FRAME_SIZE, SAMPLE_RATE);
     if (!speex_st) {
         Serial.println("[ERR] Speex VAD state init failed!");
+        vadInitialized = false;
     } else {
+        vadInitialized = true;
         int vadEnabled = 1;
-        int probStart = 80;    // 80: High confidence speech onset trigger
-        int probContinue = 60; // 60: Drops cleanly when voice stops
+        int probStart = 75;    // Balanced onset trigger
+        int probContinue = 55; // Natural sentence decay
         speex_preprocess_ctl(speex_st, SPEEX_PREPROCESS_SET_VAD, &vadEnabled);
         speex_preprocess_ctl(speex_st, SPEEX_PREPROCESS_SET_PROB_START, &probStart);
         speex_preprocess_ctl(speex_st, SPEEX_PREPROCESS_SET_PROB_CONTINUE, &probContinue);
@@ -1001,6 +1014,7 @@ void setupMicrophone() {
         // Keeping Speex denoise OFF on the ESP32 frees 80% CPU on Core 1 and eliminates I2S DMA dropouts!
         int denoise = 0;
         speex_preprocess_ctl(speex_st, SPEEX_PREPROCESS_SET_DENOISE, &denoise);
+        Serial.println("[AUDIO] Speex VAD Engine initialized on Core 1.");
     }
 }
 
@@ -1385,6 +1399,57 @@ void handleSerialCommands() {
             lastAudioAckSeq = (uint32_t)line.substring(13).toInt();
         } else if (line == "SL:PONG") {
             lastUsbPongMs = millis();
+        } else if (line == "SL:VAD:DISARM" || line.startsWith("SL:VAD:DISARM:")) {
+            vadExplicitlyDisarmed = true;
+            speechArmed = false;
+            int colonIdx = line.indexOf(':', 14);
+            vadDisarmReason = colonIdx > 0 ? line.substring(colonIdx + 1) : (line.length() > 14 ? line.substring(14) : "User requested disarm");
+            Serial.printf("[VAD] VAD Engine DISARMED: %s\n", vadDisarmReason.c_str());
+            Serial.printf("SL:VAD:DISARMED:%s\n", vadDisarmReason.c_str());
+            Serial.flush();
+        } else if (line == "SL:VAD:ARM") {
+            if (micInitialized && vadInitialized) {
+                vadExplicitlyDisarmed = false;
+                vadDisarmReason = "OPERATIONAL";
+                Serial.println("[VAD] VAD Engine ARMED.");
+                Serial.println("SL:VAD:ARMED:OK");
+            } else {
+                Serial.printf("[VAD] Cannot arm: micInit=%d, vadInit=%d\n", micInitialized ? 1 : 0, vadInitialized ? 1 : 0);
+                Serial.printf("SL:VAD:ARM:FAIL:mic=%d:vad=%d\n", micInitialized ? 1 : 0, vadInitialized ? 1 : 0);
+            }
+            Serial.flush();
+        } else if (line == "SL:VAD:RECOVER" || line == "SL:AUDIO:RECOVER") {
+            Serial.println("[VAD] Performing audio & VAD pipeline recovery...");
+            if (!micInitialized) {
+                I2S.end();
+                delay(50);
+                I2S.setPinsPdmRx(42, 41);
+                micInitialized = I2S.begin(I2S_MODE_PDM_RX, SAMPLE_RATE, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO);
+            }
+            if (!vadInitialized && speex_st == nullptr) {
+                speex_st = speex_preprocess_state_init(FRAME_SIZE, SAMPLE_RATE);
+                if (speex_st) {
+                    vadInitialized = true;
+                    int vadEnabled = 1;
+                    int probStart = 75;
+                    int probContinue = 55;
+                    int denoise = 0;
+                    speex_preprocess_ctl(speex_st, SPEEX_PREPROCESS_SET_VAD, &vadEnabled);
+                    speex_preprocess_ctl(speex_st, SPEEX_PREPROCESS_SET_PROB_START, &probStart);
+                    speex_preprocess_ctl(speex_st, SPEEX_PREPROCESS_SET_PROB_CONTINUE, &probContinue);
+                    speex_preprocess_ctl(speex_st, SPEEX_PREPROCESS_SET_DENOISE, &denoise);
+                }
+            }
+            if (micInitialized && vadInitialized) {
+                vadExplicitlyDisarmed = false;
+                vadDisarmReason = "OPERATIONAL";
+                Serial.println("[VAD] Recovery successful: Audio pipeline active & armed.");
+                Serial.println("SL:VAD:RECOVER:OK");
+            } else {
+                Serial.printf("[VAD] Recovery incomplete: mic=%d vad=%d\n", micInitialized ? 1 : 0, vadInitialized ? 1 : 0);
+                Serial.printf("SL:VAD:RECOVER:FAIL:mic=%d:vad=%d\n", micInitialized ? 1 : 0, vadInitialized ? 1 : 0);
+            }
+            Serial.flush();
         } else if (line == "SL:TRIGGER:DANGER") {
             Serial.println("[USB] *** THREAT ALERT: TRIGGER DANGER DETECTED ***");
         } else if (line.startsWith("{") && line.indexOf("\"provision\"") >= 0) {
@@ -1425,6 +1490,7 @@ void audioRecordTask(void* pvParameters) {
             vTaskDelay(pdMS_TO_TICKS(2));
             continue;
         }
+        audioFramesCaptured++;
 
         // 1. Apply High-Pass Filter & Peak Tracking
         int32_t currentPeak = 0;
@@ -1434,6 +1500,7 @@ void audioRecordTask(void* pvParameters) {
             vadBuffer[i] = filtered;
             if (abs(filtered) > currentPeak) currentPeak = abs(filtered);
         }
+        lastFramePeak = currentPeak;
 
         // 2. Speex VAD
         int isSpeech = 0;
@@ -1443,11 +1510,9 @@ void audioRecordTask(void* pvParameters) {
         }
 
         // Speech detection criteria:
-        // 1) Speex VAD confirms vocal fold harmonics (isSpeech != 0)
-        // 2) Amplitude rises significantly above ambient baseline (+50)
-        // 3) Absolute peak >= 220 (ignores mic idle floor 60-160 and fan hum)
-        // 4) Amplitude fallback bypass (currentPeak >= 450): prevents Speex zero-noise silence freezes
-        bool speechDetected = ((isSpeech != 0) && (currentPeak > ambientFloor + 50) && (currentPeak >= 220)) || (currentPeak >= 450);
+        // 1) Speex VAD confirms vocal fold harmonics (isSpeech != 0) with peak above ambient baseline (+35) and >= 135
+        // 2) Amplitude fallback bypass (currentPeak >= 380): detects loud voice or exclamation without Speex delay
+        bool speechDetected = ((isSpeech != 0) && (currentPeak > ambientFloor + 35) && (currentPeak >= 135)) || (currentPeak >= 380);
 
         // VAD Hangover Engine: 400ms (20 frames) hangover bridges natural breath pauses & consonants
         if (speechDetected) {
@@ -1460,13 +1525,13 @@ void audioRecordTask(void* pvParameters) {
             if (hangoverFrames > 0) hangoverFrames--;
         }
 
-        speechArmed = (speechStreak >= SPEECH_STREAK_REQUIRED) || (hangoverFrames > 0);
+        speechArmed = !vadExplicitlyDisarmed && ((speechStreak >= SPEECH_STREAK_REQUIRED) || (hangoverFrames > 0));
 
         // Dynamic ambient floor tracking: adaptively track background when speech is inactive
         if (!speechArmed && isSpeech == 0) {
             ambientFloor = (ambientFloor * 31 + currentPeak) / 32;
             if (ambientFloor < 20) ambientFloor = 20;
-            if (ambientFloor > 200) ambientFloor = 200;
+            if (ambientFloor > 160) ambientFloor = 160;
         }
 
         if (speechArmed != lastVadState) {
@@ -1512,6 +1577,7 @@ void setup() {
     setCpuFrequencyMhz(160);
 
     Serial.begin(115200);
+    Serial.setTimeout(20);
     delay(500);
     Serial.printf("[SYS] CPU Clock: %d MHz\n", getCpuFrequencyMhz());
 
@@ -1597,8 +1663,17 @@ void loop() {
         if (millis() - lastUsbHeartbeatMs >= 2000) {
             lastUsbHeartbeatMs = millis();
             BatteryTelemetry bt = readBatteryTelemetry();
-            const char* vadStr = speechArmed ? "SPEECH DETECTED" : "VAD ARMED";
-            Serial.printf("SL:PING:%d:%d:%s\n", bt.batteryPct, bt.batteryMv, vadStr);
+            const char* vadStr = vadExplicitlyDisarmed ? "VAD DISARMED" : (speechArmed ? "SPEECH DETECTED" : (vadInitialized ? "VAD ARMED" : "VAD INIT FAIL"));
+            Serial.printf("SL:PING:%d:%d:%s:%d:%d:%lu:%d:%s\n",
+                bt.batteryPct,
+                bt.batteryMv,
+                vadStr,
+                micInitialized ? 1 : 0,
+                vadInitialized ? 1 : 0,
+                (unsigned long)audioFramesCaptured,
+                (int)lastFramePeak,
+                vadDisarmReason.c_str()
+            );
             Serial.flush();
         }
     }

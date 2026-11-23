@@ -506,6 +506,13 @@ def recalculate_pin_connection_state(pin_id: str, now_ts: Optional[float] = None
         dev["batteryMv"] = usb_mgr.battery_mv
         dev["battery_valid"] = usb_mgr.battery_valid
         dev["battery_status"] = usb_mgr.battery_status
+        dev["vad_armed"] = usb_mgr.is_vad_armed
+        dev["speech_detected"] = usb_mgr.speech_detected
+        dev["mic_initialized"] = usb_mgr.mic_initialized
+        dev["vad_initialized"] = usb_mgr.vad_initialized
+        dev["audio_frames_received"] = usb_mgr.audio_frames_received
+        dev["audio_chunks_received"] = usb_mgr.audio_chunks_received
+        dev["vad_status_reason"] = usb_mgr.vad_status_reason
         if usb_mgr.battery >= 0:
             rem_mins = int((usb_mgr.battery / 100.0) * 315)
             dev["estRuntime"] = f"{rem_mins // 60}h {rem_mins % 60:02d}m"
@@ -754,6 +761,22 @@ async def connect_usb_port(payload: dict):
 async def disconnect_usb_port():
     ok, msg = await asyncio.to_thread(usb_mgr.disconnect)
     return {"status": "success" if ok else "error", "message": msg}
+
+@app.post("/api/usb/vad/disarm")
+async def disarm_usb_vad(payload: Optional[dict] = None):
+    reason = (payload or {}).get("reason", "User requested disarm from dashboard")
+    ok = await asyncio.to_thread(usb_mgr.disarm_vad, reason)
+    return {"status": "success" if ok else "error", "reason": reason}
+
+@app.post("/api/usb/vad/arm")
+async def arm_usb_vad():
+    ok = await asyncio.to_thread(usb_mgr.arm_vad)
+    return {"status": "success" if ok else "error", "armed": ok, "reason": usb_mgr.vad_status_reason}
+
+@app.post("/api/usb/vad/recover")
+async def recover_usb_vad():
+    ok = await asyncio.to_thread(usb_mgr.recover_audio_vad)
+    return {"status": "success" if ok else "error"}
 
 @app.get("/api/devices")
 async def get_devices():
@@ -2606,6 +2629,8 @@ async def handle_completed_audio(
     if device_id in registered_devices:
         registered_devices[device_id]["state"] = "ANALYZING SPEECH"
         if source == "USB":
+            usb_mgr.audio_analyzing = True
+            usb_mgr.vad_state = "ANALYZING SPEECH"
             registered_devices[device_id]["online"] = True
             registered_devices[device_id]["connection_source"] = "USB"
             registered_devices[device_id]["lastSeen"] = "USB Whisper inferencing..."
@@ -2726,6 +2751,8 @@ async def handle_completed_audio(
         now_str = datetime.now().strftime("%H:%M:%S")
         if source == "USB":
             is_still_connected = usb_mgr.is_authenticated and (usb_mgr.device_id == device_id)
+            usb_mgr.audio_analyzing = False
+            usb_mgr.vad_state = "VAD ARMED" if is_still_connected else "OFFLINE"
             registered_devices[device_id]["online"] = is_still_connected
             registered_devices[device_id]["connection_source"] = "USB"
             if registered_devices[device_id].get("state") == "ANALYZING SPEECH":

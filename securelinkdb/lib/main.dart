@@ -9203,7 +9203,17 @@ class _PinSetupDialogState extends State<_PinSetupDialog> with SingleTickerProvi
     final port = _usbStatus?['port'] as String? ?? (_selectedPort ?? 'COM4');
     final batt = _usbStatus?['battery'] as int? ?? -1;
     final battMv = _usbStatus?['battery_mv'] as int? ?? -1;
-    final vadState = _usbStatus?['vad_state'] as String? ?? (isOnline ? 'VAD ARMED' : 'OFFLINE');
+    final micInitialized = _usbStatus?['mic_initialized'] == true;
+    final vadInitialized = _usbStatus?['vad_initialized'] == true;
+    final isVadArmed = _usbStatus?['vad_armed'] == true;
+    final isSpeechDetected = _usbStatus?['speech_detected'] == true;
+    final isAudioAnalyzing = _usbStatus?['audio_analyzing'] == true;
+    final audioFrames = _usbStatus?['audio_frames_received'] as int? ?? 0;
+    final audioChunks = _usbStatus?['audio_chunks_received'] as int? ?? 0;
+    final audioPeak = _usbStatus?['last_audio_peak'] as int? ?? 0;
+    final audioRms = (_usbStatus?['last_audio_rms'] as num?)?.toDouble() ?? 0.0;
+    final missingChunks = _usbStatus?['missing_chunks'] as int? ?? 0;
+    final vadReason = _usbStatus?['vad_status_reason'] as String? ?? 'Microphone active on Core 1; ready for instant speech trigger';
     final audioBytes = _usbStatus?['accumulated_bytes'] as int? ?? 0;
     final lastHb = _usbStatus?['last_heartbeat_sec_ago'] as num? ?? -1.0;
     final authError = _usbStatus?['auth_error'] as String?;
@@ -9544,10 +9554,99 @@ class _PinSetupDialogState extends State<_PinSetupDialog> with SingleTickerProvi
           _buildStageTile('4', 'Cryptographic Authorization', authError != null ? 'Auth rejected: $authError' : 'Credentials verified against device_credentials.json record', stages['4_auth_accepted'] == true, isError: authError != null),
           _buildStageTile('5', 'Heartbeat Active', 'SL:PING received with battery telemetry; SL:PONG answered', stages['5_heartbeat_received'] == true),
           _buildStageTile('6', 'Smart Pin ONLINE', 'Central System recognized device as authoritatively active', stages['6_pin_online'] == true),
-          _buildStageTile('7', 'VAD Armed', 'Microphone active on Core 1; ready for instant speech trigger', stages['7_vad_armed'] == true),
-          _buildStageTile('8', 'Binary Audio Streaming', stages['8_audio_streaming'] == true ? 'Streaming active: $audioBytes bytes received' : 'Idle: awaiting speech detection', stages['8_audio_streaming'] == true, isPulsing: stages['8_audio_streaming'] == true),
-          _buildStageTile('9', 'Speech Denoising & Threat AI', stages['9_audio_processing'] == true ? 'Analyzing incident audio...' : 'Pipeline ready (NSNet2 + Whisper + TagalogBERT)', stages['9_audio_processing'] == true || isOnline, isPulsing: stages['9_audio_processing'] == true),
+          _buildStageTile('7', 'VAD Armed', stages['7_vad_armed'] == true ? vadReason : (isOnline ? (vadInitialized ? 'VAD initialized, awaiting frames' : 'Microphone or VAD initialization pending') : 'Device offline'), stages['7_vad_armed'] == true),
+          _buildStageTile('8', 'Binary Audio Streaming', stages['8_audio_streaming'] == true ? 'Streaming active: $audioBytes bytes ($audioChunks chunks) received' : 'Idle: awaiting speech detection', stages['8_audio_streaming'] == true, isPulsing: stages['8_audio_streaming'] == true),
+          _buildStageTile('9', 'Speech Denoising & Threat AI', stages['9_audio_processing'] == true ? 'Analyzing incident audio...' : (isOnline ? 'Pipeline ready (NSNet2 + Whisper + TagalogBERT)' : 'Awaiting device connection'), stages['9_audio_processing'] == true, isPulsing: stages['9_audio_processing'] == true),
+
+          const SizedBox(height: 16),
+
+          // AUDIO & VAD PIPELINE DIAGNOSTICS (SEPARATE DISCRETE STATES)
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0xFF0F172A),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: const Color(0xFF38BDF8).withOpacity(0.3)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.mic_none_rounded, size: 15, color: Color(0xFF38BDF8)),
+                    const SizedBox(width: 6),
+                    const Text(
+                      'AUDIO HARDWARE & VAD REALTIME TELEMETRY',
+                      style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.w800, color: Color(0xFF38BDF8), letterSpacing: 0.5),
+                    ),
+                    const Spacer(),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: (isVadArmed ? const Color(0xFF109C6D) : Colors.amber.shade900).withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(4),
+                        border: Border.all(color: (isVadArmed ? const Color(0xFF109C6D) : Colors.amber).withOpacity(0.4)),
+                      ),
+                      child: Text(
+                        isVadArmed ? 'VAD ARMED' : (isOnline ? 'VAD DISARMED' : 'OFFLINE'),
+                        style: TextStyle(
+                          fontSize: 9,
+                          fontWeight: FontWeight.bold,
+                          color: isVadArmed ? const Color(0xFF55E2C0) : Colors.amberAccent,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [
+                    _buildTelemetryBadge('1. Connected', isOnline, isOnline ? 'ONLINE' : 'NO'),
+                    _buildTelemetryBadge('2. Mic Init', micInitialized, micInitialized ? 'READY' : 'PENDING'),
+                    _buildTelemetryBadge('3. Frames Rx', audioFrames > 0, '$audioFrames'),
+                    _buildTelemetryBadge('4. VAD Init', vadInitialized, vadInitialized ? 'READY' : 'PENDING'),
+                    _buildTelemetryBadge('5. VAD Armed', isVadArmed, isVadArmed ? 'ARMED' : 'DISARMED'),
+                    _buildTelemetryBadge('6. Speech', isSpeechDetected, isSpeechDetected ? 'DETECTED' : 'QUIET'),
+                    _buildTelemetryBadge('7. AI Analysis', isAudioAnalyzing, isAudioAnalyzing ? 'RUNNING' : 'IDLE'),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'Peak Level: $audioPeak | RMS: ${audioRms.toStringAsFixed(1)} | Chunks: $audioChunks | Drops: $missingChunks',
+                        style: const TextStyle(fontSize: 9.5, color: Colors.white54, fontFamily: 'monospace'),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildTelemetryBadge(String label, bool active, String value) {
+    final color = active ? const Color(0xFF55E2C0) : Colors.white30;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+      decoration: BoxDecoration(
+        color: active ? const Color(0xFF109C6D).withOpacity(0.18) : Colors.white.withOpacity(0.04),
+        borderRadius: BorderRadius.circular(5),
+        border: Border.all(color: color.withOpacity(0.35)),
+      ),
+      child: Text(
+        '$label: $value',
+        style: TextStyle(
+          fontSize: 9,
+          fontWeight: active ? FontWeight.bold : FontWeight.normal,
+          color: color,
+        ),
       ),
     );
   }
