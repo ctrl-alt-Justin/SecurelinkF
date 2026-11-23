@@ -18,6 +18,7 @@
 static volatile bool usbConnected = false;
 static volatile bool usbAuthenticated = false;
 static uint32_t usbStreamSeq = 0;
+static volatile uint32_t lastAudioAckSeq = 0;
 static uint32_t totalStreamBytes = 0;
 static unsigned long lastUsbHeartbeatMs = 0;
 static unsigned long lastUsbPongMs = 0;
@@ -1310,6 +1311,8 @@ void handleSerialCommands() {
         } else if (line.startsWith("SL:AUTH:ERR") || line.startsWith("SL:AUTH:FAIL")) {
             usbAuthenticated = false;
             Serial.println("[USB] Authorization failed!");
+        } else if (line.startsWith("SL:AUDIO:ACK:")) {
+            lastAudioAckSeq = (uint32_t)line.substring(13).toInt();
         } else if (line == "SL:PONG") {
             lastUsbPongMs = millis();
         } else if (line == "SL:TRIGGER:DANGER") {
@@ -1492,87 +1495,8 @@ void setup() {
         Serial.println("[ERR] LittleFS Mount Failed");
     }
 
-    // Register Wi-Fi event handler for accurate diagnostic codes
-    WiFi.onEvent(onWiFiEvent);
-
-    // 4. BOOT WI-FI CONNECTION CHECK & ROAMING FALLBACK
-    bool connected = false;
-    if (wifi_ssid.length() > 0) {
-        Serial.printf("\n[WIFI] Checking primary checkpoint '%s'...\n", wifi_ssid.c_str());
-        WifiConnectResult r = connectToWifi(wifi_ssid, wifi_pass, 15000, 2);
-        if (r.success) {
-            connected = true;
-            Serial.printf("[WIFI] Connected to Primary! Smart Pin IP: %s\n", r.ip.c_str());
-        }
-    }
-
-    if (!connected && wifi_ssid2.length() > 0) {
-        Serial.printf("\n[WIFI] Trying roaming backup checkpoint '%s'...\n", wifi_ssid2.c_str());
-        WifiConnectResult r2 = connectToWifi(wifi_ssid2, wifi_pass2, 12000, 2);
-        if (r2.success) {
-            connected = true;
-            Serial.printf("[WIFI] Connected to Backup Checkpoint! Smart Pin IP: %s\n", r2.ip.c_str());
-        }
-    }
-
-    if (connected) {
-        WiFi.setSleep(false); // Disable modem sleep: keeps TCP socket open and eliminates Windows WinError 121 timeouts
-        if (!isDevicePaired && prefs.isKey("pcode_pending")) {
-            String pendingCode = prefs.getString("pcode_pending", "");
-            if (pendingCode.length() >= 6) {
-                Serial.printf("[PROV] Found pending pairing code. Registering with Central System...\n");
-                HTTPClient http;
-                ServerEndpoint ep = parseServerEndpoint(server_host, server_port);
-                bool isRemoteHttps = ep.isTls;
-                String regUrl = (isRemoteHttps ? "https://" : "http://") + ep.host + (isRemoteHttps ? "" : (":" + String(ep.port))) + "/api/pin/register";
-                WiFiClientSecure secClient;
-                WiFiClient stdClient;
-                if (isRemoteHttps) {
-                    syncNtpTime(6000);
-                    secClient.setCACert(cloudflare_ca_bundle);
-                    http.begin(secClient, regUrl);
-                } else {
-                    http.begin(stdClient, regUrl);
-                }
-                http.addHeader("Content-Type", "application/json");
-                http.setTimeout(10000);
-                String regPayload = "{\"device_id\":\"" + pin_device_id + "\",\"pairing_code\":\"" + pendingCode + "\",\"firmware_version\":\"2.1\",\"mac\":\"" + pin_mac_address + "\"}";
-                int hCode = http.POST(regPayload);
-                String hResp = http.getString();
-                http.end();
-                if (hCode == 200 && hResp.indexOf("\"status\":\"success\"") >= 0) {
-                    String token = extractJsonField(hResp, "device_token");
-                    if (token.length() > 0) {
-                        prefs.putString("token", token);
-                        String readBack = prefs.getString("token", "");
-                        if (readBack == token && token.length() > 0) {
-                            pin_device_token = token;
-                            cachedServerIP = server_host;
-                            prefs.remove("pcode_pending");
-                            Serial.println("[PROV] Smart Pin token registered & verified in NVS. Connecting WebSocket to authenticate...");
-                            connectWebSocket(server_host, server_port);
-                        } else {
-                            Serial.println("[PROV] ERROR: Failed to persist device token to flash memory!");
-                        }
-                    }
-                } else if (hCode == 400 || hResp.indexOf("ERR_INVALID_CODE") >= 0) {
-                    Serial.println("[PROV] Pairing code rejected or expired by Central System. Clearing pcode_pending.");
-                    prefs.remove("pcode_pending");
-                } else {
-                    Serial.printf("[PROV] Registration attempt returned %d. Retaining pcode_pending for next boot/connection.\n", hCode);
-                }
-            } else {
-                prefs.remove("pcode_pending");
-            }
-        }
-        discoverCheckpoint();
-    } else if (wifi_ssid.length() == 0) {
-        // BLE Onboarding is active: do not block in captive portal!
-        Serial.printf("[WIFI] No Wi-Fi configured. Pin is in BLE Onboarding Mode ('%s').\n", ble_device_name.c_str());
-        Serial.println("[WIFI] Ready for Mobile Companion BLE pairing!");
-    } else {
-        Serial.println("[WIFI] Initial boot connection pending. Proceeding to non-blocking background retry in loop()...");
-    }
+    // 4. USB-ONLY OPERATION MODE (WI-FI & WEBSOCKET NETWORKING BYPASS)
+    Serial.println("[USB] Direct USB-Only Mode Active. Awaiting Central System Handshake...");
 }
 
 void loop() {
@@ -1611,12 +1535,7 @@ void loop() {
     // This MUST run from loop() context, never from inside a BLE callback.
     flushDeferredBleTx();
 
-    // Check if worker task signaled to initiate WebSocket connection from Core 1
-    if (triggerWsConnect) {
-        triggerWsConnect = false;
-        if (ws.isConnected()) ws.disconnect();
-        connectWebSocket(server_host, server_port);
-    }
+    // Wi-Fi / WebSocket trigger bypassed in USB-only mode
 
     // Check for Boot button held for 2 seconds anytime to enter setup portal
     static unsigned long btnHoldStart = 0;
@@ -1664,55 +1583,7 @@ void loop() {
         snapshotInProgress = false;
     }
 
-    static bool wifiWasDisconnected = false;
-    if (WiFi.status() == WL_CONNECTED) {
-        if (wifiWasDisconnected) {
-            WiFi.setSleep(false); // Re-disable modem sleep after reconnect to eradicate WinError 121
-            wifiWasDisconnected = false;
-            Serial.println("[WIFI] Reconnected! Modem sleep disabled to prevent WinError 121.");
-        }
-        ws.loop();
-
-        if (hasPendingWsConnect && ws.isConnected()) {
-            hasPendingWsConnect = false;
-        }
-        if (hasPendingWsConnect && (millis() - wsConnectStartedAt > WS_CONNECT_TIMEOUT_MS)) {
-            ws.disconnect();
-            hasPendingWsConnect = false;
-            cachedServerIP = server_host; 
-        }
-        // Auto-reconnect to checkpoint server on standby so streaming is instantaneous (only if device has stored credentials)
-        if (!ws.isConnected() && !hasPendingWsConnect && cachedServerIP != "" && !wifiConnectInProgress && hasStoredCredentials && pin_device_token.length() > 0) {
-            static unsigned long lastWsRetry = 0;
-            if (millis() - lastWsRetry > 10000) {
-                lastWsRetry = millis();
-                Serial.println("[WS] Standby auto-reconnect attempting connection...");
-                connectWebSocket(cachedServerIP, server_port);
-            }
-        }
-    } else {
-        wifiWasDisconnected = true;
-        // Purge dead/zombie WebSocket state immediately if Wi-Fi drops
-        if (ws.isConnected() || hasPendingWsConnect || hasActiveStream || isStreaming) {
-            ws.disconnect();
-            hasActiveStream = false;
-            isStreaming = false;
-            hasPendingWsConnect = false;
-            Serial.println("[WS] Wi-Fi lost! Forced disconnect and reset all streaming flags.");
-        }
-
-        // Resilient background Wi-Fi auto-reconnection:
-        // If Wi-Fi is temporarily lost, quietly retry every 5s. NEVER auto-lock into Setup Portal!
-        static unsigned long lastWifiRetry = 0;
-        if (millis() - lastWifiRetry > 5000) {
-            lastWifiRetry = millis();
-            Serial.printf("[WIFI] Reconnecting to '%s'...\n", wifi_ssid.c_str());
-            WiFi.disconnect(true);
-            delay(50);
-            WiFi.mode(WIFI_STA);
-            WiFi.begin(wifi_ssid.c_str(), wifi_pass.c_str());
-        }
-    }
+    // Wi-Fi maintenance and WebSocket loop bypassed in USB-only mode
 
     // --- AUDIO STREAMING & RECORDING PIPELINE (USB PRIORITY WITH OFFLINE FALLBACK) ---
     // TRIGGER STREAMING WHEN VOICE IS DETECTED
@@ -1765,11 +1636,40 @@ void loop() {
 
                 bool sendOk = false;
                 if (usbAuthenticated) {
-                    Serial.printf("SL:AUDIO:%u:%u\n", (unsigned int)chunk, (unsigned int)usbStreamSeq);
+                    uint32_t currentSeq = usbStreamSeq;
+                    Serial.printf("SL:AUDIO:%u:%u\n", (unsigned int)chunk, (unsigned int)currentSeq);
                     Serial.write(tempBuf, chunk);
                     Serial.flush();
-                    totalStreamBytes += chunk;
-                    sendOk = true;
+                    unsigned long ackWait = millis();
+                    while (millis() - ackWait < 150) {
+                        if (Serial.available()) {
+                            handleSerialCommands();
+                        }
+                        if (lastAudioAckSeq == currentSeq) {
+                            sendOk = true;
+                            break;
+                        }
+                        delay(2);
+                    }
+                    if (!sendOk) {
+                        Serial.printf("SL:AUDIO:%u:%u\n", (unsigned int)chunk, (unsigned int)currentSeq);
+                        Serial.write(tempBuf, chunk);
+                        Serial.flush();
+                        ackWait = millis();
+                        while (millis() - ackWait < 150) {
+                            if (Serial.available()) {
+                                handleSerialCommands();
+                            }
+                            if (lastAudioAckSeq == currentSeq) {
+                                sendOk = true;
+                                break;
+                            }
+                            delay(2);
+                        }
+                    }
+                    if (sendOk) {
+                        totalStreamBytes += chunk;
+                    }
                 } else if (hasActiveStream && ws.isConnected() && serverAuthenticated) {
                     sendOk = ws.sendBIN(tempBuf, chunk);
                 } else if (isOfflineRecording && offlineIncidentFile) {
@@ -1824,11 +1724,40 @@ void loop() {
 
                     bool sendOk = false;
                     if (usbAuthenticated) {
-                        Serial.printf("SL:AUDIO:%u:%u\n", (unsigned int)BATCH_SIZE, (unsigned int)usbStreamSeq);
+                        uint32_t currentSeq = usbStreamSeq;
+                        Serial.printf("SL:AUDIO:%u:%u\n", (unsigned int)BATCH_SIZE, (unsigned int)currentSeq);
                         Serial.write(txBuf, BATCH_SIZE);
                         Serial.flush();
-                        totalStreamBytes += BATCH_SIZE;
-                        sendOk = true;
+                        unsigned long ackWait = millis();
+                        while (millis() - ackWait < 150) {
+                            if (Serial.available()) {
+                                handleSerialCommands();
+                            }
+                            if (lastAudioAckSeq == currentSeq) {
+                                sendOk = true;
+                                break;
+                            }
+                            delay(2);
+                        }
+                        if (!sendOk) {
+                            Serial.printf("SL:AUDIO:%u:%u\n", (unsigned int)BATCH_SIZE, (unsigned int)currentSeq);
+                            Serial.write(txBuf, BATCH_SIZE);
+                            Serial.flush();
+                            ackWait = millis();
+                            while (millis() - ackWait < 150) {
+                                if (Serial.available()) {
+                                    handleSerialCommands();
+                                }
+                                if (lastAudioAckSeq == currentSeq) {
+                                    sendOk = true;
+                                    break;
+                                }
+                                delay(2);
+                            }
+                        }
+                        if (sendOk) {
+                            totalStreamBytes += BATCH_SIZE;
+                        }
                     } else if (hasActiveStream && ws.isConnected() && serverAuthenticated && !isUploadingArchive) {
                         sendOk = ws.sendBIN(txBuf, BATCH_SIZE);
                     } else if (isOfflineRecording && offlineIncidentFile) {
