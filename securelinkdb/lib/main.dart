@@ -8409,24 +8409,76 @@ class _PinSetupDialogState extends State<_PinSetupDialog> with SingleTickerProvi
   bool _isPairingSuccessful = false;
   String? _pairedDeviceId;
 
+  // USB CDC Direct Pipeline State
+  Timer? _usbPollTimer;
+  Map<String, dynamic>? _usbStatus;
+  bool _isConnectingUsb = false;
+
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 3, vsync: this);
     _loadNetworkAndPorts();
     _generatePairingCode();
+    _pollUsbStatus();
+    _usbPollTimer = Timer.periodic(const Duration(seconds: 1), (t) => _pollUsbStatus());
   }
 
   @override
   void dispose() {
     _pairingTimer?.cancel();
     _pairingPollTimer?.cancel();
+    _usbPollTimer?.cancel();
     _tabController.dispose();
     _ssidController.dispose();
     _passController.dispose();
     _serverIpController.dispose();
     _serverPortController.dispose();
     super.dispose();
+  }
+
+  Future<void> _pollUsbStatus() async {
+    try {
+      final client = HttpClient()..connectionTimeout = const Duration(seconds: 2);
+      final req = await client.getUrl(Uri.parse('http://127.0.0.1:8080/api/usb/status'));
+      final resp = await req.close();
+      if (resp.statusCode == 200) {
+        final body = await resp.transform(utf8.decoder).join();
+        final data = jsonDecode(body) as Map<String, dynamic>;
+        if (mounted) {
+          setState(() {
+            _usbStatus = data['usb'] as Map<String, dynamic>?;
+            if (_selectedPort == null && _usbStatus?['port'] != null) {
+              _selectedPort = _usbStatus!['port'] as String?;
+            }
+          });
+        }
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _connectUsbPort(String port) async {
+    setState(() => _isConnectingUsb = true);
+    try {
+      final client = HttpClient()..connectionTimeout = const Duration(seconds: 3);
+      final req = await client.postUrl(Uri.parse('http://127.0.0.1:8080/api/usb/connect'));
+      req.headers.contentType = ContentType.json;
+      req.write(jsonEncode({'port': port}));
+      await req.close();
+      await _pollUsbStatus();
+    } catch (_) {}
+    if (mounted) setState(() => _isConnectingUsb = false);
+  }
+
+  Future<void> _disconnectUsbPort() async {
+    setState(() => _isConnectingUsb = true);
+    try {
+      final client = HttpClient()..connectionTimeout = const Duration(seconds: 3);
+      final req = await client.postUrl(Uri.parse('http://127.0.0.1:8080/api/usb/disconnect'));
+      await req.close();
+      await _pollUsbStatus();
+    } catch (_) {}
+    if (mounted) setState(() => _isConnectingUsb = false);
   }
 
   Future<void> _generatePairingCode() async {
@@ -8846,6 +8898,245 @@ class _PinSetupDialogState extends State<_PinSetupDialog> with SingleTickerProvi
     );
   }
 
+  Widget _buildUsbDirectTab() {
+    final stages = (_usbStatus?['stages'] as Map<String, dynamic>?) ?? {};
+    final isOnline = _usbStatus?['is_online'] == true;
+    final devId = _usbStatus?['device_id'] as String? ?? 'PIN-F360';
+    final port = _usbStatus?['port'] as String? ?? (_selectedPort ?? 'COM4');
+    final batt = _usbStatus?['battery'] as int? ?? -1;
+    final battMv = _usbStatus?['battery_mv'] as int? ?? -1;
+    final vadState = _usbStatus?['vad_state'] as String? ?? (isOnline ? 'VAD ARMED' : 'OFFLINE');
+    final audioBytes = _usbStatus?['accumulated_bytes'] as int? ?? 0;
+    final lastHb = _usbStatus?['last_heartbeat_sec_ago'] as num? ?? -1.0;
+    final authError = _usbStatus?['auth_error'] as String?;
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // STATUS SUMMARY CARD
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: isOnline ? const Color(0xFF109C6D).withOpacity(0.12) : const Color(0xFFB45309).withOpacity(0.12),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                color: isOnline ? const Color(0xFF55E2C0).withOpacity(0.4) : const Color(0xFFF59E0B).withOpacity(0.35),
+                width: 1.2,
+              ),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    color: isOnline ? const Color(0xFF109C6D).withOpacity(0.2) : Colors.amber.withOpacity(0.1),
+                    shape: BoxShape.circle,
+                    border: Border.all(color: isOnline ? const Color(0xFF55E2C0) : Colors.amber),
+                  ),
+                  child: Icon(
+                    isOnline ? Icons.check_circle_rounded : Icons.sensors_off_rounded,
+                    color: isOnline ? const Color(0xFF55E2C0) : Colors.amber,
+                    size: 24,
+                  ),
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Text(
+                            isOnline ? '$devId — ONLINE (USB)' : '$devId — CONNECTING / OFFLINE',
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w800,
+                              color: isOnline ? const Color(0xFF55E2C0) : const Color(0xFFFDE68A),
+                              letterSpacing: 0.5,
+                            ),
+                          ),
+                          const Spacer(),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: isOnline ? const Color(0xFF109C6D) : Colors.grey.shade800,
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Text(
+                              vadState,
+                              style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: Colors.white),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Port: $port  •  Battery: ${batt >= 0 ? "$batt%" : "Charging / USB"} (${battMv > 0 ? "${battMv}mV" : "5V USB"})  •  Heartbeat: ${lastHb >= 0 ? "${lastHb}s ago" : "Waiting"}',
+                        style: TextStyle(fontSize: 10, color: Colors.white.withOpacity(0.7)),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 16),
+
+          // COM PORT CONTROLS
+          Row(
+            children: [
+              Expanded(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF141E2B),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: const Color(0xFF55E2C0).withOpacity(0.35)),
+                  ),
+                  child: DropdownButtonHideUnderline(
+                    child: DropdownButton<String>(
+                      value: _selectedPort,
+                      isExpanded: true,
+                      dropdownColor: const Color(0xFF141E2B),
+                      hint: const Text('Select COM Port', style: TextStyle(color: Colors.white54, fontSize: 11)),
+                      items: _serialPorts.map((p) {
+                        final pName = p['port'] as String;
+                        final desc = p['description'] as String? ?? '';
+                        final isEsp = p['is_esp'] == true;
+                        return DropdownMenuItem<String>(
+                          value: pName,
+                          child: Text(
+                            '$pName ($desc)${isEsp ? " [ESP32]" : ""}',
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: isEsp ? FontWeight.w700 : FontWeight.w500,
+                              color: isEsp ? const Color(0xFF55E2C0) : Colors.white,
+                            ),
+                          ),
+                        );
+                      }).toList(),
+                      onChanged: (val) {
+                        setState(() => _selectedPort = val);
+                        if (val != null) _connectUsbPort(val);
+                      },
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              ElevatedButton.icon(
+                onPressed: _isConnectingUsb || _selectedPort == null
+                    ? null
+                    : () => isOnline ? _disconnectUsbPort() : _connectUsbPort(_selectedPort!),
+                icon: Icon(isOnline ? Icons.link_off_rounded : Icons.link_rounded, size: 16),
+                label: Text(isOnline ? 'Disconnect' : 'Connect'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: isOnline ? Colors.redAccent.shade700 : const Color(0xFF109C6D),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                ),
+              ),
+              const SizedBox(width: 6),
+              IconButton(
+                onPressed: () {
+                  _loadNetworkAndPorts();
+                  _pollUsbStatus();
+                },
+                icon: const Icon(Icons.refresh_rounded, size: 18, color: Color(0xFF55E2C0)),
+                tooltip: 'Rescan USB ports',
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 18),
+
+          // 9-STAGE PIPELINE TITLE
+          Row(
+            children: [
+              const Icon(Icons.linear_scale_rounded, size: 16, color: Color(0xFF55E2C0)),
+              const SizedBox(width: 8),
+              const Text(
+                'END-TO-END USB PIPELINE DIAGNOSTICS (9 STAGES)',
+                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: Colors.white, letterSpacing: 0.6),
+              ),
+              const Spacer(),
+              if (authError != null)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(color: Colors.red.withOpacity(0.2), borderRadius: BorderRadius.circular(4)),
+                  child: Text('AUTH REJECTED: $authError', style: const TextStyle(fontSize: 9, color: Colors.redAccent, fontWeight: FontWeight.bold)),
+                ),
+            ],
+          ),
+          const SizedBox(height: 10),
+
+          // 9 STAGE TILES
+          _buildStageTile('1', 'USB Port Detected', 'Hardware COM port identified by host operating system', stages['1_port_detected'] == true),
+          _buildStageTile('2', 'Serial Port Open', 'Direct USB CDC serial handle established at 115200 baud', stages['2_port_open'] == true),
+          _buildStageTile('3', 'Identity Received', 'Pin announced ID ($devId), MAC address, and firmware v2.1', stages['3_identity_received'] == true),
+          _buildStageTile('4', 'Cryptographic Authorization', authError != null ? 'Auth rejected: $authError' : 'Credentials verified against device_credentials.json record', stages['4_auth_accepted'] == true, isError: authError != null),
+          _buildStageTile('5', 'Heartbeat Active', 'SL:PING received with battery telemetry; SL:PONG answered', stages['5_heartbeat_received'] == true),
+          _buildStageTile('6', 'Smart Pin ONLINE', 'Central System recognized device as authoritatively active', stages['6_pin_online'] == true),
+          _buildStageTile('7', 'VAD Armed', 'Microphone active on Core 1; ready for instant speech trigger', stages['7_vad_armed'] == true),
+          _buildStageTile('8', 'Binary Audio Streaming', stages['8_audio_streaming'] == true ? 'Streaming active: $audioBytes bytes received' : 'Idle: awaiting speech detection', stages['8_audio_streaming'] == true, isPulsing: stages['8_audio_streaming'] == true),
+          _buildStageTile('9', 'Speech Denoising & Threat AI', stages['9_audio_processing'] == true ? 'Analyzing incident audio...' : 'Pipeline ready (NSNet2 + Whisper + TagalogBERT)', stages['9_audio_processing'] == true || isOnline, isPulsing: stages['9_audio_processing'] == true),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStageTile(String stepNum, String title, String subtitle, bool isDone, {bool isError = false, bool isPulsing = false}) {
+    Color color = Colors.white24;
+    IconData icon = Icons.circle_outlined;
+    if (isError) {
+      color = Colors.redAccent;
+      icon = Icons.error_outline_rounded;
+    } else if (isPulsing) {
+      color = const Color(0xFFF59E0B);
+      icon = Icons.graphic_eq_rounded;
+    } else if (isDone) {
+      color = const Color(0xFF55E2C0);
+      icon = Icons.check_circle_rounded;
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFF111A24),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: color.withOpacity(0.35)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 22,
+            height: 22,
+            decoration: BoxDecoration(color: color.withOpacity(0.15), shape: BoxShape.circle),
+            alignment: Alignment.center,
+            child: Text(stepNum, style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: color)),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: isDone ? Colors.white : Colors.white60)),
+                Text(subtitle, style: TextStyle(fontSize: 9.5, color: isDone ? Colors.white54 : Colors.white38)),
+              ],
+            ),
+          ),
+          Icon(icon, size: 16, color: color),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final hasConnectedPin = widget.liveDevices.any((d) => d.online);
@@ -8949,12 +9240,12 @@ class _PinSetupDialogState extends State<_PinSetupDialog> with SingleTickerProvi
                   unselectedLabelStyle: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w500),
                   tabs: const [
                     Tab(
-                      icon: Icon(Icons.key_rounded, size: 16),
-                      text: '🔑 BLE Pairing Code (Recommended)',
+                      icon: Icon(Icons.usb_rounded, size: 16),
+                      text: '⚡ USB Direct Pipeline (Active)',
                     ),
                     Tab(
-                      icon: Icon(Icons.usb_rounded, size: 16),
-                      text: '⚡ USB One-Click Setup',
+                      icon: Icon(Icons.key_rounded, size: 16),
+                      text: '🔑 BLE Pairing Code',
                     ),
                     Tab(
                       icon: Icon(Icons.wifi_tethering_rounded, size: 16),
@@ -8969,363 +9260,13 @@ class _PinSetupDialogState extends State<_PinSetupDialog> with SingleTickerProvi
                 child: TabBarView(
                   controller: _tabController,
                   children: [
-                    // --- TAB 1: BLE PAIRING CODE GENERATOR ---
+                    // --- TAB 1: USB DIRECT PIPELINE & DIAGNOSTICS ---
+                    _buildUsbDirectTab(),
+
+                    // --- TAB 2: BLE PAIRING CODE GENERATOR ---
                     _buildBlePairingCodeTab(),
 
-                    // --- TAB 2: USB PROVISIONING ---
-                    SingleChildScrollView(
-                      padding: const EdgeInsets.all(20),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          // COM PORT SELECTOR
-                          Text(
-                            'DETECTED USB SERIAL PORT',
-                            style: TextStyle(
-                              fontSize: 8.5,
-                              fontWeight: FontWeight.w700,
-                              letterSpacing: 0.8,
-                              color: Colors.white.withOpacity(0.4),
-                            ),
-                          ),
-                          const SizedBox(height: 6),
-                          if (_isLoadingNetwork)
-                            Container(
-                              padding: const EdgeInsets.all(12),
-                              decoration: BoxDecoration(
-                                color: Colors.white.withOpacity(0.03),
-                                borderRadius: BorderRadius.circular(10),
-                                border: Border.all(color: Colors.white.withOpacity(0.06)),
-                              ),
-                              child: const Row(
-                                children: [
-                                  SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
-                                  SizedBox(width: 10),
-                                  Text('Scanning available USB ports...', style: TextStyle(fontSize: 11, color: Colors.white60)),
-                                ],
-                              ),
-                            )
-                          else if (_serialPorts.isEmpty)
-                            Container(
-                              padding: const EdgeInsets.all(12),
-                              decoration: BoxDecoration(
-                                color: const Color(0xFFB45309).withOpacity(0.12),
-                                borderRadius: BorderRadius.circular(10),
-                                border: Border.all(color: const Color(0xFFF59E0B).withOpacity(0.3)),
-                              ),
-                              child: Row(
-                                children: [
-                                  const Icon(Icons.usb_off_rounded, color: Color(0xFFF59E0B), size: 20),
-                                  const SizedBox(width: 10),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        const Text('No USB COM port detected', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: Color(0xFFFDE68A))),
-                                        const SizedBox(height: 2),
-                                        Text('Plug your ESP32 pin into your laptop using a USB data cable (charge-only cables will not show up).', style: TextStyle(fontSize: 9.5, color: Colors.white.withOpacity(0.6))),
-                                      ],
-                                    ),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  TextButton.icon(
-                                    onPressed: _loadNetworkAndPorts,
-                                    icon: const Icon(Icons.refresh_rounded, size: 14),
-                                    label: const Text('Rescan', style: TextStyle(fontSize: 10.5)),
-                                    style: TextButton.styleFrom(
-                                      foregroundColor: const Color(0xFF55E2C0),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            )
-                          else
-                            Row(
-                              children: [
-                                Expanded(
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                                    decoration: BoxDecoration(
-                                      color: const Color(0xFF141E2B),
-                                      borderRadius: BorderRadius.circular(10),
-                                      border: Border.all(color: const Color(0xFF55E2C0).withOpacity(0.35)),
-                                    ),
-                                    child: DropdownButtonHideUnderline(
-                                      child: DropdownButton<String>(
-                                        value: _selectedPort,
-                                        isExpanded: true,
-                                        dropdownColor: const Color(0xFF141E2B),
-                                        items: _serialPorts.map((p) {
-                                          final port = p['port'] as String;
-                                          final desc = p['description'] as String? ?? '';
-                                          final isEsp = p['is_esp'] == true;
-                                          return DropdownMenuItem<String>(
-                                            value: port,
-                                            child: Row(
-                                              children: [
-                                                Icon(
-                                                  Icons.usb_rounded,
-                                                  size: 15,
-                                                  color: isEsp ? const Color(0xFF55E2C0) : Colors.white54,
-                                                ),
-                                                const SizedBox(width: 8),
-                                                Text(
-                                                  '$port - $desc',
-                                                  style: TextStyle(
-                                                    fontSize: 11,
-                                                    fontWeight: isEsp ? FontWeight.w700 : FontWeight.w500,
-                                                    color: isEsp ? const Color(0xFF55E2C0) : Colors.white,
-                                                  ),
-                                                ),
-                                                if (isEsp) ...[
-                                                  const SizedBox(width: 8),
-                                                  Container(
-                                                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-                                                    decoration: BoxDecoration(
-                                                      color: const Color(0xFF109C6D).withOpacity(0.25),
-                                                      borderRadius: BorderRadius.circular(4),
-                                                    ),
-                                                    child: const Text('ESP32 DETECTED', style: TextStyle(fontSize: 8, fontWeight: FontWeight.w700, color: Color(0xFF55E2C0))),
-                                                  ),
-                                                ],
-                                              ],
-                                            ),
-                                          );
-                                        }).toList(),
-                                        onChanged: (val) => setState(() => _selectedPort = val),
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                                const SizedBox(width: 8),
-                                IconButton(
-                                  onPressed: _loadNetworkAndPorts,
-                                  icon: const Icon(Icons.refresh_rounded, size: 18, color: Color(0xFF55E2C0)),
-                                  tooltip: 'Rescan ports',
-                                ),
-                              ],
-                            ),
-
-                          const SizedBox(height: 16),
-
-                          // WI-FI CREDENTIALS
-                          Text(
-                            'WI-FI CREDENTIALS (2.4GHz)',
-                            style: TextStyle(
-                              fontSize: 8.5,
-                              fontWeight: FontWeight.w700,
-                              letterSpacing: 0.8,
-                              color: Colors.white.withOpacity(0.4),
-                            ),
-                          ),
-                          const SizedBox(height: 6),
-                          Container(
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF141E2B),
-                              borderRadius: BorderRadius.circular(10),
-                              border: Border.all(color: Colors.white.withOpacity(0.08)),
-                            ),
-                            child: TextField(
-                              controller: _ssidController,
-                              style: const TextStyle(fontSize: 12, color: Colors.white),
-                              decoration: InputDecoration(
-                                prefixIcon: const Icon(Icons.wifi_rounded, size: 16, color: Color(0xFF55E2C0)),
-                                hintText: 'Enter 2.4GHz Wi-Fi SSID / Network Name',
-                                hintStyle: TextStyle(fontSize: 11, color: Colors.white.withOpacity(0.3)),
-                                border: InputBorder.none,
-                                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(height: 10),
-                          Container(
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF141E2B),
-                              borderRadius: BorderRadius.circular(10),
-                              border: Border.all(color: Colors.white.withOpacity(0.08)),
-                            ),
-                            child: TextField(
-                              controller: _passController,
-                              obscureText: _obscurePass,
-                              style: const TextStyle(fontSize: 12, color: Colors.white),
-                              decoration: InputDecoration(
-                                prefixIcon: const Icon(Icons.lock_outline_rounded, size: 16, color: Color(0xFF55E2C0)),
-                                suffixIcon: IconButton(
-                                  icon: Icon(
-                                    _obscurePass ? Icons.visibility_off_rounded : Icons.visibility_rounded,
-                                    size: 16,
-                                    color: Colors.white38,
-                                  ),
-                                  onPressed: () => setState(() => _obscurePass = !_obscurePass),
-                                ),
-                                hintText: 'Enter Wi-Fi Password',
-                                hintStyle: TextStyle(fontSize: 11, color: Colors.white.withOpacity(0.3)),
-                                border: InputBorder.none,
-                                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-                              ),
-                            ),
-                          ),
-
-                          const SizedBox(height: 14),
-
-                          // STATION SERVER CONFIGURATION
-                          Row(
-                            children: [
-                              Expanded(
-                                flex: 3,
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      'LAPTOP / CHECKPOINT SERVER IP',
-                                      style: TextStyle(
-                                        fontSize: 8.5,
-                                        fontWeight: FontWeight.w700,
-                                        letterSpacing: 0.8,
-                                        color: Colors.white.withOpacity(0.4),
-                                      ),
-                                    ),
-                                    const SizedBox(height: 6),
-                                    Container(
-                                      decoration: BoxDecoration(
-                                        color: const Color(0xFF141E2B),
-                                        borderRadius: BorderRadius.circular(10),
-                                        border: Border.all(color: Colors.white.withOpacity(0.08)),
-                                      ),
-                                      child: TextField(
-                                        controller: _serverIpController,
-                                        style: const TextStyle(fontSize: 12, color: Colors.white),
-                                        decoration: InputDecoration(
-                                          prefixIcon: const Icon(Icons.lan_rounded, size: 16, color: Color(0xFF55E2C0)),
-                                          border: InputBorder.none,
-                                          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              const SizedBox(width: 10),
-                              Expanded(
-                                flex: 1,
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      'PORT',
-                                      style: TextStyle(
-                                        fontSize: 8.5,
-                                        fontWeight: FontWeight.w700,
-                                        letterSpacing: 0.8,
-                                        color: Colors.white.withOpacity(0.4),
-                                      ),
-                                    ),
-                                    const SizedBox(height: 6),
-                                    Container(
-                                      decoration: BoxDecoration(
-                                        color: const Color(0xFF141E2B),
-                                        borderRadius: BorderRadius.circular(10),
-                                        border: Border.all(color: Colors.white.withOpacity(0.08)),
-                                      ),
-                                      child: TextField(
-                                        controller: _serverPortController,
-                                        style: const TextStyle(fontSize: 12, color: Colors.white),
-                                        decoration: const InputDecoration(
-                                          border: InputBorder.none,
-                                          contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ],
-                          ),
-
-                          const SizedBox(height: 18),
-
-                          // FLASH BUTTON
-                          SizedBox(
-                            width: double.infinity,
-                            height: 44,
-                            child: ElevatedButton.icon(
-                              onPressed: _isProvisioning ? null : _flashWifiToPin,
-                              icon: _isProvisioning
-                                  ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                                  : const Icon(Icons.bolt_rounded, size: 18),
-                              label: Text(
-                                _isProvisioning ? 'FLASHING CREDENTIALS TO PIN...' : '⚡ FLASH WI-FI CREDENTIALS TO PIN',
-                                style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w700, letterSpacing: 0.8),
-                              ),
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: const Color(0xFF109C6D),
-                                foregroundColor: Colors.white,
-                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                                elevation: 3,
-                              ),
-                            ),
-                          ),
-
-                          // STATUS FEEDBACK
-                          if (_statusMessage != null) ...[
-                            const SizedBox(height: 12),
-                            Container(
-                              padding: const EdgeInsets.all(10),
-                              decoration: BoxDecoration(
-                                color: (_statusSuccess ? const Color(0xFF109C6D) : const Color(0xFFEF4444)).withOpacity(0.12),
-                                borderRadius: BorderRadius.circular(10),
-                                border: Border.all(
-                                  color: (_statusSuccess ? const Color(0xFF109C6D) : const Color(0xFFEF4444)).withOpacity(0.4),
-                                ),
-                              ),
-                              child: Row(
-                                children: [
-                                  Icon(
-                                    _statusSuccess ? Icons.check_circle_rounded : Icons.error_outline_rounded,
-                                    size: 16,
-                                    color: _statusSuccess ? const Color(0xFF55E2C0) : const Color(0xFFF87171),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: Text(
-                                      _statusMessage!,
-                                      style: TextStyle(
-                                        fontSize: 11,
-                                        color: _statusSuccess ? const Color(0xFF55E2C0) : const Color(0xFFFCA5A5),
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ],
-
-                          if (_consoleLogs.isNotEmpty) ...[
-                            const SizedBox(height: 10),
-                            Container(
-                              width: double.infinity,
-                              padding: const EdgeInsets.all(10),
-                              decoration: BoxDecoration(
-                                color: Colors.black.withOpacity(0.4),
-                                borderRadius: BorderRadius.circular(8),
-                                border: Border.all(color: Colors.white.withOpacity(0.06)),
-                              ),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text('SERIAL LOGS:', style: TextStyle(fontSize: 8, color: Colors.white.withOpacity(0.4), fontWeight: FontWeight.w700)),
-                                  const SizedBox(height: 4),
-                                  ..._consoleLogs.map((log) => Text(log, style: const TextStyle(fontSize: 9.5, color: Color(0xFF4ADE80), fontFamily: 'monospace'))),
-                                ],
-                              ),
-                            ),
-                          ],
-                        ],
-                      ),
-                    ),
-
-                    // --- TAB 2: WI-FI HOTSPOT PROVISIONING ---
+                    // --- TAB 3: WI-FI HOTSPOT PROVISIONING ---
                     SingleChildScrollView(
                       padding: const EdgeInsets.all(20),
                       child: Column(

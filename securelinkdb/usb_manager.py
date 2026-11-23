@@ -54,12 +54,14 @@ class USBDeviceManager:
         self.mac_address: Optional[str] = None
         self.fw_version: Optional[str] = None
         self.is_authenticated = False
+        self.auth_error_reason: Optional[str] = None
         self.last_heartbeat_ts: float = 0.0
         self.battery: int = -1
         self.battery_mv: int = -1
         self.vad_state: str = "OFFLINE"
         self.audio_streaming: bool = False
         self.audio_accumulator = bytearray()
+        self.seen_chunk_seqs: set = set()
         self.current_stream_seq: int = 0
 
         # Auto-reconnect configuration
@@ -130,17 +132,21 @@ class USBDeviceManager:
         if self.is_authenticated or self.device_id:
             self._mark_disconnected()
 
-    def _mark_disconnected(self):
+    def _mark_disconnected(self, reason: str = "Disconnected"):
         old_id = self.device_id
         self.is_authenticated = False
+        self.vad_state = "OFFLINE"
         self.audio_streaming = False
         self.audio_accumulator.clear()
+        self.seen_chunk_seqs.clear()
         dev_info = {
             "id": old_id or "PIN-USB",
             "online": False,
+            "direct_online": False,
+            "relay_online": False,
             "connection_source": "USB",
             "state": "OFFLINE",
-            "lastSeen": f"Disconnected at {time.strftime('%H:%M:%S')}",
+            "lastSeen": f"{reason} at {time.strftime('%H:%M:%S')}",
             "battery": -1,
             "batteryMv": -1,
             "paired": True,
@@ -151,7 +157,7 @@ class USBDeviceManager:
                 self.on_device_update(dev_info)
             except Exception as e:
                 logger.error(f"Error invoking on_device_update: {e}")
-        logger.info(f"USB Device '{old_id}' marked OFFLINE.")
+        logger.info(f"USB Device '{old_id}' marked OFFLINE ({reason}).")
 
     def connect(self, port: str) -> bool:
         """Manually requests connection to a specific port."""
@@ -307,28 +313,37 @@ class USBDeviceManager:
 
             # Verify authorization against credentials
             is_valid = True
+            err_reason = None
             if self.verify_credential_fn:
                 try:
                     import inspect
                     sig = inspect.signature(self.verify_credential_fn)
                     if len(sig.parameters) >= 2:
-                        is_valid = self.verify_credential_fn(dev_id, mac)
+                        res = self.verify_credential_fn(dev_id, mac)
                     else:
-                        is_valid = self.verify_credential_fn(dev_id)
+                        res = self.verify_credential_fn(dev_id)
+                    if isinstance(res, tuple):
+                        is_valid, err_reason = res
+                    else:
+                        is_valid = bool(res)
+                        err_reason = None if is_valid else "UNAUTHORIZED"
                 except Exception as e:
                     logger.error(f"Credential check failed: {e}")
                     is_valid = False
+                    err_reason = "AUTH_EXCEPTION"
 
             if is_valid:
                 self.is_authenticated = True
+                self.auth_error_reason = None
                 self.last_heartbeat_ts = time.time()
                 self._send_text("SL:AUTH:OK\n")
                 logger.info(f"Pin '{dev_id}' successfully authenticated over USB.")
                 self._emit_device_update(state="VAD ARMED")
             else:
                 self.is_authenticated = False
-                self._send_text("SL:AUTH:ERR:UNAUTHORIZED\n")
-                logger.warning(f"Pin '{dev_id}' unauthorized. Authentication rejected.")
+                self.auth_error_reason = err_reason or "UNAUTHORIZED"
+                self._send_text(f"SL:AUTH:ERR:{self.auth_error_reason}\n")
+                logger.warning(f"Pin '{dev_id}' unauthorized ({self.auth_error_reason}). Authentication rejected.")
 
         # 2. Heartbeat Ping: SL:PING:<batt_pct>:<batt_mv>:<vad_state>
         elif cmd == "PING":
@@ -361,6 +376,7 @@ class USBDeviceManager:
             self.current_stream_seq = seq
             self.audio_streaming = True
             self.audio_accumulator.clear()
+            self.seen_chunk_seqs.clear()
             logger.info(f"Audio stream #{seq} started over USB from '{self.device_id}'.")
             self._emit_device_update(state="STREAMING AUDIO (USB)")
 
@@ -369,6 +385,7 @@ class USBDeviceManager:
             seq = int(parts[2]) if len(parts) >= 3 else 0
             logger.info(f"Audio stream #{seq} finished over USB. Accumulated {len(self.audio_accumulator)} bytes.")
             self.audio_streaming = False
+            self.seen_chunk_seqs.clear()
             pcm_data = bytes(self.audio_accumulator)
             self.audio_accumulator.clear()
 
@@ -389,8 +406,12 @@ class USBDeviceManager:
             logger.debug(f"[PIN-FW] {msg}")
 
     def _handle_audio_chunk(self, seq: int, raw_bytes: bytes):
-        """Appends verified binary PCM chunk to stream accumulator."""
+        """Appends verified binary PCM chunk to stream accumulator with deduplication."""
         self.last_heartbeat_ts = time.time()
+        if seq in self.seen_chunk_seqs:
+            logger.info(f"Duplicate audio chunk #{seq} ignored; re-acknowledging.")
+            return
+        self.seen_chunk_seqs.add(seq)
         self.audio_accumulator.extend(raw_bytes)
         if not self.audio_streaming:
             self.audio_streaming = True
@@ -431,16 +452,43 @@ class USBDeviceManager:
                 logger.error(f"Error in on_device_update callback: {e}")
 
     def get_status(self) -> Dict[str, Any]:
-        """Returns live diagnostic summary of USB subsystem."""
+        """Returns live diagnostic summary of USB subsystem including 9-stage pipeline state."""
+        now = time.time()
+        port_open = bool(self.serial_port and self.serial_port.is_open)
+        heartbeat_fresh = (now - self.last_heartbeat_ts <= HEARTBEAT_TIMEOUT_SEC) if self.last_heartbeat_ts > 0 else False
+        is_online = port_open and self.is_authenticated and heartbeat_fresh
+        sec_since_heartbeat = round(now - self.last_heartbeat_ts, 1) if self.last_heartbeat_ts > 0 else -1.0
+
+        available_ports = self.scan_ports()
+        pin_candidate = any(p["is_esp32"] for p in available_ports) or (self.current_port_name is not None)
+
         return {
-            "status": "connected" if (self.serial_port and self.serial_port.is_open and self.is_authenticated) else "disconnected",
+            "status": "connected" if is_online else "disconnected",
             "port": self.current_port_name,
             "device_id": self.device_id,
+            "mac": self.mac_address,
+            "fw_version": self.fw_version,
             "is_authenticated": self.is_authenticated,
+            "auth_error": self.auth_error_reason,
+            "is_online": is_online,
+            "vad_state": self.vad_state,
             "audio_streaming": self.audio_streaming,
             "accumulated_bytes": len(self.audio_accumulator),
             "battery": self.battery,
             "battery_mv": self.battery_mv,
-            "vad_state": self.vad_state,
-            "available_ports": self.scan_ports(),
+            "heartbeat_fresh": heartbeat_fresh,
+            "last_heartbeat_sec_ago": sec_since_heartbeat,
+            # 9-stage pipeline diagnostics
+            "stages": {
+                "1_port_detected": pin_candidate,
+                "2_port_open": port_open,
+                "3_identity_received": bool(self.device_id),
+                "4_auth_accepted": self.is_authenticated,
+                "5_heartbeat_received": self.last_heartbeat_ts > 0,
+                "6_pin_online": is_online,
+                "7_vad_armed": self.vad_state == "VAD ARMED" and is_online,
+                "8_audio_streaming": self.audio_streaming,
+                "9_audio_processing": self.vad_state == "ANALYZING SPEECH",
+            },
+            "available_ports": available_ports,
         }

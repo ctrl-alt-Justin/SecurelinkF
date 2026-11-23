@@ -132,7 +132,7 @@ class TestUSBSerialProtocol(unittest.TestCase):
         chunk_1 = b"\x10\x00" * 1600 # 3200 bytes
         chunk_2 = b"\x20\x00" * 1600 # 3200 bytes
         self.mgr._handle_audio_chunk(1, chunk_1)
-        self.mgr._handle_audio_chunk(1, chunk_2)
+        self.mgr._handle_audio_chunk(2, chunk_2)
         self.assertEqual(len(self.mgr.audio_accumulator), 6400)
 
         # 3. End stream
@@ -198,10 +198,12 @@ class TestUSBSerialProtocol(unittest.TestCase):
 
     def test_07_usb_priority_in_connection_state_machine(self):
         """When USB is authenticated, recalculate_pin_connection_state sets connection_source to USB."""
-        # Authenticate USB manager
+        # Authenticate USB manager with open serial port and fresh heartbeat
+        server.usb_mgr.serial_port = self.mock_serial
         server.usb_mgr.is_authenticated = True
         server.usb_mgr.device_id = "PIN-F360"
         server.usb_mgr.current_port_name = "COM4"
+        server.usb_mgr.last_heartbeat_ts = time.time()
         server.usb_mgr.battery = 85
         server.usb_mgr.battery_mv = 4050
         server.usb_mgr.vad_state = "VAD ARMED"
@@ -215,6 +217,7 @@ class TestUSBSerialProtocol(unittest.TestCase):
         # Cleanup
         server.usb_mgr.is_authenticated = False
         server.usb_mgr.device_id = None
+        server.usb_mgr.serial_port = None
 
     def test_08_audio_chunk_acknowledgment(self):
         """Manager writes SL:AUDIO:ACK:<seq> upon receiving each binary audio frame."""
@@ -249,14 +252,25 @@ class TestUSBSerialProtocol(unittest.TestCase):
                     "mac": "E8:F6:0A:8C:F3:60",
                 }
             }
-            # 1. Matching device & MAC
-            self.assertTrue(server._verify_usb_credential("PIN-F360", "E8:F6:0A:8C:F3:60"))
+            # 1. Matching device & MAC -> (True, None)
+            valid, err = server._verify_usb_credential("PIN-F360", "E8:F6:0A:8C:F3:60")
+            self.assertTrue(valid)
+            self.assertIsNone(err)
+
             # 2. Matching device with lowercase / hyphenated MAC
-            self.assertTrue(server._verify_usb_credential("PIN-F360", "e8-f6-0a-8c-f3-60"))
+            valid, err = server._verify_usb_credential("PIN-F360", "e8-f6-0a-8c-f3-60")
+            self.assertTrue(valid)
+            self.assertIsNone(err)
+
             # 3. Mismatched MAC
-            self.assertFalse(server._verify_usb_credential("PIN-F360", "AA:BB:CC:DD:EE:FF"))
+            valid, err = server._verify_usb_credential("PIN-F360", "AA:BB:CC:DD:EE:FF")
+            self.assertFalse(valid)
+            self.assertEqual(err, "MAC_MISMATCH")
+
             # 4. Unknown device ID without credentials (no auto-registration bypass!)
-            self.assertFalse(server._verify_usb_credential("PIN-UNREGISTERED", "E8:F6:0A:8C:F3:60"))
+            valid, err = server._verify_usb_credential("PIN-UNREGISTERED", "E8:F6:0A:8C:F3:60")
+            self.assertFalse(valid)
+            self.assertEqual(err, "UNREGISTERED_DEVICE")
 
     def test_10_cross_thread_event_loop_scheduling(self):
         """Cross-thread callbacks dispatch via asyncio.run_coroutine_threadsafe when loop is active."""
@@ -278,6 +292,111 @@ class TestUSBSerialProtocol(unittest.TestCase):
                 # 2. Completed audio callback from USB thread
                 server._on_usb_audio_complete("PIN-F360", b"\x00" * 3200)
                 self.assertEqual(mock_threadsafe.call_count, 2)
+
+    def test_11_audio_chunk_deduplication(self):
+        """Manager ignores duplicate chunks with identical sequence number."""
+        self.mgr._handle_command("SL:IDENT:PIN-F360:E8:F6:0A:8C:F3:60:2.1")
+        self.mgr._handle_command("SL:STREAM_START:1")
+
+        chunk = b"\x55\xAA" * 100 # 200 bytes
+        self.mgr._handle_audio_chunk(1, chunk)
+        self.assertEqual(len(self.mgr.audio_accumulator), 200)
+
+        # Send exact same chunk seq 1 again (e.g. firmware retransmission)
+        self.mgr._handle_audio_chunk(1, chunk)
+        # Length must still be 200, not 400!
+        self.assertEqual(len(self.mgr.audio_accumulator), 200)
+
+        # Send new chunk seq 2
+        self.mgr._handle_audio_chunk(2, chunk)
+        self.assertEqual(len(self.mgr.audio_accumulator), 400)
+
+    def test_12_heartbeat_timeout_watchdog_transition_and_recovery(self):
+        """Heartbeat timeout marks device offline and clears authenticated state."""
+        self.mgr._handle_command("SL:IDENT:PIN-F360:E8:F6:0A:8C:F3:60:2.1")
+        self.assertTrue(self.mgr.is_authenticated)
+
+        # Simulate heartbeat timeout (> 6.0s ago)
+        self.mgr.last_heartbeat_ts = time.time() - 10.0
+        status = self.mgr.get_status()
+        self.assertFalse(status["is_online"])
+        self.assertFalse(status["heartbeat_fresh"])
+
+        # Recovery upon receiving fresh PING after re-auth
+        self.mgr.last_heartbeat_ts = time.time()
+        self.mgr._handle_command("SL:PING:95:4180:VAD ARMED")
+        status_recovered = self.mgr.get_status()
+        self.assertTrue(status_recovered["is_online"])
+        self.assertTrue(status_recovered["heartbeat_fresh"])
+
+    def test_13_nine_stage_pipeline_status(self):
+        """get_status returns comprehensive 9-stage pipeline breakdown."""
+        self.mgr._handle_command("SL:IDENT:PIN-F360:E8:F6:0A:8C:F3:60:2.1")
+        self.mgr._handle_command("SL:PING:80:4000:VAD ARMED")
+        st = self.mgr.get_status()
+
+        stages = st.get("stages", {})
+        self.assertTrue(stages.get("1_port_detected"))
+        self.assertTrue(stages.get("2_port_open"))
+        self.assertTrue(stages.get("3_identity_received"))
+        self.assertTrue(stages.get("4_auth_accepted"))
+        self.assertTrue(stages.get("5_heartbeat_received"))
+        self.assertTrue(stages.get("6_pin_online"))
+        self.assertTrue(stages.get("7_vad_armed"))
+        self.assertFalse(stages.get("8_audio_streaming"))
+        self.assertFalse(stages.get("9_audio_processing"))
+
+    def test_14_split_buffer_partial_read_framing(self):
+        """Buffer parser correctly handles fragmented reads across multiple chunk iterations."""
+        self.mgr.running = True
+        raw_pcm = b"\x33\x44" * 1600 # 3200 bytes
+        full_packet = (
+            b"SL:IDENT:PIN-F360:E8:F6:0A:8C:F3:60:2.1\n"
+            b"SL:STREAM_START:1\n"
+            + f"SL:AUDIO:{len(raw_pcm)}:1\n".encode("utf-8")
+            + raw_pcm
+            + b"SL:STREAM_END:1:3200\n"
+        )
+
+        buffer = bytearray()
+        # Feed in arbitrary 25-byte fragments to test split boundaries
+        frag_size = 25
+        for i in range(0, len(full_packet), frag_size):
+            buffer.extend(full_packet[i : i + frag_size])
+
+            while len(buffer) > 0:
+                idx = buffer.find(b"SL:")
+                if idx < 0:
+                    buffer = buffer[-2:] if len(buffer) >= 2 else buffer
+                    break
+                if idx > 0:
+                    del buffer[:idx]
+
+                newline_idx = buffer.find(b"\n")
+                if newline_idx < 0:
+                    break
+
+                header_bytes = bytes(buffer[:newline_idx]).strip()
+                header_str = header_bytes.decode("utf-8", errors="replace")
+
+                if header_str.startswith("SL:AUDIO:"):
+                    parts = header_str.split(":")
+                    payload_len = int(parts[2])
+                    seq = int(parts[3])
+                    total_needed = newline_idx + 1 + payload_len
+                    if len(buffer) < total_needed:
+                        break
+                    audio_data = bytes(buffer[newline_idx + 1 : total_needed])
+                    del buffer[:total_needed]
+                    self.mgr._handle_audio_chunk(seq, audio_data)
+                    continue
+
+                del buffer[: newline_idx + 1]
+                self.mgr._handle_command(header_str)
+
+        self.assertTrue(self.mgr.is_authenticated)
+        self.assertEqual(len(self.completed_audios), 1)
+        self.assertEqual(self.completed_audios[0][1], raw_pcm)
 
 
 if __name__ == "__main__":

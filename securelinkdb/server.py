@@ -339,7 +339,7 @@ relayed_audio_accumulators: Dict[str, bytearray] = {}
 recent_incidents: collections.deque = collections.deque(maxlen=50)
 
 # --- USB SERIAL DEVICE MANAGER (DIRECT HARDWARE PIPELINE) ---
-from usb_manager import USBDeviceManager
+from usb_manager import USBDeviceManager, HEARTBEAT_TIMEOUT_SEC
 
 logger = logging.getLogger("securelink")
 fastapi_event_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -373,21 +373,23 @@ def _on_usb_audio_complete(device_id: str, pcm_bytes: bytes):
     else:
         logger.error("[USB] Cannot dispatch completed audio: FastAPI main event loop is not running")
 
-def _verify_usb_credential(device_id: str, mac: Optional[str] = None) -> bool:
+def _verify_usb_credential(device_id: str, mac: Optional[str] = None) -> tuple:
     creds = load_device_credentials()
     if device_id not in creds:
-        logger.warning(f"[USB-AUTH] Device ID '{device_id}' not found in device_credentials.json. Denying USB connection.")
-        return False
+        err = f"Device ID '{device_id}' not found in device_credentials.json"
+        logger.warning(f"[USB-AUTH] {err}. Denying USB connection.")
+        return False, "UNREGISTERED_DEVICE"
     dev_entry = creds[device_id]
     cred_mac = (dev_entry.get("mac") or "").strip().upper()
     if cred_mac and mac:
         clean_cred_mac = cred_mac.replace(":", "").replace("-", "")
         clean_mac = mac.strip().upper().replace(":", "").replace("-", "")
         if clean_cred_mac != clean_mac:
-            logger.warning(f"[USB-AUTH] Device ID '{device_id}' MAC mismatch: expected '{cred_mac}', received '{mac}'. Denying USB connection.")
-            return False
+            err = f"Device ID '{device_id}' MAC mismatch: expected '{cred_mac}', received '{mac}'"
+            logger.warning(f"[USB-AUTH] {err}. Denying USB connection.")
+            return False, "MAC_MISMATCH"
     logger.info(f"[USB-AUTH] Device ID '{device_id}' authorized via matching credential record.")
-    return True
+    return True, None
 
 usb_mgr = USBDeviceManager(
     on_device_update=_on_usb_device_update,
@@ -448,7 +450,13 @@ def recalculate_pin_connection_state(pin_id: str, now_ts: Optional[float] = None
     dev = registered_devices[pin_id]
 
     # 0. Supreme Priority: Active Authenticated USB Connection
-    usb_online = usb_mgr.is_authenticated and (usb_mgr.device_id == pin_id)
+    usb_online = (
+        usb_mgr.serial_port is not None
+        and usb_mgr.serial_port.is_open
+        and usb_mgr.is_authenticated
+        and (usb_mgr.device_id == pin_id)
+        and (now_ts - usb_mgr.last_heartbeat_ts <= HEARTBEAT_TIMEOUT_SEC)
+    )
     if usb_online:
         dev["online"] = True
         dev["direct_online"] = True
@@ -536,19 +544,20 @@ mobile_pairing_mgr = MobilePairingManager(cs_id="CS-CAMPUS-01", cs_name="SecureL
 def get_active_tunnel_url() -> Optional[str]:
     return tunnel_mgr.active_url or current_cloud_tunnel_url
 
-# Load existing tunnel_config if available
-if os.path.exists(TUNNEL_CONFIG_FILE):
-    try:
-        with open(TUNNEL_CONFIG_FILE, "r", encoding="utf-8") as f:
-            cfg = json.load(f)
-            t_url = cfg.get("cloud_tunnel_url")
-            if t_url:
-                current_cloud_tunnel_url = t_url
-                tunnel_mgr.active_url = t_url
-                tunnel_mgr.state = TunnelState.CONNECTED
-                print(f"[TUNNEL] Loaded active Cloudflare Tunnel: {current_cloud_tunnel_url}")
-    except Exception:
-        pass
+# In USB-only mode, Cloudflare Tunnel auto-start is disabled
+# to ensure local USB connectivity remains the exclusive transport.
+# if os.path.exists(TUNNEL_CONFIG_FILE):
+#     try:
+#         with open(TUNNEL_CONFIG_FILE, "r", encoding="utf-8") as f:
+#             cfg = json.load(f)
+#             t_url = cfg.get("cloud_tunnel_url")
+#             if t_url:
+#                 current_cloud_tunnel_url = t_url
+#                 tunnel_mgr.active_url = t_url
+#                 tunnel_mgr.state = TunnelState.CONNECTED
+#                 print(f"[TUNNEL] Loaded active Cloudflare Tunnel: {current_cloud_tunnel_url}")
+#     except Exception:
+#         pass
 
 async def broadcast_to_clients(payload: dict):
     ev_type = payload.get("event_type")
