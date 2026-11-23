@@ -627,33 +627,98 @@ inline int16_t applySoftLimiter(int32_t sample) {
 }
 
 // --- BATTERY TELEMETRY (XIAO ESP32S3 Sense) ---
-// Reads physical battery voltage from ADC (GPIO 1 / A0) with 1:2 divider.
+// Note: Standard Seeed Studio XIAO ESP32-S3 boards do NOT route VBAT internally.
+// An external 1:2 voltage divider (2x 100kΩ or 2x 200kΩ resistors) between BAT+ and GND,
+// with midpoint wired to A0 (GPIO 1), is required for physical battery measurement.
 #define BATTERY_PIN 1
 
 static unsigned long totalStreamTimeMs = 0;
 static unsigned long streamStartMs = 0;
 
+struct LiPoCurvePoint {
+    int mv;
+    int pct;
+};
+
+// Calibrated non-linear discharge curve for standard 3.7V LiPo cell
+static const LiPoCurvePoint LIPO_CALIBRATION_CURVE[] = {
+    {4200, 100},
+    {4150, 95},
+    {4110, 90},
+    {4080, 85},
+    {4020, 80},
+    {3980, 75},
+    {3950, 70},
+    {3910, 65},
+    {3870, 60},
+    {3850, 55},
+    {3840, 50},
+    {3820, 45},
+    {3800, 40},
+    {3790, 35},
+    {3770, 30},
+    {3750, 25},
+    {3730, 20},
+    {3710, 15},
+    {3690, 10},
+    {3610, 5},
+    {3400, 1},
+    {3270, 0}
+};
+static const size_t LIPO_CURVE_POINTS = sizeof(LIPO_CALIBRATION_CURVE) / sizeof(LIPO_CALIBRATION_CURVE[0]);
+
+static int estimateLipoPercentageFromMv(int mv) {
+    if (mv >= 4200) return 100;
+    if (mv <= 3270) return 0;
+    for (size_t i = 0; i < LIPO_CURVE_POINTS - 1; i++) {
+        if (mv <= LIPO_CALIBRATION_CURVE[i].mv && mv >= LIPO_CALIBRATION_CURVE[i + 1].mv) {
+            int vHigh = LIPO_CALIBRATION_CURVE[i].mv;
+            int vLow = LIPO_CALIBRATION_CURVE[i + 1].mv;
+            int pHigh = LIPO_CALIBRATION_CURVE[i].pct;
+            int pLow = LIPO_CALIBRATION_CURVE[i + 1].pct;
+            return pLow + ((mv - vLow) * (pHigh - pLow)) / (vHigh - vLow);
+        }
+    }
+    return 0;
+}
+
+static float emaFilteredMv = -1.0f;
+
 BatteryTelemetry readBatteryTelemetry() {
     analogReadResolution(12);
     analogSetPinAttenuation(BATTERY_PIN, ADC_11db);
+    
+    // Average 16 samples to filter high-frequency ADC noise
     uint32_t rawSum = 0;
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < 16; i++) {
         rawSum += analogRead(BATTERY_PIN);
         delayMicroseconds(50);
     }
-    uint32_t raw = rawSum / 8;
-    // Factory-calibrated analogReadMilliVolts
+    uint32_t raw = rawSum / 16;
+    
+    // Factory-calibrated ESP32-S3 analogReadMilliVolts
     uint32_t pinMv = analogReadMilliVolts(BATTERY_PIN);
-    // With 1:2 divider (e.g. 2x 100k resistors):
-    int mv = (int)(pinMv * 2);
-    int pct = -1;
-    // Valid LiPo operating voltage under load/charging is 3200mV (cut-off) to 4350mV (max)
-    if (mv >= 3200 && mv <= 4350) {
-        pct = constrain((int)(((float)(mv - 3300) / (4200 - 3300)) * 100.0f), 1, 100);
+    
+    // With 1:2 divider ratio (e.g. 2x 100kΩ or 2x 200kΩ resistors):
+    int calculatedMv = (int)(pinMv * 2);
+    
+    // Valid LiPo operating voltage window under load/charging is 2800mV to 4400mV.
+    // If voltage is < 2800mV, the pin is floating (no divider installed or disconnected).
+    if (calculatedMv >= 2800 && calculatedMv <= 4400) {
+        if (emaFilteredMv < 0) {
+            emaFilteredMv = (float)calculatedMv;
+        } else {
+            // Smooth transient ADC noise with 80/20 EMA filter
+            emaFilteredMv = (emaFilteredMv * 0.8f) + ((float)calculatedMv * 0.2f);
+        }
+        int filteredMv = (int)(emaFilteredMv + 0.5f);
+        int pct = estimateLipoPercentageFromMv(filteredMv);
+        return { (int)raw, filteredMv, pct };
     } else {
-        mv = -1;
+        // Floating or missing measurement circuit: preserve unknown state
+        emaFilteredMv = -1.0f;
+        return { (int)raw, -1, -1 };
     }
-    return { (int)raw, mv, pct };
 }
 
 int readBatteryMv() {

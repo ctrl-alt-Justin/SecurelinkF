@@ -31,6 +31,52 @@ DEFAULT_BAUD = 115200
 # ESP32-S3 USB CDC identifiers
 ESP32S3_VID_PID = ("303A", "1001")
 
+# Calibrated non-linear discharge curve for standard 3.7V LiPo cell
+# Matches ESP32 firmware LIPO_CALIBRATION_CURVE
+LIPO_DISCHARGE_TABLE = [
+    (4200, 100),
+    (4150, 95),
+    (4110, 90),
+    (4080, 85),
+    (4020, 80),
+    (3980, 75),
+    (3950, 70),
+    (3910, 65),
+    (3870, 60),
+    (3850, 55),
+    (3840, 50),
+    (3820, 45),
+    (3800, 40),
+    (3790, 35),
+    (3770, 30),
+    (3750, 25),
+    (3730, 20),
+    (3710, 15),
+    (3690, 10),
+    (3610, 5),
+    (3400, 1),
+    (3270, 0),
+]
+
+
+def calculate_lipo_percentage(voltage_mv: int) -> int:
+    """Calculates non-linear 1S LiPo percentage from millivolts (3270mV = 0%, 4200mV = 100%).
+    Returns -1 if voltage is outside the valid LiPo operating window (2800mV - 4400mV).
+    """
+    if voltage_mv < 2800 or voltage_mv > 4400:
+        return -1
+    if voltage_mv >= 4200:
+        return 100
+    if voltage_mv <= 3270:
+        return 0
+    for i in range(len(LIPO_DISCHARGE_TABLE) - 1):
+        v_high, p_high = LIPO_DISCHARGE_TABLE[i]
+        v_low, p_low = LIPO_DISCHARGE_TABLE[i + 1]
+        if v_low <= voltage_mv <= v_high:
+            pct = p_low + int(((voltage_mv - v_low) * (p_high - p_low)) / (v_high - v_low))
+            return max(0, min(100, pct))
+    return 0
+
 
 class USBDeviceManager:
     def __init__(
@@ -78,6 +124,18 @@ class USBDeviceManager:
         # Auto-reconnect configuration
         self.auto_reconnect = True
         self.auto_discovery = True
+
+    @property
+    def battery_valid(self) -> bool:
+        """Returns True if a valid physical battery sensor reading is present (2800-4400mV)."""
+        return self.battery >= 0 and (2800 <= self.battery_mv <= 4400)
+
+    @property
+    def battery_status(self) -> str:
+        """Returns human-readable battery telemetry status code."""
+        if self.battery_valid:
+            return "VALID"
+        return "SENSOR_NOT_CONFIGURED"
 
     def scan_ports(self) -> List[Dict[str, str]]:
         """Scans all available COM ports and flags likely XIAO ESP32-S3 Sense devices."""
@@ -478,16 +536,32 @@ class USBDeviceManager:
 
             self.last_heartbeat_ts = time.time()
             self.connection_state = "ONLINE"
+            raw_b = -1
+            raw_mv = -1
             if len(parts) >= 3:
                 try:
-                    self.battery = int(parts[2])
+                    raw_b = int(parts[2])
                 except ValueError:
-                    self.battery = -1
+                    raw_b = -1
             if len(parts) >= 4:
                 try:
-                    self.battery_mv = int(parts[3])
+                    raw_mv = int(parts[3])
                 except ValueError:
-                    self.battery_mv = -1
+                    raw_mv = -1
+
+            # Validate physical battery voltage:
+            # Standard 1S LiPo operating/charging range is 2800mV to 4400mV.
+            # Voltage below 2800mV indicates floating ADC / missing voltage divider.
+            if 2800 <= raw_mv <= 4400:
+                self.battery_mv = raw_mv
+                if 0 <= raw_b <= 100:
+                    self.battery = raw_b
+                else:
+                    self.battery = calculate_lipo_percentage(raw_mv)
+            else:
+                self.battery_mv = -1
+                self.battery = -1
+
             if len(parts) >= 5:
                 self.vad_state = parts[4].strip()
 
@@ -564,6 +638,8 @@ class USBDeviceManager:
             "estRuntime": runtime_str,
             "battery": self.battery,
             "batteryMv": self.battery_mv,
+            "battery_valid": self.battery_valid,
+            "battery_status": self.battery_status,
             "paired": True,
             "port": self.current_port_name,
             "fwVersion": self.fw_version or "2.1",
@@ -609,6 +685,8 @@ class USBDeviceManager:
             "accumulated_bytes": len(self.audio_accumulator),
             "battery": self.battery,
             "battery_mv": self.battery_mv,
+            "battery_valid": self.battery_valid,
+            "battery_status": self.battery_status,
             "heartbeat_fresh": heartbeat_fresh,
             "last_heartbeat_sec_ago": sec_since_heartbeat,
             # 9-stage pipeline diagnostics

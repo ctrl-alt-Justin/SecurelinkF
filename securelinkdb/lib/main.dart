@@ -748,6 +748,20 @@ class DeviceStatus {
   final String? relayedBy;
   final String? lastBleSeen;
 
+  bool get hasValidBattery => battery >= 0 && (batteryMv >= 2800 || batteryMv == -1);
+  String get batterySummary {
+    if (battery >= 0) {
+      if (batteryMv >= 2800) {
+        return '$battery% (${batteryMv}mV)';
+      }
+      return '$battery%';
+    }
+    if (batteryMv >= 2800) {
+      return '${batteryMv}mV';
+    }
+    return 'Sensor Not Configured';
+  }
+
   const DeviceStatus({
     required this.id,
     required this.online,
@@ -3986,9 +4000,18 @@ class _NetworkHealth extends StatelessWidget {
         : (isServerConnected ? const Color(0xFF57DDA0) : const Color(0xFFFF5E72));
 
     // Real Power & Battery Target
-    final batteryInfo = activePin != null
-        ? (activePin.battery >= 0 ? '${activePin.battery}% • ${activePin.estRuntime}' : '-- (Unknown)')
-        : (isServerConnected ? 'Inference Engine Ready' : 'AI Server Offline');
+    final String batteryInfo;
+    if (activePin != null) {
+      if (activePin.battery >= 0) {
+        batteryInfo = '${activePin.battery}% • ${activePin.estRuntime}';
+      } else if (activePin.batteryMv >= 2800) {
+        batteryInfo = '${activePin.batteryMv}mV';
+      } else {
+        batteryInfo = 'Battery Sensor Not Configured';
+      }
+    } else {
+      batteryInfo = isServerConnected ? 'Inference Engine Ready' : 'AI Server Offline';
+    }
     final batteryColor = activePin != null
         ? (activePin.battery < 0
             ? Colors.white38
@@ -4493,7 +4516,13 @@ class _DeviceRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final batteryColor = device.battery <= 20 ? const Color(0xFFFF5E72) : device.battery <= 35 ? const Color(0xFFFFC45D) : const Color(0xFF5BDC9F);
+    final batteryColor = device.battery < 0
+        ? Colors.white38
+        : (device.battery <= 20
+            ? const Color(0xFFFF5E72)
+            : device.battery <= 35
+                ? const Color(0xFFFFC45D)
+                : const Color(0xFF5BDC9F));
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(color: Colors.white.withOpacity(.02), borderRadius: BorderRadius.circular(11)),
@@ -4516,7 +4545,12 @@ class _DeviceRow extends StatelessWidget {
             child: Text(device.state, style: TextStyle(color: Colors.white.withOpacity(.55), fontSize: 7.5, fontWeight: FontWeight.w700)),
           ),
           const SizedBox(width: 8),
-          Text('${device.battery}%', style: TextStyle(color: batteryColor, fontSize: 9, fontWeight: FontWeight.w700)),
+          Text(
+            device.battery >= 0
+                ? '${device.battery}%'
+                : (device.batteryMv >= 2800 ? '${device.batteryMv}mV' : 'No Sensor'),
+            style: TextStyle(color: batteryColor, fontSize: 9, fontWeight: FontWeight.w700),
+          ),
         ],
       ),
     );
@@ -5367,11 +5401,13 @@ class _DeviceCard extends StatelessWidget {
                     Icon(device.battery < 0 ? Icons.battery_unknown_rounded : Icons.battery_std_rounded, size: 13, color: batteryColor),
                     const SizedBox(width: 4),
                     Text(
-                      device.battery >= 0 ? '${device.battery}% (${device.estRuntime})' : '-- (Unknown)',
+                      device.battery >= 0
+                          ? '${device.battery}% (${device.estRuntime})'
+                          : (device.batteryMv >= 2800 ? '${device.batteryMv}mV' : 'Sensor Not Configured'),
                       style: TextStyle(color: batteryColor, fontSize: 8.5, fontWeight: FontWeight.w700),
                     ),
                     const Spacer(),
-                    Text('200mAh LiPo', style: TextStyle(color: Colors.white.withOpacity(0.28), fontSize: 8)),
+                    Text(device.battery >= 0 ? '200mAh LiPo' : 'USB Powered', style: TextStyle(color: Colors.white.withOpacity(0.28), fontSize: 8)),
                   ],
                 ),
                 const SizedBox(height: 5),
@@ -9276,7 +9312,7 @@ class _PinSetupDialogState extends State<_PinSetupDialog> with SingleTickerProvi
                           ),
                           const SizedBox(height: 4),
                           Text(
-                            'Port: $port  •  Battery: ${batt >= 0 ? "$batt%" : "Charging / USB"} (${battMv > 0 ? "${battMv}mV" : "5V USB"})  •  Heartbeat: ${lastHb >= 0 ? "${lastHb}s ago" : "Waiting"}',
+                            'Port: $port  •  Battery: ${batt >= 0 ? "$batt% (${battMv >= 2800 ? "${battMv}mV" : "LiPo"})" : (battMv >= 2800 ? "${battMv}mV" : "Sensor Not Configured (USB Powered)")}  •  Heartbeat: ${lastHb >= 0 ? "${lastHb}s ago" : "Waiting"}',
                             style: TextStyle(fontSize: 10, color: Colors.white.withOpacity(0.7)),
                           ),
                         ],
@@ -9836,7 +9872,7 @@ class _PinSetupDialogState extends State<_PinSetupDialog> with SingleTickerProvi
                     Expanded(
                       child: Text(
                         hasConnectedPin
-                            ? 'SMART PIN CONNECTED: ${activePin?.id ?? "PIN-001"} (${activePin?.state ?? "VAD ARMED"} • ${activePin?.battery ?? 100}% LiPo • ${activePin?.network ?? "Wi-Fi"})'
+                            ? 'SMART PIN CONNECTED: ${activePin?.id ?? "PIN-001"} (${activePin?.state ?? "VAD ARMED"} • ${activePin != null && activePin.battery >= 0 ? "${activePin.battery}% LiPo" : (activePin != null && activePin.batteryMv >= 2800 ? "${activePin.batteryMv}mV" : "Sensor Not Configured (USB)")} • ${activePin?.network ?? "Wi-Fi"})'
                             : 'Waiting for smart pin handshake on Checkpoint Server (port 8080)...',
                         style: TextStyle(
                           fontSize: 10,

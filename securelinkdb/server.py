@@ -500,6 +500,13 @@ def recalculate_pin_connection_state(pin_id: str, now_ts: Optional[float] = None
         dev["port"] = usb_mgr.current_port_name
         dev["battery"] = usb_mgr.battery
         dev["batteryMv"] = usb_mgr.battery_mv
+        dev["battery_valid"] = usb_mgr.battery_valid
+        dev["battery_status"] = usb_mgr.battery_status
+        if usb_mgr.battery >= 0:
+            rem_mins = int((usb_mgr.battery / 100.0) * 315)
+            dev["estRuntime"] = f"{rem_mins // 60}h {rem_mins % 60:02d}m"
+        else:
+            dev["estRuntime"] = "--"
         if usb_mgr.audio_streaming:
             dev["state"] = "STREAMING AUDIO (USB)"
         elif dev.get("state") in ("OFFLINE", None, "STANDBY"):
