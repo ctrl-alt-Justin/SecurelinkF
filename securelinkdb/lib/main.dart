@@ -759,7 +759,7 @@ class DeviceStatus {
     if (batteryMv >= 2800) {
       return '${batteryMv}mV';
     }
-    return 'Sensor Not Configured';
+    return 'Battery Level Unavailable';
   }
 
   const DeviceStatus({
@@ -4007,7 +4007,7 @@ class _NetworkHealth extends StatelessWidget {
       } else if (activePin.batteryMv >= 2800) {
         batteryInfo = '${activePin.batteryMv}mV';
       } else {
-        batteryInfo = 'Battery Sensor Not Configured';
+        batteryInfo = 'Battery Level Unavailable';
       }
     } else {
       batteryInfo = isServerConnected ? 'Inference Engine Ready' : 'AI Server Offline';
@@ -4548,8 +4548,8 @@ class _DeviceRow extends StatelessWidget {
           Text(
             device.battery >= 0
                 ? '${device.battery}%'
-                : (device.batteryMv >= 2800 ? '${device.batteryMv}mV' : 'No Sensor'),
-            style: TextStyle(color: batteryColor, fontSize: 9, fontWeight: FontWeight.w700),
+                : (device.batteryMv >= 2800 ? '${device.batteryMv}mV' : 'Battery Level Unavailable'),
+            style: TextStyle(color: batteryColor, fontSize: 8.5, fontWeight: FontWeight.w700),
           ),
         ],
       ),
@@ -5403,11 +5403,11 @@ class _DeviceCard extends StatelessWidget {
                     Text(
                       device.battery >= 0
                           ? '${device.battery}% (${device.estRuntime})'
-                          : (device.batteryMv >= 2800 ? '${device.batteryMv}mV' : 'Sensor Not Configured'),
+                          : (device.batteryMv >= 2800 ? '${device.batteryMv}mV' : 'Battery Level Unavailable'),
                       style: TextStyle(color: batteryColor, fontSize: 8.5, fontWeight: FontWeight.w700),
                     ),
                     const Spacer(),
-                    Text(device.battery >= 0 ? '200mAh LiPo' : 'USB Powered', style: TextStyle(color: Colors.white.withOpacity(0.28), fontSize: 8)),
+                    Text(device.battery >= 0 ? '200mAh LiPo' : 'Unavailable', style: TextStyle(color: Colors.white.withOpacity(0.28), fontSize: 8)),
                   ],
                 ),
                 const SizedBox(height: 5),
@@ -9312,7 +9312,7 @@ class _PinSetupDialogState extends State<_PinSetupDialog> with SingleTickerProvi
                           ),
                           const SizedBox(height: 4),
                           Text(
-                            'Port: $port  •  Battery: ${batt >= 0 ? "$batt% (${battMv >= 2800 ? "${battMv}mV" : "LiPo"})" : (battMv >= 2800 ? "${battMv}mV" : "Sensor Not Configured (USB Powered)")}  •  Heartbeat: ${lastHb >= 0 ? "${lastHb}s ago" : "Waiting"}',
+                            'Port: $port  •  Battery: ${batt >= 0 ? "$batt% (${battMv >= 2800 ? "${battMv}mV" : "LiPo"})" : (battMv >= 2800 ? "${battMv}mV" : "Battery Level Unavailable")}  •  Heartbeat: ${lastHb >= 0 ? "${lastHb}s ago" : "Waiting"}',
                             style: TextStyle(fontSize: 10, color: Colors.white.withOpacity(0.7)),
                           ),
                         ],
@@ -9872,7 +9872,7 @@ class _PinSetupDialogState extends State<_PinSetupDialog> with SingleTickerProvi
                     Expanded(
                       child: Text(
                         hasConnectedPin
-                            ? 'SMART PIN CONNECTED: ${activePin?.id ?? "PIN-001"} (${activePin?.state ?? "VAD ARMED"} • ${activePin != null && activePin.battery >= 0 ? "${activePin.battery}% LiPo" : (activePin != null && activePin.batteryMv >= 2800 ? "${activePin.batteryMv}mV" : "Sensor Not Configured (USB)")} • ${activePin?.network ?? "Wi-Fi"})'
+                            ? 'SMART PIN CONNECTED: ${activePin?.id ?? "PIN-001"} (${activePin?.state ?? "VAD ARMED"} • ${activePin != null && activePin.battery >= 0 ? "${activePin.battery}% LiPo" : (activePin != null && activePin.batteryMv >= 2800 ? "${activePin.batteryMv}mV" : "Battery Level Unavailable")} • ${activePin?.network ?? "Wi-Fi"})'
                             : 'Waiting for smart pin handshake on Checkpoint Server (port 8080)...',
                         style: TextStyle(
                           fontSize: 10,

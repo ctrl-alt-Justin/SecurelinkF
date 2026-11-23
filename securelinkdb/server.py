@@ -460,6 +460,8 @@ def recalculate_pin_connection_state(pin_id: str, now_ts: Optional[float] = None
                 "relay_online": False,
                 "battery": -1,
                 "batteryMv": -1,
+                "battery_valid": False,
+                "battery_status": "UNAVAILABLE",
                 "state": "OFFLINE",
                 "network": "USB Serial",
                 "lastSeen": creds[pin_id].get("registered_at", "Registered"),
@@ -477,6 +479,8 @@ def recalculate_pin_connection_state(pin_id: str, now_ts: Optional[float] = None
                 "state": "UNREGISTERED",
                 "battery": -1,
                 "batteryMv": -1,
+                "battery_valid": False,
+                "battery_status": "UNAVAILABLE",
                 "estRuntime": "--",
                 "paired": False,
             }

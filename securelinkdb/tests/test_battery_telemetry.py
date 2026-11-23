@@ -63,7 +63,7 @@ class TestUSBManagerBatteryHeartbeat(unittest.TestCase):
         self.assertEqual(self.mgr.battery, -1)
         self.assertEqual(self.mgr.battery_mv, -1)
         self.assertFalse(self.mgr.battery_valid)
-        self.assertEqual(self.mgr.battery_status, "SENSOR_NOT_CONFIGURED")
+        self.assertEqual(self.mgr.battery_status, "UNAVAILABLE")
 
     def test_floating_pin_voltage_rejection(self):
         # Firmware raw ADC reads 120mV noise without divider
@@ -71,7 +71,7 @@ class TestUSBManagerBatteryHeartbeat(unittest.TestCase):
         self.assertEqual(self.mgr.battery, -1)
         self.assertEqual(self.mgr.battery_mv, -1)
         self.assertFalse(self.mgr.battery_valid)
-        self.assertEqual(self.mgr.battery_status, "SENSOR_NOT_CONFIGURED")
+        self.assertEqual(self.mgr.battery_status, "UNAVAILABLE")
 
     def test_valid_calibrated_battery_telemetry(self):
         # Physical pin connected with voltage divider at 3980mV (75%)
@@ -100,7 +100,7 @@ class TestUSBManagerBatteryHeartbeat(unittest.TestCase):
         self.assertEqual(latest["battery"], -1)
         self.assertEqual(latest["batteryMv"], -1)
         self.assertFalse(latest["battery_valid"])
-        self.assertEqual(latest["battery_status"], "SENSOR_NOT_CONFIGURED")
+        self.assertEqual(latest["battery_status"], "UNAVAILABLE")
         self.assertEqual(latest["estRuntime"], "--")
 
         # 2. Valid battery reading
@@ -118,7 +118,40 @@ class TestUSBManagerBatteryHeartbeat(unittest.TestCase):
         self.assertEqual(st["battery"], -1)
         self.assertEqual(st["battery_mv"], -1)
         self.assertFalse(st["battery_valid"])
-        self.assertEqual(st["battery_status"], "SENSOR_NOT_CONFIGURED")
+        self.assertEqual(st["battery_status"], "UNAVAILABLE")
+
+
+class TestDashboardFallbackHandling(unittest.TestCase):
+    """Verifies that missing battery telemetry maps to UNAVAILABLE without fabricating values."""
+
+    def test_missing_sensor_status_code(self):
+        mgr = USBDeviceManager()
+        self.assertEqual(mgr.battery_status, "UNAVAILABLE")
+        self.assertFalse(mgr.battery_valid)
+        self.assertEqual(mgr.battery, -1)
+        self.assertEqual(mgr.battery_mv, -1)
+
+    def test_dashboard_json_payload_contract(self):
+        mgr = USBDeviceManager()
+        mgr.device_id = "PIN-F360"
+        mgr.is_authenticated = True
+        status = mgr.get_status()
+        self.assertEqual(status["battery"], -1)
+        self.assertEqual(status["battery_mv"], -1)
+        self.assertEqual(status["battery_status"], "UNAVAILABLE")
+        self.assertFalse(status["battery_valid"])
+
+    def test_no_fabricated_reading_when_speech_or_uptime_active(self):
+        mgr = USBDeviceManager()
+        mgr.device_id = "PIN-F360"
+        mgr.is_authenticated = True
+        mgr.audio_streaming = True
+        mgr.vad_state = "SPEECH DETECTED"
+        # Audio or VAD activity must NEVER substitute or invent a battery percentage
+        self.assertEqual(mgr.battery, -1)
+        self.assertEqual(mgr.battery_mv, -1)
+        self.assertEqual(mgr.battery_status, "UNAVAILABLE")
+        self.assertFalse(mgr.battery_valid)
 
 
 if __name__ == "__main__":

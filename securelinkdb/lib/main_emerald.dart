@@ -678,7 +678,7 @@ class _DevicePill extends StatelessWidget {
                   decoration: BoxDecoration(color: _DS.surface, borderRadius: BorderRadius.circular(3)),
                   child: FractionallySizedBox(
                     alignment: Alignment.centerLeft,
-                    widthFactor: pin.battery / 100,
+                    widthFactor: pin.battery >= 0 ? (pin.battery / 100.0).clamp(0.0, 1.0) : 0.0,
                     child: Container(decoration: BoxDecoration(color: batColor, borderRadius: BorderRadius.circular(3))),
                   ),
                 ),
@@ -906,13 +906,13 @@ class _DevicesPage extends StatelessWidget {
                         decoration: BoxDecoration(color: _DS.surface, borderRadius: BorderRadius.circular(6)),
                         child: FractionallySizedBox(
                           alignment: Alignment.centerLeft,
-                          widthFactor: pin.battery / 100,
+                          widthFactor: pin.battery >= 0 ? (pin.battery / 100.0).clamp(0.0, 1.0) : 0.0,
                           child: Container(decoration: BoxDecoration(color: pin.online ? _DS.neonLime : _DS.textDim, borderRadius: BorderRadius.circular(6))),
                         ),
                       ),
                     ),
                     const SizedBox(width: 16),
-                    Text('${pin.battery}%', style: const TextStyle(color: _DS.textMain, fontSize: 16, fontWeight: FontWeight.bold)),
+                    Text(pin.battery >= 0 ? '${pin.battery}%' : 'Battery Level Unavailable', style: const TextStyle(color: _DS.textMain, fontSize: 14, fontWeight: FontWeight.bold)),
                   ],
                 )
               ],

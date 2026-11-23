@@ -135,7 +135,7 @@ class USBDeviceManager:
         """Returns human-readable battery telemetry status code."""
         if self.battery_valid:
             return "VALID"
-        return "SENSOR_NOT_CONFIGURED"
+        return "UNAVAILABLE"
 
     def scan_ports(self) -> List[Dict[str, str]]:
         """Scans all available COM ports and flags likely XIAO ESP32-S3 Sense devices."""
