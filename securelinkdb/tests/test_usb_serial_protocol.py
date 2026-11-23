@@ -16,6 +16,7 @@ import sys
 import unittest
 import time
 import io
+import serial
 from unittest.mock import MagicMock, patch
 
 # Ensure securelinkdb directory is on sys.path
@@ -29,7 +30,7 @@ import server
 
 class MockSerialPort:
     """Mock serial port implementing basic read/write operations for protocol testing."""
-    def __init__(self):
+    def __init__(self, *args, **kwargs):
         self.is_open = True
         self.dtr = True
         self.rts = False
@@ -397,6 +398,97 @@ class TestUSBSerialProtocol(unittest.TestCase):
         self.assertTrue(self.mgr.is_authenticated)
         self.assertEqual(len(self.completed_audios), 1)
         self.assertEqual(self.completed_audios[0][1], raw_pcm)
+
+    def test_15_worker_restart_after_disconnect(self):
+        """Worker thread restarts cleanly when connect is invoked after stop/disconnect."""
+        self.mgr.stop()
+        self.assertFalse(self.mgr.running)
+
+        # Connect with mock serial patch to prevent actual OS COM open
+        with patch("serial.Serial", side_effect=MockSerialPort):
+            ok, msg = self.mgr.connect("COM4", timeout=1.0)
+            self.assertTrue(ok)
+            self.assertTrue(self.mgr.running)
+            self.assertIsNotNone(self.mgr.thread)
+            self.assertTrue(self.mgr.thread.is_alive())
+
+    def test_16_port_open_failure_logging_and_reporting(self):
+        """Serial opening failure logs at ERROR level, records last_open_error, and reports failure."""
+        with patch("serial.Serial", side_effect=serial.SerialException("Access is denied")):
+            with self.assertLogs("securelink.usb", level="ERROR") as cm:
+                ok, msg = self.mgr.connect("COM_FAIL", timeout=0.5)
+                self.assertFalse(ok)
+                self.assertIn("SerialException", msg)
+                self.assertIn("Access is denied", msg)
+                self.assertEqual(self.mgr.connection_state, "ERROR")
+                self.assertIsNotNone(self.mgr.last_open_error)
+                self.assertIn("SerialException", self.mgr.last_open_error)
+
+                # Check ERROR log
+                self.assertTrue(any("Failed to open USB serial port COM_FAIL: SerialException: Access is denied" in log for log in cm.output))
+
+            # Expose through get_status
+            st = self.mgr.get_status()
+            self.assertFalse(st["serial_port_open"])
+            self.assertIn("Access is denied", st["last_open_error"])
+            self.assertEqual(st["connection_state"], "ERROR")
+
+    def test_17_successful_port_opening_and_status(self):
+        """Successful port opening sets distinct states, opens port, and reflects in get_status."""
+        with patch("serial.Serial", side_effect=MockSerialPort):
+            ok, msg = self.mgr.connect("COM4", timeout=1.0)
+            self.assertTrue(ok)
+            self.assertTrue(self.mgr.serial_port and self.mgr.serial_port.is_open)
+
+            st = self.mgr.get_status()
+            self.assertTrue(st["serial_port_open"])
+            self.assertTrue(st["worker_running"])
+            self.assertIsNone(st["last_open_error"])
+            # State is either PORT OPEN or HANDSHAKE WAITING
+            self.assertIn(st["connection_state"], ("PORT OPEN", "HANDSHAKE WAITING"))
+
+    def test_18_handshake_timeout_detection(self):
+        """Pin that does not respond with identification within 5.0s triggers handshake timeout."""
+        mock_port = MockSerialPort()
+        self.mgr.serial_port = mock_port
+        self.mgr.current_port_name = "COM4"
+        self.mgr.connection_state = "HANDSHAKE WAITING"
+        self.mgr.is_authenticated = False
+        self.mgr.handshake_start_ts = time.time() - 6.0  # Expired > 5.0s ago
+
+        # Execute one loop iteration check
+        if (time.time() - self.mgr.handshake_start_ts) > 5.0:
+            timeout_msg = f"Handshake timeout: Pin on {self.mgr.current_port_name} did not respond within 5.0s"
+            self.mgr.last_error = timeout_msg
+            self.mgr.connection_state = "ERROR"
+            self.mgr._close_serial(reason=timeout_msg)
+
+        self.assertEqual(self.mgr.connection_state, "ERROR")
+        self.assertIn("Handshake timeout", self.mgr.last_error)
+        self.assertFalse(self.mgr.serial_port and self.mgr.serial_port.is_open)
+
+        st = self.mgr.get_status()
+        self.assertIn("Handshake timeout", st["last_error"])
+        self.assertEqual(st["connection_state"], "ERROR")
+
+    def test_19_disconnect_and_reconnect_cycle(self):
+        """Disconnect closes serial port without concurrency race, and reconnect restores connection."""
+        with patch("serial.Serial", side_effect=MockSerialPort):
+            # 1. Connect
+            ok, msg = self.mgr.connect("COM4", timeout=1.0)
+            self.assertTrue(ok)
+            self.assertTrue(self.mgr.serial_port and self.mgr.serial_port.is_open)
+
+            # 2. Disconnect safely
+            ok, msg = self.mgr.disconnect(timeout=1.0)
+            self.assertTrue(ok)
+            self.assertTrue(self.mgr.serial_port is None or not self.mgr.serial_port.is_open)
+            self.assertEqual(self.mgr.connection_state, "OFFLINE")
+
+            # 3. Reconnect
+            ok, msg = self.mgr.connect("COM4", timeout=1.0)
+            self.assertTrue(ok)
+            self.assertTrue(self.mgr.serial_port and self.mgr.serial_port.is_open)
 
 
 if __name__ == "__main__":

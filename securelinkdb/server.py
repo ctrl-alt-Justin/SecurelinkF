@@ -676,13 +676,15 @@ async def connect_usb_port(payload: dict):
     port = payload.get("port", "").strip()
     if not port:
         return {"status": "error", "message": "No port provided"}
-    ok = usb_mgr.connect(port)
-    return {"status": "success" if ok else "error", "port": port}
+    ok, msg = await asyncio.to_thread(usb_mgr.connect, port)
+    if not ok:
+        return {"status": "error", "message": msg, "port": port}
+    return {"status": "success", "message": msg, "port": port}
 
 @app.post("/api/usb/disconnect")
 async def disconnect_usb_port():
-    usb_mgr.stop()
-    return {"status": "success", "message": "USB disconnected"}
+    ok, msg = await asyncio.to_thread(usb_mgr.disconnect)
+    return {"status": "success" if ok else "error", "message": msg}
 
 @app.get("/api/devices")
 async def get_devices():

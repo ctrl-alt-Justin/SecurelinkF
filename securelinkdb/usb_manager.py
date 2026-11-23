@@ -64,6 +64,17 @@ class USBDeviceManager:
         self.seen_chunk_seqs: set = set()
         self.current_stream_seq: int = 0
 
+        # Connection Lifecycle & Error States
+        # States: "OFFLINE", "REQUESTED", "OPENING PORT", "PORT OPEN", "HANDSHAKE WAITING", "AUTHENTICATED", "ONLINE", "ERROR"
+        self.connection_state: str = "OFFLINE"
+        self.last_open_error: Optional[str] = None
+        self.last_error: Optional[str] = None
+        self.handshake_start_ts: float = 0.0
+        self.pending_port_request: Optional[str] = None
+        self.pending_disconnect_request: bool = False
+        self.port_event = threading.Event()
+        self.disconnect_event = threading.Event()
+
         # Auto-reconnect configuration
         self.auto_reconnect = True
         self.auto_discovery = True
@@ -116,13 +127,16 @@ class USBDeviceManager:
     def stop(self):
         """Stops the USB reader thread and closes any open port."""
         self.running = False
-        with self.lock:
-            self._close_serial()
+        self.port_event.set()
+        self.disconnect_event.set()
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=1.5)
+        with self.lock:
+            self._close_serial(reason="Stopped")
+            self.connection_state = "OFFLINE"
         logger.info("USB Device Manager stopped.")
 
-    def _close_serial(self):
+    def _close_serial(self, reason: str = "Disconnected"):
         if self.serial_port:
             try:
                 self.serial_port.close()
@@ -130,7 +144,9 @@ class USBDeviceManager:
                 pass
             self.serial_port = None
         if self.is_authenticated or self.device_id:
-            self._mark_disconnected()
+            self._mark_disconnected(reason=reason)
+        elif self.connection_state != "ERROR":
+            self.connection_state = "OFFLINE"
 
     def _mark_disconnected(self, reason: str = "Disconnected"):
         old_id = self.device_id
@@ -139,6 +155,8 @@ class USBDeviceManager:
         self.audio_streaming = False
         self.audio_accumulator.clear()
         self.seen_chunk_seqs.clear()
+        if self.connection_state != "ERROR":
+            self.connection_state = "OFFLINE"
         dev_info = {
             "id": old_id or "PIN-USB",
             "online": False,
@@ -159,15 +177,61 @@ class USBDeviceManager:
                 logger.error(f"Error invoking on_device_update: {e}")
         logger.info(f"USB Device '{old_id}' marked OFFLINE ({reason}).")
 
-    def connect(self, port: str) -> bool:
-        """Manually requests connection to a specific port."""
+    def connect(self, port: str, timeout: float = 3.0) -> tuple:
+        """
+        Manually requests connection to a specific port.
+        Safely restarts the worker thread if stopped, delegates port opening
+        to the worker thread, and waits up to timeout for the port to actually open.
+        Returns (success: bool, message: str).
+        """
+        port = port.strip()
         with self.lock:
-            self._close_serial()
-            self.current_port_name = port
-        return True
+            self.last_open_error = None
+            self.last_error = None
+            self.connection_state = "REQUESTED"
+            self.port_event.clear()
+            self.pending_disconnect_request = False
+            self.pending_port_request = port
+
+            # 1. If worker thread is not running or thread dead, start/restart it
+            if not self.running or self.thread is None or not self.thread.is_alive():
+                self.running = True
+                self.current_port_name = port
+                self.thread = threading.Thread(target=self._run_loop, daemon=True, name="USBSerialReader")
+                self.thread.start()
+                logger.info(f"Started USB worker thread for port {port}")
+
+        # 2. Wait for worker thread to attempt opening the port
+        self.port_event.wait(timeout=timeout)
+
+        with self.lock:
+            if self.serial_port and self.serial_port.is_open:
+                return True, f"Port {self.current_port_name} opened successfully"
+            else:
+                err = self.last_open_error or self.last_error or f"Failed to open port {port} within {timeout}s"
+                return False, err
+
+    def disconnect(self, timeout: float = 2.0) -> tuple:
+        """
+        Requests disconnection from the current serial port safely without
+        modifying the handle concurrently from the calling thread.
+        Returns (success: bool, message: str).
+        """
+        with self.lock:
+            if not self.running or self.thread is None or not self.thread.is_alive():
+                self._close_serial(reason="User disconnected")
+                self.connection_state = "OFFLINE"
+                return True, "Disconnected (worker was stopped)"
+
+            self.disconnect_event.clear()
+            self.pending_disconnect_request = True
+
+        self.disconnect_event.wait(timeout=timeout)
+        return True, "Disconnected"
 
     def _open_port(self, port_name: str) -> bool:
         try:
+            self.connection_state = "OPENING PORT"
             ser = serial.Serial(
                 port=port_name,
                 baudrate=DEFAULT_BAUD,
@@ -179,13 +243,22 @@ class USBDeviceManager:
             ser.rts = False
             self.serial_port = ser
             self.current_port_name = port_name
+            self.last_open_error = None
+            self.last_error = None
             self.last_heartbeat_ts = time.time()
+            self.handshake_start_ts = time.time()
+            self.connection_state = "PORT OPEN"
             logger.info(f"Opened USB serial port {port_name} at {DEFAULT_BAUD} baud.")
-            # Request identification handshake
+            # Transition to HANDSHAKE WAITING and send request
+            self.connection_state = "HANDSHAKE WAITING"
             self._send_text("SL:HANDSHAKE:REQ\n")
             return True
         except Exception as e:
-            logger.debug(f"Failed to open port {port_name}: {e}")
+            err_msg = f"{type(e).__name__}: {e}"
+            logger.error(f"Failed to open USB serial port {port_name}: {err_msg}")
+            self.last_open_error = err_msg
+            self.last_error = err_msg
+            self.connection_state = "ERROR"
             self.serial_port = None
             return False
 
@@ -202,37 +275,80 @@ class USBDeviceManager:
         buffer = bytearray()
 
         while self.running:
-            # 1. Manage port connection if not open
+            # 1. Handle pending disconnect request from caller safely in worker thread
+            if self.pending_disconnect_request:
+                self._close_serial(reason="User requested disconnect")
+                self.connection_state = "OFFLINE"
+                self.current_port_name = None
+                self.pending_disconnect_request = False
+                self.disconnect_event.set()
+                self.port_event.set()
+                time.sleep(0.1)
+                continue
+
+            # 2. Handle pending port switch / connect request
+            if self.pending_port_request is not None:
+                target = self.pending_port_request
+                self.pending_port_request = None
+                if self.serial_port and self.serial_port.is_open:
+                    self._close_serial(reason="Switching port")
+                self.current_port_name = target
+                self._open_port(target)
+                self.port_event.set()
+                if not self.serial_port:
+                    time.sleep(0.5)
+                    continue
+
+            # 3. If port is not open, attempt auto-discovery or target port
             if not self.serial_port or not self.serial_port.is_open:
                 target_port = self.current_port_name or (self.find_pin_port() if self.auto_discovery else None)
                 if target_port:
-                    if not self._open_port(target_port):
+                    self._open_port(target_port)
+                    self.port_event.set()
+                    if not self.serial_port:
                         time.sleep(1.0)
                         continue
                 else:
-                    time.sleep(1.0)
+                    self.port_event.set()
+                    time.sleep(0.5)
                     continue
 
-            # 2. Check heartbeat watchdog if authenticated
+            # 4. Check handshake timeout (5.0s limit waiting for identification)
+            if self.connection_state == "HANDSHAKE WAITING" and not self.is_authenticated:
+                if (time.time() - self.handshake_start_ts) > 5.0:
+                    timeout_msg = f"Handshake timeout: Pin on {self.current_port_name} did not respond within 5.0s"
+                    logger.error(timeout_msg)
+                    self.last_error = timeout_msg
+                    self.connection_state = "ERROR"
+                    self._close_serial(reason=timeout_msg)
+                    continue
+
+            # 5. Check heartbeat watchdog if authenticated
             if self.is_authenticated:
                 if (time.time() - self.last_heartbeat_ts) > HEARTBEAT_TIMEOUT_SEC:
-                    logger.warning(f"Heartbeat timed out for {self.device_id} (> {HEARTBEAT_TIMEOUT_SEC}s). Marking OFFLINE.")
-                    self._close_serial()
+                    hb_msg = f"Heartbeat timed out for {self.device_id} (> {HEARTBEAT_TIMEOUT_SEC}s)"
+                    logger.warning(f"{hb_msg}. Marking OFFLINE.")
+                    self.last_error = hb_msg
+                    self.connection_state = "ERROR"
+                    self._close_serial(reason=hb_msg)
                     continue
 
-            # 3. Read incoming bytes
+            # 6. Read incoming bytes
             try:
                 waiting = self.serial_port.in_waiting
                 chunk = self.serial_port.read(waiting if waiting > 0 else 64)
                 if chunk:
                     buffer.extend(chunk)
             except (serial.SerialException, OSError) as e:
-                logger.warning(f"Serial port {self.current_port_name} disconnected: {e}")
-                self._close_serial()
+                err_str = f"Serial port {self.current_port_name} error: {type(e).__name__}: {e}"
+                logger.error(err_str)
+                self.last_error = err_str
+                self.connection_state = "ERROR"
+                self._close_serial(reason=err_str)
                 time.sleep(1.0)
                 continue
 
-            # 4. Parse framed protocol messages from buffer
+            # 7. Parse framed protocol messages from buffer
             while len(buffer) > 0:
                 # Find start prefix "SL:"
                 idx = buffer.find(SL_PREFIX)
@@ -284,6 +400,10 @@ class USBDeviceManager:
 
             time.sleep(0.005)
 
+        # Worker thread exiting: safely close serial port
+        self._close_serial(reason="Worker thread stopped")
+        self.connection_state = "OFFLINE"
+
     def _handle_command(self, cmd_str: str):
         """Processes line-delimited command messages from ESP32."""
         parts = cmd_str.split(":")
@@ -334,6 +454,8 @@ class USBDeviceManager:
 
             if is_valid:
                 self.is_authenticated = True
+                self.connection_state = "AUTHENTICATED"
+                self.last_error = None
                 self.auth_error_reason = None
                 self.last_heartbeat_ts = time.time()
                 self._send_text("SL:AUTH:OK\n")
@@ -341,7 +463,9 @@ class USBDeviceManager:
                 self._emit_device_update(state="VAD ARMED")
             else:
                 self.is_authenticated = False
+                self.connection_state = "ERROR"
                 self.auth_error_reason = err_reason or "UNAUTHORIZED"
+                self.last_error = f"Authentication rejected: {self.auth_error_reason}"
                 self._send_text(f"SL:AUTH:ERR:{self.auth_error_reason}\n")
                 logger.warning(f"Pin '{dev_id}' unauthorized ({self.auth_error_reason}). Authentication rejected.")
 
@@ -353,6 +477,7 @@ class USBDeviceManager:
                 return
 
             self.last_heartbeat_ts = time.time()
+            self.connection_state = "ONLINE"
             if len(parts) >= 3:
                 try:
                     self.battery = int(parts[2])
@@ -455,6 +580,7 @@ class USBDeviceManager:
         """Returns live diagnostic summary of USB subsystem including 9-stage pipeline state."""
         now = time.time()
         port_open = bool(self.serial_port and self.serial_port.is_open)
+        worker_running = bool(self.running and self.thread and self.thread.is_alive())
         heartbeat_fresh = (now - self.last_heartbeat_ts <= HEARTBEAT_TIMEOUT_SEC) if self.last_heartbeat_ts > 0 else False
         is_online = port_open and self.is_authenticated and heartbeat_fresh
         sec_since_heartbeat = round(now - self.last_heartbeat_ts, 1) if self.last_heartbeat_ts > 0 else -1.0
@@ -462,8 +588,15 @@ class USBDeviceManager:
         available_ports = self.scan_ports()
         pin_candidate = any(p["is_esp32"] for p in available_ports) or (self.current_port_name is not None)
 
+        effective_error = self.last_open_error or self.last_error or self.auth_error_reason
+
         return {
-            "status": "connected" if is_online else "disconnected",
+            "status": "connected" if is_online else ("connecting" if (self.connection_state in ("REQUESTED", "OPENING PORT", "PORT OPEN", "HANDSHAKE WAITING")) else "disconnected"),
+            "connection_state": self.connection_state,
+            "serial_port_open": port_open,
+            "last_open_error": self.last_open_error,
+            "last_error": effective_error,
+            "worker_running": worker_running,
             "port": self.current_port_name,
             "device_id": self.device_id,
             "mac": self.mac_address,

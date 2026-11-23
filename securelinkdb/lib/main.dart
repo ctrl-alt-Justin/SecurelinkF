@@ -8413,6 +8413,7 @@ class _PinSetupDialogState extends State<_PinSetupDialog> with SingleTickerProvi
   Timer? _usbPollTimer;
   Map<String, dynamic>? _usbStatus;
   bool _isConnectingUsb = false;
+  String? _usbError;
 
   @override
   void initState() {
@@ -8458,27 +8459,82 @@ class _PinSetupDialogState extends State<_PinSetupDialog> with SingleTickerProvi
   }
 
   Future<void> _connectUsbPort(String port) async {
-    setState(() => _isConnectingUsb = true);
+    setState(() {
+      _isConnectingUsb = true;
+      _usbError = null;
+    });
     try {
-      final client = HttpClient()..connectionTimeout = const Duration(seconds: 3);
+      final client = HttpClient()..connectionTimeout = const Duration(seconds: 6);
       final req = await client.postUrl(Uri.parse('http://127.0.0.1:8080/api/usb/connect'));
       req.headers.contentType = ContentType.json;
       req.write(jsonEncode({'port': port}));
-      await req.close();
+      final resp = await req.close();
+      final body = await resp.transform(utf8.decoder).join();
+      final data = jsonDecode(body) as Map<String, dynamic>;
+      if (resp.statusCode == 200 && data['status'] == 'success') {
+        if (mounted) {
+          setState(() {
+            _usbError = null;
+          });
+        }
+      } else {
+        final errMsg = data['message'] as String? ?? 'Failed to open $port (HTTP ${resp.statusCode})';
+        if (mounted) {
+          setState(() {
+            _usbError = errMsg;
+          });
+        }
+      }
       await _pollUsbStatus();
-    } catch (_) {}
-    if (mounted) setState(() => _isConnectingUsb = false);
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _usbError = 'Connection exception: $e';
+        });
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isConnectingUsb = false);
+      }
+    }
   }
 
   Future<void> _disconnectUsbPort() async {
-    setState(() => _isConnectingUsb = true);
+    setState(() {
+      _isConnectingUsb = true;
+    });
     try {
-      final client = HttpClient()..connectionTimeout = const Duration(seconds: 3);
+      final client = HttpClient()..connectionTimeout = const Duration(seconds: 4);
       final req = await client.postUrl(Uri.parse('http://127.0.0.1:8080/api/usb/disconnect'));
-      await req.close();
+      final resp = await req.close();
+      final body = await resp.transform(utf8.decoder).join();
+      final data = jsonDecode(body) as Map<String, dynamic>;
+      if (data['status'] != 'success') {
+        final errMsg = data['message'] as String? ?? 'Disconnect failed';
+        if (mounted) {
+          setState(() {
+            _usbError = errMsg;
+          });
+        }
+      } else {
+        if (mounted) {
+          setState(() {
+            _usbError = null;
+          });
+        }
+      }
       await _pollUsbStatus();
-    } catch (_) {}
-    if (mounted) setState(() => _isConnectingUsb = false);
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _usbError = 'Disconnect exception: $e';
+        });
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isConnectingUsb = false);
+      }
+    }
   }
 
   Future<void> _generatePairingCode() async {
@@ -8901,6 +8957,7 @@ class _PinSetupDialogState extends State<_PinSetupDialog> with SingleTickerProvi
   Widget _buildUsbDirectTab() {
     final stages = (_usbStatus?['stages'] as Map<String, dynamic>?) ?? {};
     final isOnline = _usbStatus?['is_online'] == true;
+    final serialPortOpen = _usbStatus?['serial_port_open'] == true;
     final devId = _usbStatus?['device_id'] as String? ?? 'PIN-F360';
     final port = _usbStatus?['port'] as String? ?? (_selectedPort ?? 'COM4');
     final batt = _usbStatus?['battery'] as int? ?? -1;
@@ -8909,6 +8966,37 @@ class _PinSetupDialogState extends State<_PinSetupDialog> with SingleTickerProvi
     final audioBytes = _usbStatus?['accumulated_bytes'] as int? ?? 0;
     final lastHb = _usbStatus?['last_heartbeat_sec_ago'] as num? ?? -1.0;
     final authError = _usbStatus?['auth_error'] as String?;
+    final lastOpenError = _usbStatus?['last_open_error'] as String?;
+    final lastError = _usbStatus?['last_error'] as String?;
+    final connectionState = (_usbStatus?['connection_state'] as String?) ?? (isOnline ? 'ONLINE' : (serialPortOpen ? 'PORT OPEN' : 'OFFLINE'));
+    final displayError = _usbError ?? lastOpenError ?? lastError ?? authError;
+
+    Color stateColor;
+    switch (connectionState) {
+      case 'ONLINE':
+        stateColor = const Color(0xFF109C6D);
+        break;
+      case 'AUTHENTICATED':
+        stateColor = const Color(0xFF059669);
+        break;
+      case 'HANDSHAKE WAITING':
+        stateColor = const Color(0xFF06B6D4);
+        break;
+      case 'PORT OPEN':
+        stateColor = const Color(0xFF0284C7);
+        break;
+      case 'OPENING PORT':
+        stateColor = const Color(0xFFD97706);
+        break;
+      case 'REQUESTED':
+        stateColor = const Color(0xFFF59E0B);
+        break;
+      case 'ERROR':
+        stateColor = const Color(0xFFDC2626);
+        break;
+      default:
+        stateColor = const Color(0xFF475569);
+    }
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(20),
@@ -8919,67 +9007,109 @@ class _PinSetupDialogState extends State<_PinSetupDialog> with SingleTickerProvi
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
-              color: isOnline ? const Color(0xFF109C6D).withOpacity(0.12) : const Color(0xFFB45309).withOpacity(0.12),
+              color: isOnline
+                  ? const Color(0xFF109C6D).withOpacity(0.12)
+                  : (connectionState == 'ERROR' ? const Color(0xFFDC2626).withOpacity(0.12) : const Color(0xFFB45309).withOpacity(0.12)),
               borderRadius: BorderRadius.circular(14),
               border: Border.all(
-                color: isOnline ? const Color(0xFF55E2C0).withOpacity(0.4) : const Color(0xFFF59E0B).withOpacity(0.35),
+                color: isOnline
+                    ? const Color(0xFF55E2C0).withOpacity(0.4)
+                    : (connectionState == 'ERROR' ? const Color(0xFFEF4444).withOpacity(0.5) : const Color(0xFFF59E0B).withOpacity(0.35)),
                 width: 1.2,
               ),
             ),
-            child: Row(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Container(
-                  width: 44,
-                  height: 44,
-                  decoration: BoxDecoration(
-                    color: isOnline ? const Color(0xFF109C6D).withOpacity(0.2) : Colors.amber.withOpacity(0.1),
-                    shape: BoxShape.circle,
-                    border: Border.all(color: isOnline ? const Color(0xFF55E2C0) : Colors.amber),
-                  ),
-                  child: Icon(
-                    isOnline ? Icons.check_circle_rounded : Icons.sensors_off_rounded,
-                    color: isOnline ? const Color(0xFF55E2C0) : Colors.amber,
-                    size: 24,
-                  ),
-                ),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
+                Row(
+                  children: [
+                    Container(
+                      width: 44,
+                      height: 44,
+                      decoration: BoxDecoration(
+                        color: stateColor.withOpacity(0.2),
+                        shape: BoxShape.circle,
+                        border: Border.all(color: stateColor),
+                      ),
+                      child: Icon(
+                        isOnline
+                            ? Icons.check_circle_rounded
+                            : (connectionState == 'ERROR' ? Icons.error_outline_rounded : Icons.sensors_rounded),
+                        color: stateColor,
+                        size: 24,
+                      ),
+                    ),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(
-                            isOnline ? '$devId — ONLINE (USB)' : '$devId — CONNECTING / OFFLINE',
-                            style: TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w800,
-                              color: isOnline ? const Color(0xFF55E2C0) : const Color(0xFFFDE68A),
-                              letterSpacing: 0.5,
-                            ),
+                          Row(
+                            children: [
+                              Text(
+                                isOnline ? '$devId — ONLINE (USB)' : '$devId — $connectionState',
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w800,
+                                  color: isOnline ? const Color(0xFF55E2C0) : (connectionState == 'ERROR' ? const Color(0xFFFCA5A5) : const Color(0xFFFDE68A)),
+                                  letterSpacing: 0.5,
+                                ),
+                              ),
+                              const Spacer(),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                decoration: BoxDecoration(
+                                  color: stateColor,
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: Text(
+                                  connectionState,
+                                  style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: Colors.white),
+                                ),
+                              ),
+                            ],
                           ),
-                          const Spacer(),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                            decoration: BoxDecoration(
-                              color: isOnline ? const Color(0xFF109C6D) : Colors.grey.shade800,
-                              borderRadius: BorderRadius.circular(6),
-                            ),
-                            child: Text(
-                              vadState,
-                              style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: Colors.white),
-                            ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'Port: $port  •  Battery: ${batt >= 0 ? "$batt%" : "Charging / USB"} (${battMv > 0 ? "${battMv}mV" : "5V USB"})  •  Heartbeat: ${lastHb >= 0 ? "${lastHb}s ago" : "Waiting"}',
+                            style: TextStyle(fontSize: 10, color: Colors.white.withOpacity(0.7)),
                           ),
                         ],
                       ),
-                      const SizedBox(height: 4),
-                      Text(
-                        'Port: $port  •  Battery: ${batt >= 0 ? "$batt%" : "Charging / USB"} (${battMv > 0 ? "${battMv}mV" : "5V USB"})  •  Heartbeat: ${lastHb >= 0 ? "${lastHb}s ago" : "Waiting"}',
-                        style: TextStyle(fontSize: 10, color: Colors.white.withOpacity(0.7)),
-                      ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
+
+                // EXPLICIT CONNECTION FAILURE BANNER (Requirement 2 & 11)
+                if (displayError != null && !isOnline) ...[
+                  const SizedBox(height: 12),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFDC2626).withOpacity(0.18),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: const Color(0xFFEF4444).withOpacity(0.5)),
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Icon(Icons.warning_amber_rounded, color: Color(0xFFF87171), size: 16),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text('CONNECTION FAILURE DIAGNOSTIC', style: TextStyle(fontSize: 9.5, fontWeight: FontWeight.w800, color: Color(0xFFFCA5A5))),
+                              const SizedBox(height: 2),
+                              Text(displayError, style: const TextStyle(fontSize: 10, color: Colors.white, fontFamily: 'monospace')),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
@@ -9031,11 +9161,15 @@ class _PinSetupDialogState extends State<_PinSetupDialog> with SingleTickerProvi
               ElevatedButton.icon(
                 onPressed: _isConnectingUsb || _selectedPort == null
                     ? null
-                    : () => isOnline ? _disconnectUsbPort() : _connectUsbPort(_selectedPort!),
-                icon: Icon(isOnline ? Icons.link_off_rounded : Icons.link_rounded, size: 16),
-                label: Text(isOnline ? 'Disconnect' : 'Connect'),
+                    : () => (isOnline || serialPortOpen) ? _disconnectUsbPort() : _connectUsbPort(_selectedPort!),
+                icon: _isConnectingUsb
+                    ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                    : Icon((isOnline || serialPortOpen) ? Icons.link_off_rounded : Icons.link_rounded, size: 16),
+                label: Text(_isConnectingUsb
+                    ? ((isOnline || serialPortOpen) ? 'Disconnecting...' : 'Connecting...')
+                    : ((isOnline || serialPortOpen) ? 'Disconnect' : 'Connect')),
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: isOnline ? Colors.redAccent.shade700 : const Color(0xFF109C6D),
+                  backgroundColor: (isOnline || serialPortOpen) ? Colors.redAccent.shade700 : const Color(0xFF109C6D),
                   foregroundColor: Colors.white,
                   padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
