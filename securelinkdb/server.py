@@ -43,6 +43,24 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
+BACKEND_NAME = "SecureLink AI Inference Server"
+BACKEND_VERSION = "2.1-usbonly"
+PROJECT_DIR = BASE_DIR
+
+def _get_git_commit_sha() -> str:
+    try:
+        import subprocess
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=BASE_DIR,
+            stderr=subprocess.DEVNULL,
+            text=True
+        ).strip()
+    except Exception:
+        return "unknown"
+
+GIT_COMMIT_SHA = _get_git_commit_sha()
+
 # Ensure Windows locates cuBLAS and cuDNN DLLs from PyTorch package for CTranslate2 / Faster-Whisper
 if torch.cuda.is_available():
     torch_lib_dir = os.path.join(os.path.dirname(torch.__file__), "lib")
@@ -92,6 +110,22 @@ os.makedirs(SNAPSHOTS_RECORDINGS_DIR, exist_ok=True)
 
 # Mount recordings directory so dashboard and client devices can fetch/replay audio and snapshots
 app.mount("/recordings", StaticFiles(directory=RECORDINGS_DIR), name="recordings")
+
+@app.on_event("startup")
+async def startup_route_logging():
+    usb_routes = []
+    for r in app.routes:
+        if hasattr(r, "path") and r.path.startswith("/api/usb"):
+            methods = ",".join(sorted(r.methods)) if hasattr(r, "methods") else "ANY"
+            usb_routes.append(f"{methods} {r.path}")
+    print("\n=======================================================")
+    print(f" [SYS] {BACKEND_NAME} v{BACKEND_VERSION} (Commit: {GIT_COMMIT_SHA[:7]})")
+    print(f" [SYS] PID: {os.getpid()} | Executable: {sys.executable}")
+    print(f" [SYS] Project Directory: {PROJECT_DIR}")
+    print(" [SYS] Registered USB Routes:")
+    for ur in sorted(usb_routes):
+        print(f"   - {ur}")
+    print("=======================================================\n")
 
 # =========================================================================
 # 1. FASTER-WHISPER SPEECH-TO-TEXT SETUP
@@ -661,6 +695,30 @@ async def get_network_info():
         "serial_ports": ports,
         "active_pins": len(active_pins),
         "harmful_words_only": harmful_words_only,
+    }
+
+@app.get("/api/system/info")
+async def get_system_info():
+    """
+    Returns diagnostic and version metadata for backend identity verification.
+    Does not expose sensitive credentials, keys, or private files.
+    """
+    usb_routes = [
+        route.path
+        for route in app.routes
+        if hasattr(route, "path") and route.path.startswith("/api/usb")
+    ]
+    return {
+        "status": "success",
+        "application": BACKEND_NAME,
+        "backend_version": BACKEND_VERSION,
+        "git_commit": GIT_COMMIT_SHA,
+        "pid": os.getpid(),
+        "executable": sys.executable,
+        "project_dir": PROJECT_DIR,
+        "server_port": 8080,
+        "usb_endpoints_available": True,
+        "usb_routes": sorted(list(set(usb_routes))),
     }
 
 @app.get("/api/usb/status")

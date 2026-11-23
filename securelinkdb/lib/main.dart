@@ -43,24 +43,130 @@ class ServerManager {
   static Process? _process;
   static bool isStarting = false;
   static String statusMessage = 'Checking...';
+  static Map<String, dynamic>? backendInfo;
+  static bool hasUsbConnectRoute = false;
+  static String? backendMismatchError;
 
-  static Future<bool> isAlive() async {
+  /// Verifies backend identity and USB route support via GET /api/system/info
+  static Future<bool> isAlive() async => await verifyBackendIdentity();
+
+  static Future<bool> verifyBackendIdentity() async {
+    try {
+      final client = HttpClient()..connectionTimeout = const Duration(milliseconds: 1000);
+      final req = await client.getUrl(Uri.parse('http://127.0.0.1:8080/api/system/info'));
+      final res = await req.close();
+      if (res.statusCode == 200) {
+        final body = await res.transform(utf8.decoder).join();
+        final data = jsonDecode(body) as Map<String, dynamic>;
+        backendInfo = data;
+        final routes = (data['usb_routes'] as List?)?.map((e) => e.toString()).toList() ?? [];
+        final hasConnect = routes.contains('/api/usb/connect') && data['usb_endpoints_available'] == true;
+        hasUsbConnectRoute = hasConnect;
+        if (!hasConnect) {
+          backendMismatchError = 'BACKEND VERSION MISMATCH — USB CONNECT ENDPOINT NOT AVAILABLE';
+          return false;
+        }
+        backendMismatchError = null;
+        return true;
+      } else if (res.statusCode == 404) {
+        // Backend running without /api/system/info (stale legacy process)
+        backendInfo = null;
+        hasUsbConnectRoute = false;
+        backendMismatchError = 'BACKEND VERSION MISMATCH — USB CONNECT ENDPOINT NOT AVAILABLE (HTTP 404)';
+        return false;
+      } else {
+        backendInfo = null;
+        hasUsbConnectRoute = false;
+        backendMismatchError = 'UNEXPECTED BACKEND RESPONSE: HTTP ${res.statusCode}';
+        return false;
+      }
+    } catch (_) {
+      backendInfo = null;
+      hasUsbConnectRoute = false;
+      backendMismatchError = null;
+      return false;
+    }
+  }
+
+  /// Checks if port 8080 is reachable at all (via /health or socket)
+  static Future<bool> isPort8080Active() async {
     try {
       final client = HttpClient()..connectionTimeout = const Duration(milliseconds: 600);
       final req = await client.getUrl(Uri.parse('http://127.0.0.1:8080/health'));
       final res = await req.close();
       client.close();
-      return res.statusCode == 200;
+      return true;
     } catch (_) {
       return false;
     }
   }
 
+  /// Detects and safely terminates stale SecureLink backend processes on port 8080.
+  /// Never terminates unrelated Python processes or other applications.
+  static Future<bool> cleanupStaleSecurelinkProcess() async {
+    if (!Platform.isWindows) return false;
+    try {
+      // 1. Find PID listening on port 8080
+      final netstatRes = await Process.run('netstat', ['-ano', '-p', 'tcp']);
+      final lines = (netstatRes.stdout as String).split('\n');
+      int? targetPid;
+      for (final line in lines) {
+        if ((line.contains(':8080') || line.contains('127.0.0.1:8080') || line.contains('0.0.0.0:8080')) && line.contains('LISTENING')) {
+          final parts = line.trim().split(RegExp(r'\s+'));
+          if (parts.isNotEmpty) {
+            targetPid = int.tryParse(parts.last);
+            if (targetPid != null && targetPid > 0) break;
+          }
+        }
+      }
+
+      if (targetPid == null) {
+        debugPrint('[SERVER] No process found listening on port 8080.');
+        return false;
+      }
+
+      // 2. Inspect process details to confirm it is SecureLink-owned
+      final wmicRes = await Process.run('powershell', [
+        '-NoProfile',
+        '-Command',
+        "(Get-CimInstance Win32_Process -Filter 'ProcessId = $targetPid').CommandLine"
+      ]);
+      final cmdLine = (wmicRes.stdout as String).toLowerCase();
+      debugPrint('[SERVER] Process on 8080 (PID $targetPid) CommandLine: $cmdLine');
+
+      if (cmdLine.contains('server.py') || cmdLine.contains('securelink')) {
+        debugPrint('[SERVER] Terminating stale SecureLink backend process PID $targetPid...');
+        await Process.run('taskkill', ['/F', '/T', '/PID', '$targetPid']);
+        await Future.delayed(const Duration(milliseconds: 1500));
+        return true;
+      } else {
+        debugPrint('[SERVER] Port 8080 is occupied by an unrelated non-SecureLink process (PID $targetPid)!');
+        backendMismatchError = 'PORT 8080 OCCUPIED BY UNRELATED PROCESS (PID $targetPid)';
+        return false;
+      }
+    } catch (e) {
+      debugPrint('[SERVER] Error during stale process cleanup: $e');
+      return false;
+    }
+  }
+
   static Future<void> startServerIfNeeded({required VoidCallback onStatusChanged}) async {
-    if (await isAlive()) {
+    // 1. Check if backend is already online AND compatible
+    if (await verifyBackendIdentity()) {
       statusMessage = 'AI Server Online';
       onStatusChanged();
       return;
+    }
+
+    // 2. If port 8080 is active but incompatible or stale, attempt cleanup
+    if (await isPort8080Active()) {
+      debugPrint('[SERVER] Incompatible or stale backend detected on port 8080. Cleaning up...');
+      final killed = await cleanupStaleSecurelinkProcess();
+      if (!killed && backendMismatchError != null && backendMismatchError!.contains('UNRELATED PROCESS')) {
+        statusMessage = backendMismatchError!;
+        onStatusChanged();
+        return;
+      }
     }
 
     if (isStarting) return;
@@ -102,15 +208,15 @@ class ServerManager {
         isStarting = false;
       });
 
-      // Poll up to 75 seconds for the heavy AI models (Faster-Whisper large-v3-turbo + RoBERTa) to finish loading
+      // Poll up to 75 seconds for the heavy AI models to finish loading AND verify /api/system/info
       final stopwatch = Stopwatch()..start();
       while (stopwatch.elapsedMilliseconds < 75000) {
         await Future.delayed(const Duration(milliseconds: 1000));
         final elapsedSec = (stopwatch.elapsedMilliseconds / 1000).round();
         statusMessage = 'Loading AI Models (${elapsedSec}s)...';
         onStatusChanged();
-        if (await isAlive()) {
-          debugPrint('[SERVER] AI Server successfully initialized and online!');
+        if (await verifyBackendIdentity()) {
+          debugPrint('[SERVER] AI Server successfully initialized, verified, and online!');
           isStarting = false;
           statusMessage = 'AI Server Online';
           onStatusChanged();
@@ -122,7 +228,7 @@ class ServerManager {
     }
 
     isStarting = false;
-    statusMessage = 'Awaiting Server (8080)';
+    statusMessage = backendMismatchError ?? 'Awaiting Server (8080)';
     onStatusChanged();
   }
 
@@ -135,7 +241,13 @@ class ServerManager {
       }
     }
 
-    // 1. Check next to current executable (Production build: server.exe)
+    // 1. Explicit workspace target (canonical target on usbonly)
+    const canonicalDir = r'D:\Flutter Securelink Dashboard\securelinkdb';
+    if (File('$canonicalDir\\server.py').existsSync()) {
+      return (pythonExe, ['server.py'], canonicalDir);
+    }
+
+    // 2. Check next to current executable (Production build: server.exe or server.py)
     final exeDir = File(Platform.resolvedExecutable).parent.path;
     if (File('$exeDir/server.exe').existsSync()) {
       return ('$exeDir/server.exe', <String>[], exeDir);
@@ -144,7 +256,7 @@ class ServerManager {
       return (pythonExe, ['server.py'], exeDir);
     }
 
-    // 2. Walk up directory tree from executable location (up to 6 levels)
+    // 3. Walk up directory tree from executable location (up to 6 levels)
     var searchDir = Directory(exeDir);
     for (int i = 0; i < 6; i++) {
       if (File('${searchDir.path}/server.py').existsSync()) {
@@ -158,24 +270,13 @@ class ServerManager {
       searchDir = parent;
     }
 
-    // 3. Check current working directory & parents
+    // 4. Check current working directory & parents
     final currentDir = Directory.current.path;
     if (File('$currentDir/server.py').existsSync()) {
       return (pythonExe, ['server.py'], currentDir);
     }
     if (File('$currentDir/securelinkdb/server.py').existsSync()) {
       return (pythonExe, ['server.py'], '$currentDir/securelinkdb');
-    }
-
-    final parentDir = Directory.current.parent.path;
-    if (File('$parentDir/securelinkdb/server.py').existsSync()) {
-      return (pythonExe, ['server.py'], '$parentDir/securelinkdb');
-    }
-
-    // 4. Fallback workspace directory
-    const fallbackPath = r'd:\Flutter Securelink Dashboard\securelinkdb';
-    if (File('$fallbackPath\\server.py').existsSync()) {
-      return (pythonExe, ['server.py'], fallbackPath);
     }
 
     return null;
@@ -8440,6 +8541,7 @@ class _PinSetupDialogState extends State<_PinSetupDialog> with SingleTickerProvi
 
   Future<void> _pollUsbStatus() async {
     try {
+      await ServerManager.verifyBackendIdentity();
       final client = HttpClient()..connectionTimeout = const Duration(seconds: 2);
       final req = await client.getUrl(Uri.parse('http://127.0.0.1:8080/api/usb/status'));
       final resp = await req.close();
@@ -8463,6 +8565,18 @@ class _PinSetupDialogState extends State<_PinSetupDialog> with SingleTickerProvi
       _isConnectingUsb = true;
       _usbError = null;
     });
+
+    // Requirement 4: The dashboard must verify that /api/usb/connect exists before allowing the Connect action.
+    if (!ServerManager.hasUsbConnectRoute) {
+      if (mounted) {
+        setState(() {
+          _usbError = 'BACKEND VERSION MISMATCH — USB CONNECT ENDPOINT NOT AVAILABLE';
+          _isConnectingUsb = false;
+        });
+      }
+      return;
+    }
+
     try {
       final client = HttpClient()..connectionTimeout = const Duration(seconds: 6);
       final req = await client.postUrl(Uri.parse('http://127.0.0.1:8080/api/usb/connect'));
@@ -8470,7 +8584,40 @@ class _PinSetupDialogState extends State<_PinSetupDialog> with SingleTickerProvi
       req.write(jsonEncode({'port': port}));
       final resp = await req.close();
       final body = await resp.transform(utf8.decoder).join();
-      final data = jsonDecode(body) as Map<String, dynamic>;
+
+      if (resp.statusCode == 404) {
+        if (mounted) {
+          setState(() {
+            _usbError = 'HTTP 404 Not Found: /api/usb/connect route does not exist on running backend (PID: ${ServerManager.backendInfo?['pid'] ?? 'unknown'}). BACKEND VERSION MISMATCH.';
+          });
+        }
+        await _pollUsbStatus();
+        return;
+      }
+
+      if (resp.statusCode == 500) {
+        if (mounted) {
+          setState(() {
+            _usbError = 'HTTP 500 Internal Server Error: $body';
+          });
+        }
+        await _pollUsbStatus();
+        return;
+      }
+
+      Map<String, dynamic> data;
+      try {
+        data = jsonDecode(body) as Map<String, dynamic>;
+      } catch (e) {
+        if (mounted) {
+          setState(() {
+            _usbError = 'Malformed JSON response (HTTP ${resp.statusCode}): $body';
+          });
+        }
+        await _pollUsbStatus();
+        return;
+      }
+
       if (resp.statusCode == 200 && data['status'] == 'success') {
         if (mounted) {
           setState(() {
@@ -8478,7 +8625,7 @@ class _PinSetupDialogState extends State<_PinSetupDialog> with SingleTickerProvi
           });
         }
       } else {
-        final errMsg = data['message'] as String? ?? 'Failed to open $port (HTTP ${resp.statusCode})';
+        final errMsg = data['message'] as String? ?? 'Failed to open $port (HTTP ${resp.statusCode}: $body)';
         if (mounted) {
           setState(() {
             _usbError = errMsg;
@@ -8486,6 +8633,18 @@ class _PinSetupDialogState extends State<_PinSetupDialog> with SingleTickerProvi
         }
       }
       await _pollUsbStatus();
+    } on SocketException catch (e) {
+      if (mounted) {
+        setState(() {
+          _usbError = 'Connection refused: AI Server is not reachable on port 8080 ($e)';
+        });
+      }
+    } on TimeoutException catch (e) {
+      if (mounted) {
+        setState(() {
+          _usbError = 'Connection timed out waiting for backend response ($e)';
+        });
+      }
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -8502,15 +8661,49 @@ class _PinSetupDialogState extends State<_PinSetupDialog> with SingleTickerProvi
   Future<void> _disconnectUsbPort() async {
     setState(() {
       _isConnectingUsb = true;
+      _usbError = null;
     });
     try {
       final client = HttpClient()..connectionTimeout = const Duration(seconds: 4);
       final req = await client.postUrl(Uri.parse('http://127.0.0.1:8080/api/usb/disconnect'));
       final resp = await req.close();
       final body = await resp.transform(utf8.decoder).join();
-      final data = jsonDecode(body) as Map<String, dynamic>;
+
+      if (resp.statusCode == 404) {
+        if (mounted) {
+          setState(() {
+            _usbError = 'HTTP 404 Not Found: /api/usb/disconnect does not exist on running backend.';
+          });
+        }
+        await _pollUsbStatus();
+        return;
+      }
+
+      if (resp.statusCode == 500) {
+        if (mounted) {
+          setState(() {
+            _usbError = 'HTTP 500 Internal Server Error: $body';
+          });
+        }
+        await _pollUsbStatus();
+        return;
+      }
+
+      Map<String, dynamic> data;
+      try {
+        data = jsonDecode(body) as Map<String, dynamic>;
+      } catch (e) {
+        if (mounted) {
+          setState(() {
+            _usbError = 'Malformed JSON response (HTTP ${resp.statusCode}): $body';
+          });
+        }
+        await _pollUsbStatus();
+        return;
+      }
+
       if (data['status'] != 'success') {
-        final errMsg = data['message'] as String? ?? 'Disconnect failed';
+        final errMsg = data['message'] as String? ?? 'Disconnect failed (HTTP ${resp.statusCode}: $body)';
         if (mounted) {
           setState(() {
             _usbError = errMsg;
@@ -8524,6 +8717,18 @@ class _PinSetupDialogState extends State<_PinSetupDialog> with SingleTickerProvi
         }
       }
       await _pollUsbStatus();
+    } on SocketException catch (e) {
+      if (mounted) {
+        setState(() {
+          _usbError = 'Connection refused: AI Server is not reachable on port 8080 ($e)';
+        });
+      }
+    } on TimeoutException catch (e) {
+      if (mounted) {
+        setState(() {
+          _usbError = 'Connection timed out waiting for backend response ($e)';
+        });
+      }
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -9114,7 +9319,90 @@ class _PinSetupDialogState extends State<_PinSetupDialog> with SingleTickerProvi
             ),
           ),
 
-          const SizedBox(height: 16),
+          const SizedBox(height: 14),
+
+          // BACKEND VERSION MISMATCH BANNER (Requirement 4)
+          if (!ServerManager.hasUsbConnectRoute || ServerManager.backendMismatchError != null) ...[
+            Container(
+              width: double.infinity,
+              margin: const EdgeInsets.only(bottom: 14),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFDC2626).withOpacity(0.18),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: const Color(0xFFEF4444), width: 1.5),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.warning_amber_rounded, color: Color(0xFFF87171), size: 20),
+                      const SizedBox(width: 8),
+                      const Expanded(
+                        child: Text(
+                          'BACKEND VERSION MISMATCH — USB CONNECT ENDPOINT NOT AVAILABLE',
+                          style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: Color(0xFFFCA5A5), letterSpacing: 0.5),
+                        ),
+                      ),
+                      ElevatedButton.icon(
+                        onPressed: () async {
+                          setState(() => _isConnectingUsb = true);
+                          await ServerManager.cleanupStaleSecurelinkProcess();
+                          await ServerManager.startServerIfNeeded(onStatusChanged: () {
+                            if (mounted) setState(() {});
+                          });
+                          await _pollUsbStatus();
+                          if (mounted) setState(() => _isConnectingUsb = false);
+                        },
+                        icon: const Icon(Icons.restart_alt_rounded, size: 14),
+                        label: const Text('Restart Backend', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFFDC2626),
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    'The running server on port 8080 does not expose /api/usb/connect. '
+                    '${ServerManager.backendInfo != null ? "Active instance PID: ${ServerManager.backendInfo!['pid']} (${ServerManager.backendInfo!['backend_version'] ?? 'v1.0'}), path: ${ServerManager.backendInfo!['project_dir']}" : "Stale or legacy instance detected."}\n'
+                    'Click \'Restart Backend\' to stop the stale instance and launch the current usbonly backend.',
+                    style: const TextStyle(fontSize: 10, color: Colors.white70),
+                  ),
+                ],
+              ),
+            ),
+          ],
+
+          // BACKEND IDENTITY INFO TAG (Requirement 3 & 5)
+          if (ServerManager.backendInfo != null) ...[
+            Container(
+              margin: const EdgeInsets.only(bottom: 12),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: const Color(0xFF0F172A),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.white12),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.dns_rounded, size: 13, color: Color(0xFF55E2C0)),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      'BACKEND: ${ServerManager.backendInfo!['application']} v${ServerManager.backendInfo!['backend_version']}  •  PID: ${ServerManager.backendInfo!['pid']}  •  COMMIT: ${(ServerManager.backendInfo!['git_commit'] as String? ?? 'N/A').substring(0, min(7, (ServerManager.backendInfo!['git_commit'] as String? ?? 'N/A').length))}  •  PORT: 8080',
+                      style: const TextStyle(fontSize: 9.5, color: Colors.white70, fontFamily: 'monospace'),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
 
           // COM PORT CONTROLS
           Row(
@@ -9159,7 +9447,7 @@ class _PinSetupDialogState extends State<_PinSetupDialog> with SingleTickerProvi
               ),
               const SizedBox(width: 8),
               ElevatedButton.icon(
-                onPressed: _isConnectingUsb || _selectedPort == null
+                onPressed: _isConnectingUsb || _selectedPort == null || (!ServerManager.hasUsbConnectRoute && !isOnline && !serialPortOpen)
                     ? null
                     : () => (isOnline || serialPortOpen) ? _disconnectUsbPort() : _connectUsbPort(_selectedPort!),
                 icon: _isConnectingUsb
@@ -9167,9 +9455,13 @@ class _PinSetupDialogState extends State<_PinSetupDialog> with SingleTickerProvi
                     : Icon((isOnline || serialPortOpen) ? Icons.link_off_rounded : Icons.link_rounded, size: 16),
                 label: Text(_isConnectingUsb
                     ? ((isOnline || serialPortOpen) ? 'Disconnecting...' : 'Connecting...')
-                    : ((isOnline || serialPortOpen) ? 'Disconnect' : 'Connect')),
+                    : (!ServerManager.hasUsbConnectRoute && !isOnline && !serialPortOpen
+                        ? 'Connect (Version Mismatch)'
+                        : ((isOnline || serialPortOpen) ? 'Disconnect' : 'Connect'))),
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: (isOnline || serialPortOpen) ? Colors.redAccent.shade700 : const Color(0xFF109C6D),
+                  backgroundColor: (!ServerManager.hasUsbConnectRoute && !isOnline && !serialPortOpen)
+                      ? Colors.grey.shade700
+                      : ((isOnline || serialPortOpen) ? Colors.redAccent.shade700 : const Color(0xFF109C6D)),
                   foregroundColor: Colors.white,
                   padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
