@@ -1969,5 +1969,7 @@ void loop() {
     // and keep the ESP32 cool to the touch!
     if (!isStreaming && !isUploadingArchive) {
         delay(10);
+    } else {
+        delay(2);
     }
 }
