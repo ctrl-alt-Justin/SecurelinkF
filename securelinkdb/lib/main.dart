@@ -9208,11 +9208,15 @@ class _PinSetupDialogState extends State<_PinSetupDialog> with SingleTickerProvi
     final isVadArmed = _usbStatus?['vad_armed'] == true;
     final isSpeechDetected = _usbStatus?['speech_detected'] == true;
     final isAudioAnalyzing = _usbStatus?['audio_analyzing'] == true;
+    final heartbeatReceived = stages['5_heartbeat_received'] == true;
+    final audioFramesCaptured = _usbStatus?['audio_frames_captured'] as int? ?? 0;
     final audioFrames = _usbStatus?['audio_frames_received'] as int? ?? 0;
+    final displayFrames = audioFramesCaptured > 0 ? audioFramesCaptured : audioFrames;
     final audioChunks = _usbStatus?['audio_chunks_received'] as int? ?? 0;
-    final audioPeak = _usbStatus?['last_audio_peak'] as int? ?? 0;
-    final audioRms = (_usbStatus?['last_audio_rms'] as num?)?.toDouble() ?? 0.0;
-    final missingChunks = _usbStatus?['missing_chunks'] as int? ?? 0;
+    final audioPeak = (_usbStatus?['audio_peak'] as num?)?.toDouble() ?? 0.0;
+    final firmwarePeak = _usbStatus?['firmware_peak'] as int? ?? 0;
+    final audioRms = (_usbStatus?['audio_rms'] as num?)?.toDouble() ?? 0.0;
+    final missingChunks = _usbStatus?['sequence_gaps'] as int? ?? 0;
     final vadReason = _usbStatus?['vad_status_reason'] as String? ?? 'Microphone active on Core 1; ready for instant speech trigger';
     final audioBytes = _usbStatus?['accumulated_bytes'] as int? ?? 0;
     final lastHb = _usbStatus?['last_heartbeat_sec_ago'] as num? ?? -1.0;
@@ -9554,7 +9558,7 @@ class _PinSetupDialogState extends State<_PinSetupDialog> with SingleTickerProvi
           _buildStageTile('4', 'Cryptographic Authorization', authError != null ? 'Auth rejected: $authError' : 'Credentials verified against device_credentials.json record', stages['4_auth_accepted'] == true, isError: authError != null),
           _buildStageTile('5', 'Heartbeat Active', 'SL:PING received with battery telemetry; SL:PONG answered', stages['5_heartbeat_received'] == true),
           _buildStageTile('6', 'Smart Pin ONLINE', 'Central System recognized device as authoritatively active', stages['6_pin_online'] == true),
-          _buildStageTile('7', 'VAD Armed', stages['7_vad_armed'] == true ? vadReason : (isOnline ? (vadInitialized ? 'VAD initialized, awaiting frames' : 'Microphone or VAD initialization pending') : 'Device offline'), stages['7_vad_armed'] == true),
+          _buildStageTile('7', 'VAD Armed', stages['7_vad_armed'] == true ? vadReason : (isOnline ? vadReason : 'Device offline'), stages['7_vad_armed'] == true),
           _buildStageTile('8', 'Binary Audio Streaming', stages['8_audio_streaming'] == true ? 'Streaming active: $audioBytes bytes ($audioChunks chunks) received' : 'Idle: awaiting speech detection', stages['8_audio_streaming'] == true, isPulsing: stages['8_audio_streaming'] == true),
           _buildStageTile('9', 'Speech Denoising & Threat AI', stages['9_audio_processing'] == true ? 'Analyzing incident audio...' : (isOnline ? 'Pipeline ready (NSNet2 + Whisper + TagalogBERT)' : 'Awaiting device connection'), stages['9_audio_processing'] == true, isPulsing: stages['9_audio_processing'] == true),
 
@@ -9604,9 +9608,9 @@ class _PinSetupDialogState extends State<_PinSetupDialog> with SingleTickerProvi
                   runSpacing: 6,
                   children: [
                     _buildTelemetryBadge('1. Connected', isOnline, isOnline ? 'ONLINE' : 'NO'),
-                    _buildTelemetryBadge('2. Mic Init', micInitialized, micInitialized ? 'READY' : 'PENDING'),
-                    _buildTelemetryBadge('3. Frames Rx', audioFrames > 0, '$audioFrames'),
-                    _buildTelemetryBadge('4. VAD Init', vadInitialized, vadInitialized ? 'READY' : 'PENDING'),
+                    _buildTelemetryBadge('2. Mic Init', micInitialized, micInitialized ? 'READY' : (heartbeatReceived ? 'FAILED' : 'PENDING')),
+                    _buildTelemetryBadge('3. Frames Rx', displayFrames > 0, '$displayFrames'),
+                    _buildTelemetryBadge('4. VAD Init', vadInitialized, vadInitialized ? 'READY' : (heartbeatReceived ? 'FAILED' : 'PENDING')),
                     _buildTelemetryBadge('5. VAD Armed', isVadArmed, isVadArmed ? 'ARMED' : 'DISARMED'),
                     _buildTelemetryBadge('6. Speech', isSpeechDetected, isSpeechDetected ? 'DETECTED' : 'QUIET'),
                     _buildTelemetryBadge('7. AI Analysis', isAudioAnalyzing, isAudioAnalyzing ? 'RUNNING' : 'IDLE'),
@@ -9617,11 +9621,34 @@ class _PinSetupDialogState extends State<_PinSetupDialog> with SingleTickerProvi
                   children: [
                     Expanded(
                       child: Text(
-                        'Peak Level: $audioPeak | RMS: ${audioRms.toStringAsFixed(1)} | Chunks: $audioChunks | Drops: $missingChunks',
+                        'Peak: ${firmwarePeak > 0 ? firmwarePeak : audioPeak.toStringAsFixed(4)} | RMS: ${audioRms.toStringAsFixed(4)} | Chunks: $audioChunks | Drops: $missingChunks',
                         style: const TextStyle(fontSize: 9.5, color: Colors.white54, fontFamily: 'monospace'),
                       ),
                     ),
+                    if (isOnline && !isVadArmed)
+                      TextButton.icon(
+                        onPressed: () async {
+                          try {
+                            final client = HttpClient()..connectionTimeout = const Duration(seconds: 2);
+                            final req = await client.postUrl(Uri.parse('http://127.0.0.1:8080/api/usb/vad/recover'));
+                            await req.close();
+                            await _pollUsbStatus();
+                          } catch (_) {}
+                        },
+                        icon: const Icon(Icons.refresh_rounded, size: 12, color: Colors.amberAccent),
+                        label: const Text('Recover VAD', style: TextStyle(fontSize: 9.5, color: Colors.amberAccent, fontWeight: FontWeight.bold)),
+                        style: TextButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                          minimumSize: Size.zero,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                      ),
                   ],
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Reason: $vadReason',
+                  style: TextStyle(fontSize: 9.5, color: isVadArmed ? Colors.white54 : Colors.amberAccent.withOpacity(0.9)),
                 ),
               ],
             ),

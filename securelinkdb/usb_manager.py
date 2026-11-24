@@ -103,6 +103,7 @@ class USBDeviceManager:
         self.is_authenticated = False
         self.auth_error_reason: Optional[str] = None
         self.last_heartbeat_ts: float = 0.0
+        self.heartbeat_received_count: int = 0
         self.battery: int = -1
         self.battery_mv: int = -1
         self.vad_state: str = "OFFLINE"
@@ -283,6 +284,9 @@ class USBDeviceManager:
     def _mark_disconnected(self, reason: str = "Disconnected"):
         old_id = self.device_id
         self.is_authenticated = False
+        self.heartbeat_received_count = 0
+        self.mic_initialized = False
+        self.vad_initialized = False
         self.vad_state = "OFFLINE"
         self.vad_disarm_reason = reason
         self.audio_streaming = False
@@ -408,6 +412,7 @@ class USBDeviceManager:
             self.last_open_error = None
             self.last_error = None
             self.last_heartbeat_ts = time.time()
+            self.heartbeat_received_count = 0
             self.handshake_start_ts = time.time()
             self.connection_state = "PORT OPEN"
             logger.info(f"Opened USB serial port {port_name} at {DEFAULT_BAUD} baud.")
@@ -640,6 +645,7 @@ class USBDeviceManager:
                 return
 
             self.last_heartbeat_ts = time.time()
+            self.heartbeat_received_count += 1
             self.connection_state = "ONLINE"
             raw_b = -1
             raw_mv = -1
@@ -918,7 +924,7 @@ class USBDeviceManager:
                 "2_port_open": port_open,
                 "3_identity_received": bool(self.device_id),
                 "4_auth_accepted": self.is_authenticated,
-                "5_heartbeat_received": self.last_heartbeat_ts > 0,
+                "5_heartbeat_received": self.heartbeat_received_count > 0,
                 "6_pin_online": is_online,
                 "7_vad_armed": self.is_vad_armed,
                 "8_audio_streaming": self.audio_streaming,

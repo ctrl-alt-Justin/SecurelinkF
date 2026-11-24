@@ -1390,7 +1390,8 @@ void handleSerialCommands() {
             Serial.flush();
         } else if (line == "SL:AUTH:OK") {
             usbAuthenticated = true;
-            lastUsbHeartbeatMs = millis();
+            // Send first heartbeat immediately so Central System receives mic/VAD hardware state without 2s delay
+            lastUsbHeartbeatMs = millis() - 2000;
             Serial.println("[USB] Authenticated with SecureLink Central System!");
         } else if (line.startsWith("SL:AUTH:ERR") || line.startsWith("SL:AUTH:FAIL")) {
             usbAuthenticated = false;
