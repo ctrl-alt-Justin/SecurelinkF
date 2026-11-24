@@ -196,6 +196,8 @@ class USBDeviceManager:
         heartbeat_fresh = (now - self.last_heartbeat_ts <= HEARTBEAT_TIMEOUT_SEC) if self.last_heartbeat_ts > 0 else False
         if not heartbeat_fresh:
             return "Heartbeat timed out (> 6.0s)"
+        if self.heartbeat_received_count == 0 and not self.mic_initialized and not self.vad_initialized:
+            return "Awaiting initial hardware telemetry heartbeat (SL:PING)"
         if not self.mic_initialized:
             return "Microphone hardware initialization failed (I2S PDM error)"
         if not self.vad_initialized:

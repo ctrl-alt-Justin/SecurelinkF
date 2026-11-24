@@ -15,7 +15,7 @@ class TestAudioVADPipeline(unittest.TestCase):
         self.assertFalse(self.mgr.is_vad_armed)
         self.assertIn("closed", self.mgr.vad_status_reason.lower())
 
-        # 2. Mock serial open & authenticated, but mic not initialized
+        # 2. Mock serial open & authenticated, before first SL:PING
         mock_serial = MagicMock()
         mock_serial.is_open = True
         self.mgr.serial_port = mock_serial
@@ -24,6 +24,11 @@ class TestAudioVADPipeline(unittest.TestCase):
         self.mgr.vad_state = "VAD ARMED"
         self.mgr.mic_initialized = False
 
+        self.assertFalse(self.mgr.is_vad_armed)
+        self.assertIn("awaiting initial hardware telemetry", self.mgr.vad_status_reason.lower())
+
+        # 2b. Heartbeat received, but mic failed initialization
+        self.mgr.heartbeat_received_count = 1
         self.assertFalse(self.mgr.is_vad_armed)
         self.assertIn("microphone", self.mgr.vad_status_reason.lower())
 
