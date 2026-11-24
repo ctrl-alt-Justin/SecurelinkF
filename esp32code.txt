@@ -1328,6 +1328,7 @@ void enforceFreeSpace() {
         if (oldestFile != "") {
             LittleFS.remove(oldestFile);
             Serial.println("[FS] Low space. Removed oldest file: " + oldestFile);
+            delay(2);
         } else {
             break;
         }
@@ -1753,7 +1754,7 @@ void loop() {
                 WiFi.setSleep(false);
                 streamStartMs = millis();
                 Serial.println("[VAD] Voice triggered! Streaming via Wi-Fi WebSocket.");
-            } else if (!wifiConnectInProgress && fsReady) {
+            } else if (!usbConnected && !wifiConnectInProgress && fsReady) {
                 enforceFreeSpace();
                 isOfflineRecording = true;
                 isStreaming = true;
