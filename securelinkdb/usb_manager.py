@@ -27,6 +27,8 @@ if not logger.handlers:
 SL_PREFIX = b"SL:"
 SL_MAGIC = "SL:"
 HEARTBEAT_TIMEOUT_SEC = 6.0
+HANDSHAKE_TIMEOUT_SEC = 5.0
+HANDSHAKE_RETRY_SEC = 1.0
 DEFAULT_BAUD = 115200
 
 # ESP32-S3 USB CDC identifiers
@@ -92,6 +94,11 @@ class USBDeviceManager:
 
         self.serial_port: Optional[serial.Serial] = None
         self.current_port_name: Optional[str] = None
+        self._receive_buffer = bytearray()
+        self._attempted_ports: set[str] = set()
+        self._expected_pin: Optional[tuple[str, str]] = None
+        self._manual_port = False
+        self._paused = False
         self.running = False
         self.thread: Optional[threading.Thread] = None
         self.lock = threading.Lock()
@@ -140,6 +147,8 @@ class USBDeviceManager:
         self.last_open_error: Optional[str] = None
         self.last_error: Optional[str] = None
         self.handshake_start_ts: float = 0.0
+        self._last_handshake_request_ts: float = 0.0
+        self.last_disconnect_reason: Optional[str] = None
         self.pending_port_request: Optional[str] = None
         self.pending_disconnect_request: bool = False
         self.port_event = threading.Event()
@@ -148,6 +157,11 @@ class USBDeviceManager:
         # Auto-reconnect configuration
         self.auto_reconnect = True
         self.auto_discovery = True
+
+    @property
+    def serial_port_open(self) -> bool:
+        port = self.serial_port
+        return port is not None and port.is_open
 
     @property
     def battery_valid(self) -> bool:
@@ -168,7 +182,7 @@ class USBDeviceManager:
         not explicitly disarmed, and VAD engine is actively monitoring or detecting speech."""
         now = time.time()
         heartbeat_fresh = (now - self.last_heartbeat_ts <= HEARTBEAT_TIMEOUT_SEC) if self.last_heartbeat_ts > 0 else False
-        port_open = bool(self.serial_port and self.serial_port.is_open)
+        port_open = self.serial_port_open
         is_online = port_open and self.is_authenticated and heartbeat_fresh
         if not is_online:
             return False
@@ -188,7 +202,7 @@ class USBDeviceManager:
     def vad_status_reason(self) -> str:
         """Provides an authoritative explanatory diagnostic reason for the VAD and audio pipeline."""
         now = time.time()
-        port_open = bool(self.serial_port and self.serial_port.is_open)
+        port_open = self.serial_port_open
         if not port_open:
             return "Serial port closed"
         if not self.is_authenticated:
@@ -236,15 +250,13 @@ class USBDeviceManager:
         return results
 
     def find_pin_port(self) -> Optional[str]:
-        """Automatically discovers the port of a connected XIAO ESP32-S3."""
+        """Finds an ESP32 candidate that has not been tried in this scan cycle."""
         ports = self.scan_ports()
-        # 1. Prefer matching VID:PID 303A:1001
         for p in ports:
-            if p["is_esp32"]:
+            if p["is_esp32"] and p["port"] not in self._attempted_ports:
                 return p["port"]
-        # 2. If exactly one USB Serial port exists, candidate it
         usb_serial_ports = [p["port"] for p in ports if "USB SERIAL" in p["description"].upper()]
-        if len(usb_serial_ports) == 1:
+        if len(usb_serial_ports) == 1 and usb_serial_ports[0] not in self._attempted_ports:
             return usb_serial_ports[0]
         return None
 
@@ -255,6 +267,10 @@ class USBDeviceManager:
                 return
             self.running = True
             self.current_port_name = port
+            self._attempted_ports.clear()
+            self._expected_pin = None
+            self._manual_port = port is not None
+            self._paused = False
             self.thread = threading.Thread(target=self._run_loop, daemon=True, name="USBSerialReader")
             self.thread.start()
             logger.info("USB Device Manager worker thread started.")
@@ -278,13 +294,15 @@ class USBDeviceManager:
             except Exception:
                 pass
             self.serial_port = None
-        if self.is_authenticated or self.device_id:
+        self._receive_buffer.clear()
+        if self.is_authenticated:
             self._mark_disconnected(reason=reason)
         elif self.connection_state != "ERROR":
             self.connection_state = "OFFLINE"
 
     def _mark_disconnected(self, reason: str = "Disconnected"):
         old_id = self.device_id
+        self.last_disconnect_reason = reason
         self.is_authenticated = False
         self.heartbeat_received_count = 0
         self.mic_initialized = False
@@ -327,7 +345,6 @@ class USBDeviceManager:
         with self.lock:
             self.last_open_error = None
             self.last_error = None
-            self.connection_state = "REQUESTED"
             self.port_event.clear()
             self.pending_disconnect_request = False
             self.pending_port_request = port
@@ -344,7 +361,7 @@ class USBDeviceManager:
         self.port_event.wait(timeout=timeout)
 
         with self.lock:
-            if self.serial_port and self.serial_port.is_open:
+            if self.current_port_name == port and self.serial_port_open:
                 return True, f"Port {self.current_port_name} opened successfully"
             else:
                 err = self.last_open_error or self.last_error or f"Failed to open port {port} within {timeout}s"
@@ -363,9 +380,11 @@ class USBDeviceManager:
                 return True, "Disconnected (worker was stopped)"
 
             self.disconnect_event.clear()
+            self.pending_port_request = None
             self.pending_disconnect_request = True
 
-        self.disconnect_event.wait(timeout=timeout)
+        if not self.disconnect_event.wait(timeout=timeout):
+            return False, "Timed out waiting for the USB worker to disconnect"
         return True, "Disconnected"
 
     def disarm_vad(self, reason: str = "User requested disarm") -> bool:
@@ -398,6 +417,11 @@ class USBDeviceManager:
         return True
 
     def _open_port(self, port_name: str) -> bool:
+        self.current_port_name = port_name
+        self._attempted_ports.add(port_name)
+        self.device_id = self.mac_address = self.fw_version = None
+        self.auth_error_reason = None
+        ser = None
         try:
             self.connection_state = "OPENING PORT"
             ser = serial.Serial(
@@ -410,19 +434,22 @@ class USBDeviceManager:
             ser.dtr = True
             ser.rts = False
             self.serial_port = ser
-            self.current_port_name = port_name
             self.last_open_error = None
             self.last_error = None
-            self.last_heartbeat_ts = time.time()
             self.heartbeat_received_count = 0
-            self.handshake_start_ts = time.time()
+            self.handshake_start_ts = time.monotonic()
             self.connection_state = "PORT OPEN"
             logger.info(f"Opened USB serial port {port_name} at {DEFAULT_BAUD} baud.")
             # Transition to HANDSHAKE WAITING and send request
             self.connection_state = "HANDSHAKE WAITING"
-            self._send_text("SL:HANDSHAKE:REQ\n")
+            self._request_handshake()
             return True
         except Exception as e:
+            if ser is not None:
+                try:
+                    ser.close()
+                except (serial.SerialException, OSError):
+                    pass
             err_msg = f"{type(e).__name__}: {e}"
             logger.error(f"Failed to open USB serial port {port_name}: {err_msg}")
             self.last_open_error = err_msg
@@ -432,36 +459,46 @@ class USBDeviceManager:
             return False
 
     def _send_text(self, text: str):
-        if self.serial_port and self.serial_port.is_open:
+        port = self.serial_port
+        if port is not None and port.is_open:
             try:
-                self.serial_port.write(text.encode("utf-8"))
-                self.serial_port.flush()
+                port.write(text.encode("utf-8"))
             except Exception as e:
                 logger.error(f"Error sending text over USB: {e}")
 
+    def _request_handshake(self):
+        self._last_handshake_request_ts = time.monotonic()
+        self._send_text("SL:HANDSHAKE:REQ\n")
+
     def _run_loop(self):
         """Background thread loop handling serial reads, framing, and watchdog."""
-        buffer = bytearray()
+        buffer = self._receive_buffer
 
         while self.running:
+            with self.lock:
+                disconnect_requested = self.pending_disconnect_request
+                self.pending_disconnect_request = False
+                target = self.pending_port_request
+                self.pending_port_request = None
+
             # 1. Handle pending disconnect request from caller safely in worker thread
-            if self.pending_disconnect_request:
+            if disconnect_requested:
                 self._close_serial(reason="User requested disconnect")
                 self.connection_state = "OFFLINE"
                 self.current_port_name = None
-                self.pending_disconnect_request = False
+                self._paused = True
                 self.disconnect_event.set()
                 self.port_event.set()
                 time.sleep(0.1)
                 continue
 
             # 2. Handle pending port switch / connect request
-            if self.pending_port_request is not None:
-                target = self.pending_port_request
-                self.pending_port_request = None
-                if self.serial_port and self.serial_port.is_open:
-                    self._close_serial(reason="Switching port")
-                self.current_port_name = target
+            if target is not None:
+                self._close_serial(reason="Switching port")
+                self._attempted_ports.clear()
+                self._expected_pin = None
+                self._paused = False
+                self._manual_port = True
                 self._open_port(target)
                 self.port_event.set()
                 if not self.serial_port:
@@ -469,8 +506,17 @@ class USBDeviceManager:
                     continue
 
             # 3. If port is not open, attempt auto-discovery or target port
-            if not self.serial_port or not self.serial_port.is_open:
-                target_port = self.current_port_name or (self.find_pin_port() if self.auto_discovery else None)
+            if not self.serial_port_open:
+                if self.serial_port is not None:
+                    self._close_serial(reason="Serial port closed")
+                if self._paused or not self.auto_reconnect:
+                    time.sleep(0.1)
+                    continue
+                target_port = self.current_port_name
+                if target_port in self._attempted_ports:
+                    target_port = None
+                if not target_port and self.auto_discovery and (not self._manual_port or self._expected_pin):
+                    target_port = self.find_pin_port()
                 if target_port:
                     self._open_port(target_port)
                     self.port_event.set()
@@ -478,19 +524,23 @@ class USBDeviceManager:
                         time.sleep(1.0)
                         continue
                 else:
+                    self._attempted_ports.clear()
                     self.port_event.set()
                     time.sleep(0.5)
                     continue
 
             # 4. Check handshake timeout (5.0s limit waiting for identification)
             if self.connection_state == "HANDSHAKE WAITING" and not self.is_authenticated:
-                if (time.time() - self.handshake_start_ts) > 5.0:
-                    timeout_msg = f"Handshake timeout: Pin on {self.current_port_name} did not respond within 5.0s"
+                now = time.monotonic()
+                if now - self.handshake_start_ts > HANDSHAKE_TIMEOUT_SEC:
+                    timeout_msg = f"Handshake timeout: Pin on {self.current_port_name} did not respond within {HANDSHAKE_TIMEOUT_SEC}s"
                     logger.error(timeout_msg)
                     self.last_error = timeout_msg
                     self.connection_state = "ERROR"
                     self._close_serial(reason=timeout_msg)
                     continue
+                if now - self._last_handshake_request_ts >= HANDSHAKE_RETRY_SEC:
+                    self._request_handshake()
 
             # 5. Check heartbeat watchdog if authenticated
             if self.is_authenticated:
@@ -503,9 +553,12 @@ class USBDeviceManager:
                     continue
 
             # 6. Read incoming bytes
+            port = self.serial_port
+            if port is None:
+                continue
             try:
-                waiting = self.serial_port.in_waiting
-                chunk = self.serial_port.read(waiting if waiting > 0 else 64)
+                waiting = port.in_waiting
+                chunk = port.read(waiting if waiting > 0 else 64)
                 if chunk:
                     buffer.extend(chunk)
             except (serial.SerialException, OSError) as e:
@@ -523,7 +576,7 @@ class USBDeviceManager:
                 idx = buffer.find(SL_PREFIX)
                 if idx < 0:
                     # Keep at most last 2 bytes in case "SL:" was partially read
-                    buffer = buffer[-2:] if len(buffer) >= 2 else buffer
+                    del buffer[:-2]
                     break
                 if idx > 0:
                     # Discard garbage before "SL:"
@@ -550,7 +603,7 @@ class USBDeviceManager:
                         except ValueError:
                             payload_len = -1
 
-                        if payload_len > 0:
+                        if 0 < payload_len <= self.buffer_size_bytes and payload_len % 2 == 0:
                             total_needed = newline_idx + 1 + payload_len
                             if len(buffer) < total_needed:
                                 # Incomplete binary chunk; wait for remaining bytes
@@ -559,13 +612,18 @@ class USBDeviceManager:
                             # Extract binary PCM data
                             raw_audio = bytes(buffer[newline_idx + 1 : total_needed])
                             del buffer[:total_needed]
-                            self._handle_audio_chunk(seq_num, raw_audio)
-                            self._send_text(f"SL:AUDIO:ACK:{seq_num}\n")
+                            if self.is_authenticated and self.audio_streaming:
+                                self._handle_audio_chunk(seq_num, raw_audio)
+                                self._send_text(f"SL:AUDIO:ACK:{seq_num}\n")
                             continue
 
                 # Normal line-delimited message: consume header line
                 del buffer[: newline_idx + 1]
                 self._handle_command(header_str)
+                if self.auth_error_reason and not self.is_authenticated:
+                    self._close_serial(reason=self.last_error or "Authentication rejected")
+                    time.sleep(0.5)
+                    break
 
             time.sleep(0.005)
 
@@ -596,9 +654,7 @@ class USBDeviceManager:
                 fw = "2.1"
 
             logger.info(f"Received identification from pin '{dev_id}' (MAC: {mac}, FW: {fw}).")
-            self.device_id = dev_id
-            self.mac_address = mac
-            self.fw_version = fw
+            identity = (dev_id, mac.replace(":", "").replace("-", "").upper())
 
             # Verify authorization against credentials
             is_valid = True
@@ -620,8 +676,15 @@ class USBDeviceManager:
                     logger.error(f"Credential check failed: {e}")
                     is_valid = False
                     err_reason = "AUTH_EXCEPTION"
+            if is_valid and self._expected_pin and identity != self._expected_pin:
+                is_valid, err_reason = False, "UNEXPECTED_PIN"
 
             if is_valid:
+                self.device_id = dev_id
+                self.mac_address = mac
+                self.fw_version = fw
+                self._expected_pin = identity
+                self._attempted_ports.clear()
                 self.is_authenticated = True
                 self.connection_state = "AUTHENTICATED"
                 self.last_error = None
@@ -631,7 +694,8 @@ class USBDeviceManager:
                 logger.info(f"Pin '{dev_id}' successfully authenticated over USB.")
                 self._emit_device_update(state="VAD ARMED")
             else:
-                self.is_authenticated = False
+                if self.is_authenticated:
+                    self._mark_disconnected(reason="Authentication rejected")
                 self.connection_state = "ERROR"
                 self.auth_error_reason = err_reason or "UNAUTHORIZED"
                 self.last_error = f"Authentication rejected: {self.auth_error_reason}"
@@ -642,8 +706,8 @@ class USBDeviceManager:
         elif cmd == "PING":
             logger.info(f"[PING-RAW] Received: '{cmd_str}'")
             if not self.is_authenticated:
-                # Prompt pin to re-authenticate
-                self._send_text("SL:HANDSHAKE:REQ\n")
+                if time.monotonic() - self._last_handshake_request_ts >= HANDSHAKE_RETRY_SEC:
+                    self._request_handshake()
                 return
 
             self.last_heartbeat_ts = time.time()
@@ -720,9 +784,15 @@ class USBDeviceManager:
             if not self.audio_streaming:
                 self._emit_device_update(state=self.vad_state or "VAD ARMED")
 
+        elif not self.is_authenticated:
+            return
+
         # 3. Audio Stream Start: SL:STREAM_START:<seq>
         elif cmd in ("STREAM_START", "AUDIO_START"):
-            seq = int(parts[2]) if len(parts) >= 3 else 0
+            try:
+                seq = int(parts[2]) if len(parts) >= 3 else 0
+            except ValueError:
+                return
             self.current_stream_seq = seq
             self.audio_streaming = True
             self.audio_analyzing = False
@@ -735,7 +805,12 @@ class USBDeviceManager:
 
         # 4. Audio Stream End: SL:STREAM_END:<seq>:<total_bytes>
         elif cmd in ("STREAM_END", "AUDIO_END"):
-            seq = int(parts[2]) if len(parts) >= 3 else 0
+            try:
+                seq = int(parts[2]) if len(parts) >= 3 else 0
+            except ValueError:
+                return
+            if not self.audio_streaming or seq != self.current_stream_seq:
+                return
             logger.info(f"[USB-AUDIO] Audio stream #{seq} finished over USB. Accumulated {len(self.audio_accumulator)} bytes ({self.audio_chunks_received} chunks).")
             self.audio_streaming = False
             self.seen_chunk_seqs.clear()
@@ -864,7 +939,7 @@ class USBDeviceManager:
     def get_status(self) -> Dict[str, Any]:
         """Returns live diagnostic summary of USB subsystem including 9-stage pipeline state."""
         now = time.time()
-        port_open = bool(self.serial_port and self.serial_port.is_open)
+        port_open = self.serial_port_open
         worker_running = bool(self.running and self.thread and self.thread.is_alive())
         heartbeat_fresh = (now - self.last_heartbeat_ts <= HEARTBEAT_TIMEOUT_SEC) if self.last_heartbeat_ts > 0 else False
         is_online = port_open and self.is_authenticated and heartbeat_fresh
@@ -881,6 +956,7 @@ class USBDeviceManager:
             "serial_port_open": port_open,
             "last_open_error": self.last_open_error,
             "last_error": effective_error,
+            "last_disconnect_reason": self.last_disconnect_reason,
             "worker_running": worker_running,
             "port": self.current_port_name,
             "device_id": self.device_id,

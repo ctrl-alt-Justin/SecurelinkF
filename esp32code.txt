@@ -23,6 +23,8 @@ static volatile uint32_t lastAudioAckSeq = 0;
 static uint32_t totalStreamBytes = 0;
 static unsigned long lastUsbHeartbeatMs = 0;
 static unsigned long lastUsbPongMs = 0;
+static bool usbStreamActive = false;
+static bool usbStreamInterrupted = false;
 
 // --- DUMMY BLE GLOBALS FOR BACKWARD COMPATIBILITY IN USB MODE ---
 static volatile bool bleClientConnected = false;
@@ -543,11 +545,14 @@ bool sendBleChunk(const uint8_t* data, size_t len) {
 // --- DUAL-CORE AUDIO ENGINE & PSRAM RING BUFFER ---
 // 128,000 bytes in PSRAM provides exactly 4.0s of 16kHz 16-bit PCM headroom.
 // Exact integer multiple of both 640-byte audio frames (200 frames) and 3200-byte batches (40 batches).
-static constexpr size_t RING_BUFFER_SIZE = 128000; // 128,000 bytes in PSRAM (exact 4.0s)
+static constexpr size_t PSRAM_RING_BUFFER_SIZE = 128000;
+static constexpr size_t SRAM_RING_BUFFER_SIZE = 32000;
 static constexpr size_t PRE_ROLL_BYTES = 32000;    // 1000ms pre-roll headroom (50 frames / 10 batches)
 static constexpr size_t BATCH_SIZE = FRAME_SIZE * sizeof(int16_t) * 5; // 3200 bytes (100ms per transmission)
 
 uint8_t* audioRingBuffer = nullptr;
+size_t audioRingCapacity = PSRAM_RING_BUFFER_SIZE;
+size_t audioPreRollBytes = PRE_ROLL_BYTES;
 volatile size_t ringHead = 0;
 volatile size_t ringTail = 0;
 volatile bool isStreaming = false;
@@ -860,7 +865,7 @@ void onWebSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
             hasActiveStream = false; // Standby connection ready! Audio streaming begins only when voice is detected
             hasPendingWsConnect = false;
             isStreaming = false; // Always clear stale streaming state on connect
-            ringTail = (ringHead + RING_BUFFER_SIZE - PRE_ROLL_BYTES) % RING_BUFFER_SIZE;
+            ringTail = (ringHead + audioRingCapacity - audioPreRollBytes) % audioRingCapacity;
             needImmediateHeartbeat = false; // Heartbeats sent only after authentication handshake succeeds
             Serial.println("[WS] Connected to Central System. Sending authentication handshake...");
             if (pin_device_token.length() > 0) {
@@ -979,7 +984,7 @@ void onWebSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
             hasPendingWsConnect = false;
             isStreaming = false; // Always clear streaming state on disconnect
             isUploadingArchive = false;
-            ringTail = (ringHead + RING_BUFFER_SIZE - PRE_ROLL_BYTES) % RING_BUFFER_SIZE;
+            ringTail = (ringHead + audioRingCapacity - audioPreRollBytes) % audioRingCapacity;
             if (uploadFile) uploadFile.close();
             Serial.println("[WS] Disconnected");
             break;
@@ -1387,6 +1392,8 @@ void handleSerialCommands() {
         if (line.length() == 0) continue;
 
         if (line == "SL:HANDSHAKE:REQ" || line.startsWith("SL:HANDSHAKE")) {
+            usbAuthenticated = false;
+            usbStreamInterrupted = usbStreamActive;
             Serial.printf("SL:IDENT:%s:%s:2.1\n", pin_device_id.c_str(), pin_mac_address.c_str());
             Serial.flush();
         } else if (line == "SL:AUTH:OK") {
@@ -1396,6 +1403,7 @@ void handleSerialCommands() {
             Serial.println("[USB] Authenticated with SecureLink Central System!");
         } else if (line.startsWith("SL:AUTH:ERR") || line.startsWith("SL:AUTH:FAIL")) {
             usbAuthenticated = false;
+            usbStreamInterrupted = usbStreamActive;
             Serial.println("[USB] Authorization failed!");
         } else if (line.startsWith("SL:AUDIO:ACK:")) {
             lastAudioAckSeq = (uint32_t)line.substring(13).toInt();
@@ -1553,19 +1561,19 @@ void audioRecordTask(void* pvParameters) {
         // 4. Lock-free append to PSRAM Ring Buffer
         if (audioRingBuffer != nullptr) {
             for (size_t i = 0; i < sizeof(outBuf); i++) {
-                audioRingBuffer[(ringHead + i) % RING_BUFFER_SIZE] = outBuf[i];
+                audioRingBuffer[(ringHead + i) % audioRingCapacity] = outBuf[i];
             }
-            ringHead = (ringHead + sizeof(outBuf)) % RING_BUFFER_SIZE;
+            ringHead = (ringHead + sizeof(outBuf)) % audioRingCapacity;
 
             // When NOT streaming, keep ringTail floating exactly PRE_ROLL_BYTES behind ringHead
             if (!isStreaming) {
-                ringTail = (ringHead + RING_BUFFER_SIZE - PRE_ROLL_BYTES) % RING_BUFFER_SIZE;
+                ringTail = (ringHead + audioRingCapacity - audioPreRollBytes) % audioRingCapacity;
             } else {
                 // Buffer Overrun Guard: If ringHead gets dangerously close to ringTail (e.g. Wi-Fi stalled),
                 // advance ringTail to drop oldest unread data cleanly and protect live speech continuity.
-                size_t used = (ringHead + RING_BUFFER_SIZE - ringTail) % RING_BUFFER_SIZE;
-                if (used >= RING_BUFFER_SIZE - (BATCH_SIZE * 2)) {
-                    ringTail = (ringTail + BATCH_SIZE) % RING_BUFFER_SIZE;
+                size_t used = (ringHead + audioRingCapacity - ringTail) % audioRingCapacity;
+                if (used >= audioRingCapacity - (BATCH_SIZE * 2)) {
+                    ringTail = (ringTail + BATCH_SIZE) % audioRingCapacity;
                 }
             }
         }
@@ -1601,17 +1609,24 @@ void setup() {
 
     // 3. INITIALIZE PSRAM RING BUFFER
     if (psramInit()) {
-        audioRingBuffer = (uint8_t*)ps_malloc(RING_BUFFER_SIZE);
-        Serial.printf("[SYS] 8MB PSRAM found! Ring Buffer allocated in PSRAM: %u bytes\n", (unsigned int)RING_BUFFER_SIZE);
+        audioRingBuffer = (uint8_t*)ps_malloc(audioRingCapacity);
+    }
+    if (audioRingBuffer) {
+        Serial.printf("[SYS] Ring buffer allocated in PSRAM: %u bytes\n", (unsigned int)audioRingCapacity);
     } else {
-        audioRingBuffer = (uint8_t*)malloc(32000);
-        Serial.printf("[WARN] PSRAM not found. Allocated 32000 bytes in SRAM\n");
+        audioRingCapacity = SRAM_RING_BUFFER_SIZE;
+        audioPreRollBytes = min(PRE_ROLL_BYTES, audioRingCapacity - 2 * BATCH_SIZE);
+        audioRingBuffer = (uint8_t*)malloc(audioRingCapacity);
+        if (audioRingBuffer) {
+            Serial.printf("[WARN] PSRAM unavailable. Ring buffer allocated in SRAM: %u bytes\n", (unsigned int)audioRingCapacity);
+        }
     }
 
     if (!audioRingBuffer) {
         Serial.println("[ERR] Ring buffer allocation failed!");
         while(1) delay(100);
     }
+    memset(audioRingBuffer, 0, audioRingCapacity);
 
     setupMicrophone();
     setupCamera();
@@ -1639,6 +1654,30 @@ void setup() {
     Serial.println("[USB] Direct USB-Only Mode Active. Awaiting Central System Handshake...");
 }
 
+bool sendUsbAudioChunk(const uint8_t* pcm, size_t size) {
+    const uint32_t sequence = ++usbChunkSeq;
+    lastAudioAckSeq = 0;
+    for (int attempt = 0; attempt < 2 && usbAuthenticated && !usbStreamInterrupted; ++attempt) {
+        Serial.printf("SL:AUDIO:%u:%u\n", (unsigned int)size, (unsigned int)sequence);
+        if (Serial.write(pcm, size) != size) {
+            usbAuthenticated = false;
+            usbStreamInterrupted = true;
+            return false;
+        }
+        Serial.flush();
+        const unsigned long sentAt = millis();
+        while (millis() - sentAt < 150 && usbAuthenticated && !usbStreamInterrupted) {
+            handleSerialCommands();
+            if (!usbStreamInterrupted && usbAuthenticated && lastAudioAckSeq == sequence) {
+                totalStreamBytes += size;
+                return true;
+            }
+            delay(2);
+        }
+    }
+    return false;
+}
+
 void loop() {
     handleSerialCommands();
 
@@ -1654,9 +1693,22 @@ void loop() {
         if (usbConnected) {
             usbConnected = false;
             usbAuthenticated = false;
+            usbStreamInterrupted = usbStreamActive;
             if (isStreaming) {
                 isStreaming = false;
             }
+        }
+    }
+
+    if (usbStreamInterrupted) {
+        usbStreamInterrupted = false;
+        usbStreamActive = false;
+        isStreaming = false;
+        streamStartMs = 0;
+        ringTail = (ringHead + audioRingCapacity - audioPreRollBytes) % audioRingCapacity;
+        if (isOfflineRecording) {
+            isOfflineRecording = false;
+            if (offlineIncidentFile) offlineIncidentFile.close();
         }
     }
 
@@ -1741,8 +1793,8 @@ void loop() {
         if (!isStreaming) {
             if (usbAuthenticated) {
                 isStreaming = true;
+                usbStreamActive = true;
                 usbStreamSeq++;
-                usbChunkSeq = 0;
                 totalStreamBytes = 0;
                 streamStartMs = millis();
                 Serial.printf("SL:STREAM_START:%u\n", (unsigned int)usbStreamSeq);
@@ -1768,59 +1820,27 @@ void loop() {
 
     // ACTIVE STREAMING / LOCAL RECORDING ENGINE (USB FRAMED PCM TRANSMISSION)
     if (isStreaming) {
-        size_t available = (ringHead + RING_BUFFER_SIZE - ringTail) % RING_BUFFER_SIZE;
+        size_t available = (ringHead + audioRingCapacity - ringTail) % audioRingCapacity;
 
         bool maxStreamReached = (streamStartMs > 0 && (millis() - streamStartMs > 8000));
         if ((millis() - lastSpeechTime > SILENCE_TIMEOUT) || maxStreamReached) {
             // Voice ended or max stream limit reached: drain remaining audio with verified delivery
             size_t targetHead = ringHead;
-            size_t toDrain = (targetHead + RING_BUFFER_SIZE - ringTail) % RING_BUFFER_SIZE;
+            size_t toDrain = (targetHead + audioRingCapacity - ringTail) % audioRingCapacity;
             int failedAttempts = 0;
             while (toDrain >= sizeof(int16_t) && failedAttempts < 5) {
                 if (!usbAuthenticated && !ws.isConnected() && !isOfflineRecording) break;
                 size_t chunk = min((size_t)BATCH_SIZE, toDrain);
                 uint8_t tempBuf[chunk];
                 for (size_t i = 0; i < chunk; i++) {
-                    tempBuf[i] = audioRingBuffer[(ringTail + i) % RING_BUFFER_SIZE];
+                    tempBuf[i] = audioRingBuffer[(ringTail + i) % audioRingCapacity];
                 }
 
                 bool sendOk = false;
-                if (usbAuthenticated) {
-                    usbChunkSeq++;
-                    uint32_t currentSeq = usbChunkSeq;
-                    Serial.printf("SL:AUDIO:%u:%u\n", (unsigned int)chunk, (unsigned int)currentSeq);
-                    Serial.write(tempBuf, chunk);
-                    Serial.flush();
-                    unsigned long ackWait = millis();
-                    while (millis() - ackWait < 150) {
-                        if (Serial.available()) {
-                            handleSerialCommands();
-                        }
-                        if (lastAudioAckSeq == currentSeq) {
-                            sendOk = true;
-                            break;
-                        }
-                        delay(2);
-                    }
-                    if (!sendOk) {
-                        Serial.printf("SL:AUDIO:%u:%u\n", (unsigned int)chunk, (unsigned int)currentSeq);
-                        Serial.write(tempBuf, chunk);
-                        Serial.flush();
-                        ackWait = millis();
-                        while (millis() - ackWait < 150) {
-                            if (Serial.available()) {
-                                handleSerialCommands();
-                            }
-                            if (lastAudioAckSeq == currentSeq) {
-                                sendOk = true;
-                                break;
-                            }
-                            delay(2);
-                        }
-                    }
-                    if (sendOk) {
-                        totalStreamBytes += chunk;
-                    } else if (fsReady) {
+                if (usbStreamActive && usbAuthenticated) {
+                    sendOk = sendUsbAudioChunk(tempBuf, chunk);
+                    if (usbStreamInterrupted) return;
+                    if (!sendOk && fsReady) {
                         if (!isOfflineRecording) {
                             enforceFreeSpace();
                             isOfflineRecording = true;
@@ -1839,7 +1859,7 @@ void loop() {
                 }
 
                 if (sendOk) {
-                    ringTail = (ringTail + chunk) % RING_BUFFER_SIZE;
+                    ringTail = (ringTail + chunk) % audioRingCapacity;
                     toDrain -= chunk;
                     failedAttempts = 0;
                     delay(2);
@@ -1849,11 +1869,12 @@ void loop() {
                 }
             }
 
-            if (usbAuthenticated) {
+            if (usbStreamActive && usbAuthenticated) {
                 Serial.printf("SL:STREAM_END:%u:%u\n", (unsigned int)usbStreamSeq, (unsigned int)totalStreamBytes);
                 Serial.flush();
                 Serial.printf("[USB] Stream #%u completed (%u bytes).\n", (unsigned int)usbStreamSeq, (unsigned int)totalStreamBytes);
             }
+            usbStreamActive = false;
             if (hasActiveStream && !isUploadingArchive) {
                 ws.sendTXT("STREAM_END");
                 hasActiveStream = false;
@@ -1872,7 +1893,7 @@ void loop() {
             isStreaming = false;
             WiFi.setSleep(false);
             // Float tail back to pre-roll window
-            ringTail = (ringHead + RING_BUFFER_SIZE - PRE_ROLL_BYTES) % RING_BUFFER_SIZE;
+            ringTail = (ringHead + audioRingCapacity - audioPreRollBytes) % audioRingCapacity;
         } else {
             // Actively draining audio from ringTail to ringHead in steady, verified BATCH_SIZE chunks
             if (available >= BATCH_SIZE) {
@@ -1881,46 +1902,14 @@ void loop() {
                 if (millis() - lastBatchSentAt >= paceMs) {
                     uint8_t txBuf[BATCH_SIZE];
                     for (size_t i = 0; i < BATCH_SIZE; i++) {
-                        txBuf[i] = audioRingBuffer[(ringTail + i) % RING_BUFFER_SIZE];
+                        txBuf[i] = audioRingBuffer[(ringTail + i) % audioRingCapacity];
                     }
 
                     bool sendOk = false;
-                    if (usbAuthenticated) {
-                        usbChunkSeq++;
-                        uint32_t currentSeq = usbChunkSeq;
-                        Serial.printf("SL:AUDIO:%u:%u\n", (unsigned int)BATCH_SIZE, (unsigned int)currentSeq);
-                        Serial.write(txBuf, BATCH_SIZE);
-                        Serial.flush();
-                        unsigned long ackWait = millis();
-                        while (millis() - ackWait < 150) {
-                            if (Serial.available()) {
-                                handleSerialCommands();
-                            }
-                            if (lastAudioAckSeq == currentSeq) {
-                                sendOk = true;
-                                break;
-                            }
-                            delay(2);
-                        }
-                        if (!sendOk) {
-                            Serial.printf("SL:AUDIO:%u:%u\n", (unsigned int)BATCH_SIZE, (unsigned int)currentSeq);
-                            Serial.write(txBuf, BATCH_SIZE);
-                            Serial.flush();
-                            ackWait = millis();
-                            while (millis() - ackWait < 150) {
-                                if (Serial.available()) {
-                                    handleSerialCommands();
-                                }
-                                if (lastAudioAckSeq == currentSeq) {
-                                    sendOk = true;
-                                    break;
-                                }
-                                delay(2);
-                            }
-                        }
-                        if (sendOk) {
-                            totalStreamBytes += BATCH_SIZE;
-                        } else if (fsReady) {
+                    if (usbStreamActive && usbAuthenticated) {
+                        sendOk = sendUsbAudioChunk(txBuf, BATCH_SIZE);
+                        if (usbStreamInterrupted) return;
+                        if (!sendOk && fsReady) {
                             if (!isOfflineRecording) {
                                 enforceFreeSpace();
                                 isOfflineRecording = true;
@@ -1939,7 +1928,7 @@ void loop() {
                     }
 
                     if (sendOk) {
-                        ringTail = (ringTail + BATCH_SIZE) % RING_BUFFER_SIZE;
+                        ringTail = (ringTail + BATCH_SIZE) % audioRingCapacity;
                         lastBatchSentAt = millis();
                     } else {
                         delay(4);

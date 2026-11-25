@@ -489,8 +489,7 @@ def recalculate_pin_connection_state(pin_id: str, now_ts: Optional[float] = None
 
     # 0. Supreme Priority: Active Authenticated USB Connection
     usb_online = (
-        usb_mgr.serial_port is not None
-        and usb_mgr.serial_port.is_open
+        usb_mgr.serial_port_open
         and usb_mgr.is_authenticated
         and (usb_mgr.device_id == pin_id)
         and (now_ts - usb_mgr.last_heartbeat_ts <= HEARTBEAT_TIMEOUT_SEC)

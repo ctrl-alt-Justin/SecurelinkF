@@ -85,6 +85,12 @@ class TestUSBSerialProtocol(unittest.TestCase):
     def tearDown(self):
         self.mgr.stop()
 
+    def wait_for_usb(self, predicate, timeout=4.0):
+        deadline = time.monotonic() + timeout
+        while not predicate():
+            self.assertLess(time.monotonic(), deadline, "USB worker failed to reach the expected state")
+            time.sleep(0.01)
+
     def test_01_handshake_and_authentication_success(self):
         """PIN identifies itself via SL:IDENT; manager verifies and responds with SL:AUTH:OK."""
         self.mgr._handle_command("SL:IDENT:PIN-F360:E8:F6:0A:8C:F3:60:2.1")
@@ -473,7 +479,8 @@ class TestUSBSerialProtocol(unittest.TestCase):
 
     def test_19_disconnect_and_reconnect_cycle(self):
         """Disconnect closes serial port without concurrency race, and reconnect restores connection."""
-        with patch("serial.Serial", side_effect=MockSerialPort):
+        ports = [{"port": "COM4", "is_esp32": True, "description": "USB Serial Device"}]
+        with patch("serial.Serial", side_effect=MockSerialPort) as open_port, patch.object(self.mgr, "scan_ports", return_value=ports):
             # 1. Connect
             ok, msg = self.mgr.connect("COM4", timeout=1.0)
             self.assertTrue(ok)
@@ -484,11 +491,82 @@ class TestUSBSerialProtocol(unittest.TestCase):
             self.assertTrue(ok)
             self.assertTrue(self.mgr.serial_port is None or not self.mgr.serial_port.is_open)
             self.assertEqual(self.mgr.connection_state, "OFFLINE")
+            time.sleep(0.25)
+            self.assertEqual(open_port.call_count, 1)
 
             # 3. Reconnect
             ok, msg = self.mgr.connect("COM4", timeout=1.0)
             self.assertTrue(ok)
             self.assertTrue(self.mgr.serial_port and self.mgr.serial_port.is_open)
+
+    def test_worker_discards_partial_audio_before_reopening(self):
+        ident = b"SL:IDENT:PIN-001:00:11:22:33:44:55:2.1\n"
+        ping = b"SL:PING:80:4000:VAD ARMED\n"
+        partial_frame = b"SL:AUDIO:3200:1\n" + b"\x00" * 20
+        first_port = MockSerialPort()
+        first_port.read_buffer.extend(ident + ping + b"SL:STREAM_START:1\n" + partial_frame)
+        next_port = MockSerialPort()
+        pcm = b"\x01\x02" * 1600
+        next_port.read_buffer.extend(
+            ident + ping + b"SL:STREAM_START:2\nSL:AUDIO:3200:2\n" + pcm + b"SL:STREAM_END:2:3200\n"
+        )
+        self.mgr.serial_port = None
+
+        with patch("serial.Serial", side_effect=[first_port, next_port]):
+            try:
+                self.mgr.start("COM4")
+                self.wait_for_usb(lambda: self.mgr._receive_buffer == partial_frame)
+                self.mgr.last_heartbeat_ts = time.time() - HEARTBEAT_TIMEOUT_SEC - 1
+                self.wait_for_usb(lambda: len(self.completed_audios) == 1)
+                self.assertEqual(self.completed_audios, [("PIN-001", pcm)])
+                self.assertIn(b"SL:AUDIO:ACK:2\n", next_port.write_buffer)
+                self.assertIn("Heartbeat timed out", self.mgr.last_disconnect_reason)
+                self.assertTrue(self.mgr.is_authenticated)
+            finally:
+                self.mgr.stop()
+
+    def test_worker_rediscovers_same_pin_after_com_port_changes(self):
+        ident = b"SL:IDENT:PIN-001:00:11:22:33:44:55:2.1\n"
+        other_ident = b"SL:IDENT:PIN-F360:AA:BB:CC:DD:EE:FF:2.1\n"
+        ping = b"SL:PING:80:4000:VAD ARMED\n"
+        original = MockSerialPort()
+        original.read_buffer.extend(ident + ping)
+        different_pin = MockSerialPort()
+        different_pin.read_buffer.extend(other_ident + ping)
+        rediscovered = MockSerialPort()
+        rediscovered.read_buffer.extend(ident + ping)
+        candidates = [
+            {"port": port, "is_esp32": True, "description": "USB Serial Device"}
+            for port in ("COM5", "COM7")
+        ]
+        self.mgr.serial_port = None
+
+        with patch.object(self.mgr, "scan_ports", return_value=candidates), patch(
+            "serial.Serial", side_effect=[original, serial.SerialException("COM4 disappeared"), different_pin, rediscovered]
+        ) as open_port:
+            try:
+                self.mgr.start("COM4")
+                self.wait_for_usb(lambda: self.mgr.connection_state == "ONLINE")
+                self.mgr.last_heartbeat_ts = time.time() - HEARTBEAT_TIMEOUT_SEC - 1
+                self.wait_for_usb(lambda: self.mgr.current_port_name == "COM7" and self.mgr.connection_state == "ONLINE")
+                self.assertEqual(self.mgr.device_id, "PIN-001")
+                self.assertEqual([call.kwargs["port"] for call in open_port.call_args_list], ["COM4", "COM4", "COM5", "COM7"])
+                self.assertIn(b"SL:AUTH:ERR:UNEXPECTED_PIN\n", different_pin.write_buffer)
+                self.assertNotIn(b"SL:AUTH:OK\n", different_pin.write_buffer)
+            finally:
+                self.mgr.stop()
+
+    def test_worker_retries_handshake_if_first_request_is_missed(self):
+        port = MockSerialPort()
+        self.mgr.serial_port = None
+        with patch("serial.Serial", return_value=port), patch("usb_manager.HANDSHAKE_RETRY_SEC", 0.05):
+            try:
+                self.mgr.start("COM4")
+                self.wait_for_usb(lambda: port.write_buffer.count(b"SL:HANDSHAKE:REQ\n") >= 2)
+                port.read_buffer.extend(b"SL:IDENT:PIN-001:00:11:22:33:44:55:2.1\nSL:PING:80:4000:VAD ARMED\n")
+                self.wait_for_usb(lambda: self.mgr.connection_state == "ONLINE")
+            finally:
+                self.mgr.stop()
 
 
 if __name__ == "__main__":
