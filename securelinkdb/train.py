@@ -108,7 +108,7 @@ def build_compute_metrics(num_labels: int = NUM_LABELS) -> Callable[[Any], Dict[
         macro_p, macro_r, macro_f1, _ = precision_recall_fscore_support(
             labels, preds, average="macro", zero_division=0
         )
-        _, _, per_cls_f1, _ = precision_recall_fscore_support(
+        per_cls_p, per_cls_r, per_cls_f1, _ = precision_recall_fscore_support(
             labels, preds, labels=list(range(num_labels)), average=None, zero_division=0
         )
         metrics: Dict[str, float] = {
@@ -118,6 +118,8 @@ def build_compute_metrics(num_labels: int = NUM_LABELS) -> Callable[[Any], Dict[
             "macro_f1": round(float(macro_f1), 4),
         }
         for i in range(num_labels):
+            metrics[f"precision_class_{i}"] = round(float(per_cls_p[i]), 4)
+            metrics[f"recall_class_{i}"] = round(float(per_cls_r[i]), 4)
             metrics[f"f1_class_{i}"] = round(float(per_cls_f1[i]), 4)
         return metrics
 
@@ -150,10 +152,12 @@ class WeightedLossTrainer(Trainer):
         logits = outputs.get("logits") if isinstance(outputs, dict) else outputs.logits
 
         if self.class_weights is not None:
-            loss_fct = torch.nn.CrossEntropyLoss(weight=self.class_weights.to(logits.device))
+            loss_fct = torch.nn.CrossEntropyLoss(
+                weight=self.class_weights.to(device=logits.device, dtype=torch.float32)
+            )
         else:
             loss_fct = torch.nn.CrossEntropyLoss()
-        loss = loss_fct(logits.view(-1, model.config.num_labels), labels.view(-1))
+        loss = loss_fct(logits.float().view(-1, model.config.num_labels), labels.view(-1))
         return (loss, outputs) if return_outputs else loss
 
 
@@ -168,6 +172,7 @@ def train_classifier(
     val_size: float = 0.2,
     seed: int = 42,
     max_length: int = 128,
+    fp16: bool = True,
     dry_run: bool = False,
 ) -> Dict[str, Any]:
     """Run stratified split, balanced-weight fine-tuning, evaluation, and compatible checkpoint export."""
@@ -216,6 +221,8 @@ def train_classifier(
         per_device_eval_batch_size=int(batch_size),
         num_train_epochs=float(epochs),
         weight_decay=0.01,
+        warmup_ratio=0.1,
+        fp16=bool(fp16 and torch.cuda.is_available()),
         load_best_model_at_end=True,
         metric_for_best_model="macro_f1",
         greater_is_better=True,
@@ -236,6 +243,7 @@ def train_classifier(
 
     trainer.train()
     eval_metrics = trainer.evaluate()
+    print(f"[SYS] Validation metrics: {eval_metrics}")
 
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
@@ -265,6 +273,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--val-size", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--max-length", type=int, default=128)
+    parser.add_argument("--fp16", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
@@ -279,6 +288,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         val_size=args.val_size,
         seed=args.seed,
         max_length=args.max_length,
+        fp16=args.fp16,
         dry_run=args.dry_run,
     )
     return 0

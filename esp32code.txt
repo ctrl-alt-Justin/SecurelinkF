@@ -872,6 +872,13 @@ void onWebSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
                 String authPayload = "{\"type\":\"auth\",\"device_id\":\"" + pin_device_id + "\",\"token\":\"" + pin_device_token + "\"}";
                 ws.sendTXT(authPayload);
                 Serial.printf("[WS] Transmitted auth frame for %s\n", pin_device_id.c_str());
+            } else {
+                String pendingPcode = prefs.getString("pcode_pending", "");
+                if (pendingPcode.length() == 6) {
+                    String pairPayload = "{\"type\":\"pair\",\"pairing_code\":\"" + pendingPcode + "\",\"mac\":\"" + pin_mac_address + "\",\"firmware_version\":\"2.1\"}";
+                    ws.sendTXT(pairPayload);
+                    Serial.printf("[WS] Transmitted pairing handshake for %s\n", pin_device_id.c_str());
+                }
             }
             break;
         case WStype_TEXT:
@@ -947,6 +954,19 @@ void onWebSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
                     delay(500);
                     Serial.println("[SYS] Rebooting into Setup Portal...");
                     ESP.restart();
+                } else if (msg.indexOf("\"type\":\"pairing_success\"") >= 0) {
+                    String newToken = extractJsonField(msg, "device_token");
+                    if (newToken.length() > 0) {
+                        prefs.putString("token", newToken);
+                        prefs.remove("pcode_pending");
+                        pin_device_token = newToken;
+                        hasStoredCredentials = true;
+                        isDevicePaired = true;
+                        serverAuthenticated = true;
+                        needImmediateHeartbeat = true;
+                        Serial.printf("[WS-AUTH] Live WebSocket Pairing Succeeded for %s! Token saved.\n", pin_device_id.c_str());
+                        deferBleText("{\"type\":\"pairing_success\",\"device_id\":\"" + pin_device_id + "\"}");
+                    }
                 } else if (msg.indexOf("\"type\":\"auth_ok\"") >= 0) {
                     String authDevId = extractJsonField(msg, "device_id");
                     if (authDevId.length() == 0 || authDevId == pin_device_id) {
@@ -964,6 +984,13 @@ void onWebSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
                         String authPayload = "{\"type\":\"auth\",\"device_id\":\"" + pin_device_id + "\",\"token\":\"" + pin_device_token + "\"}";
                         ws.sendTXT(authPayload);
                         Serial.println("[WS-AUTH] Responded to auth challenge with token frame.");
+                    } else {
+                        String pendingPcode = prefs.getString("pcode_pending", "");
+                        if (pendingPcode.length() == 6) {
+                            String pairPayload = "{\"type\":\"pair\",\"pairing_code\":\"" + pendingPcode + "\",\"mac\":\"" + pin_mac_address + "\",\"firmware_version\":\"2.1\"}";
+                            ws.sendTXT(pairPayload);
+                            Serial.println("[WS-AUTH] Responded to auth challenge with pending pairing code.");
+                        }
                     }
                 } else if (msg.indexOf("\"type\":\"auth_error\"") >= 0 || msg.indexOf("\"ERR_AUTH_FAILED\"") >= 0) {
                     Serial.println("[WS-AUTH] WebSocket Authentication Rejected by Central System! Invalid or revoked token.");
@@ -1262,7 +1289,9 @@ void startConfigPortal() {
 void discoverCheckpoint() {
     if (hasActiveStream || hasPendingWsConnect || ws.isConnected() || wifiConnectInProgress) return;
 
-    if (!hasStoredCredentials || pin_device_token.length() == 0) {
+    String pendingPcode = prefs.getString("pcode_pending", "");
+    bool hasPendingPairing = (pendingPcode.length() == 6);
+    if ((!hasStoredCredentials || pin_device_token.length() == 0) && !hasPendingPairing) {
         static unsigned long lastUnpairedLog = 0;
         if (millis() - lastUnpairedLog > 10000) {
             lastUnpairedLog = millis();
@@ -1272,6 +1301,7 @@ void discoverCheckpoint() {
     }
 
     if (WiFi.status() != WL_CONNECTED) {
+        if (wifi_ssid.length() == 0) return;
         wifiConnectInProgress = true;
         wifiConnectStartedAt = millis();
         WiFi.mode(WIFI_STA);
@@ -1301,6 +1331,7 @@ void discoverCheckpoint() {
         }
         delay(20);
     }
+    udp.stop();
 }
 
 // Ensure space exists before local recording: deletes oldest timestamped incident
@@ -1650,8 +1681,17 @@ void setup() {
         Serial.println("[ERR] LittleFS Mount Failed");
     }
 
-    // 4. USB-ONLY OPERATION MODE (WI-FI & WEBSOCKET NETWORKING BYPASS)
-    Serial.println("[USB] Direct USB-Only Mode Active. Awaiting Central System Handshake...");
+    // 4. USB-PRIORITY + WI-FI WIRELESS FALLBACK INITIALIZATION
+    Serial.println("[USB] Direct USB CDC Mode Active. Awaiting Central System Handshake...");
+    WiFi.onEvent(onWiFiEvent);
+    WiFi.mode(WIFI_STA);
+    String pendingPcode = prefs.getString("pcode_pending", "");
+    if (wifi_ssid.length() > 0 && (hasStoredCredentials || pendingPcode.length() == 6)) {
+        wifiConnectInProgress = true;
+        wifiConnectStartedAt = millis();
+        WiFi.begin(wifi_ssid.c_str(), wifi_pass.c_str());
+        Serial.printf("[WIFI] Non-blocking STA connect initiated for '%s'...\n", wifi_ssid.c_str());
+    }
 }
 
 bool sendUsbAudioChunk(const uint8_t* pcm, size_t size) {
@@ -1736,7 +1776,7 @@ void loop() {
     // This MUST run from loop() context, never from inside a BLE callback.
     flushDeferredBleTx();
 
-    // Wi-Fi / WebSocket trigger bypassed in USB-only mode
+    // Wireless transport gated behind usbAuthenticated below
 
     // Check for Boot button held for 2 seconds anytime to enter setup portal
     static unsigned long btnHoldStart = 0;
@@ -1784,7 +1824,45 @@ void loop() {
         snapshotInProgress = false;
     }
 
-    // Wi-Fi maintenance and WebSocket loop bypassed in USB-only mode
+    // --- USB-PRIORITY WIRELESS NETWORK MAINTENANCE ---
+    if (usbAuthenticated) {
+        if (ws.isConnected() || hasPendingWsConnect) {
+            ws.disconnect();
+            hasPendingWsConnect = false;
+            hasActiveStream = false;
+            websocketConnected = false;
+            serverAuthenticated = false;
+        }
+    } else {
+        ws.loop();
+
+        if (wifiConnectInProgress) {
+            if (WiFi.status() == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0)) {
+                wifiConnectInProgress = false;
+                wifiConnected = true;
+                wifiFailStreak = 0;
+                WiFi.setSleep(false);
+            } else if (millis() - wifiConnectStartedAt > WIFI_CONNECT_TIMEOUT_MS) {
+                wifiConnectInProgress = false;
+                wifiFailStreak++;
+            }
+        }
+
+        if (hasPendingWsConnect && !ws.isConnected() && (millis() - wsConnectStartedAt > WS_CONNECT_TIMEOUT_MS)) {
+            hasPendingWsConnect = false;
+            ws.disconnect();
+            cachedServerIP = ""; // Fall back to UDP 8888 discovery on next attempt
+            Serial.println("[WS] Connect attempt timed out; cleared cached server IP for UDP discovery.");
+        }
+
+        static unsigned long lastDiscoverAttemptMs = 0;
+        if (!ws.isConnected() && !hasPendingWsConnect && !wifiConnectInProgress) {
+            if (millis() - lastDiscoverAttemptMs >= 4000) {
+                lastDiscoverAttemptMs = millis();
+                discoverCheckpoint();
+            }
+        }
+    }
 
     // --- AUDIO STREAMING & RECORDING PIPELINE (USB PRIORITY WITH OFFLINE FALLBACK) ---
     // TRIGGER STREAMING WHEN VOICE IS DETECTED

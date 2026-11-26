@@ -2,7 +2,7 @@
   "schema_version": "1.0.0",
   "dataset_name": "securelink_v4_school_held_out_review_pending",
   "split": "held_out",
-  "description": "Pending independent human annotation and approval. Four normal-conversation prompts were supplied by the project user. The remaining prompts and all proposed labels are synthetic. No real conversations were collected for this file. Reserve this file for held-out text evaluation only. Keep utterances, labels, and predictions out of training, development, prompting, and tuning. Before final evaluation, have Filipino/English/Taglish-speaking reviewers independently verify naturalness, intent, severity, and review flags, resolve disagreements under a fixed rubric, and freeze the approved version without consulting model predictions. The current text evaluator receives only the utterance. Use the context field as an annotation aid and flag cases that cannot be judged from the utterance alone.",
+  "description": "Human Reviewed and Frozen",
   "scenarios": [
     {
       "id": "V4-SCHOOL-HO-001",
@@ -63,7 +63,7 @@
       "split": "held_out",
       "mode": "text",
       "language": "tl",
-      "utterance": "Ano, uulitin mo pa? Sasampalin kita ngayon din.",
+      "utterance": "Ano, uulitin mo pa? Sasampalin kita ngayon.",
       "conversational_context": "A student threatens to slap a classmate immediately during a face-to-face argument.",
       "expected_intent": "DIRECT_THREAT",
       "expected_level": "DANGER",

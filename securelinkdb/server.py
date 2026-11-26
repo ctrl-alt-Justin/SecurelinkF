@@ -3401,7 +3401,7 @@ async def pin_websocket_endpoint(websocket: WebSocket):
                             pass
                     now_str = datetime.now().strftime("%H:%M:%S")
                     registered_devices[device_id]["last_direct_seen"] = now_str
-                    if registered_devices[device_id].get("state") not in ("STREAMING AUDIO", "ANALYZING"):
+                    if registered_devices[device_id].get("state") not in ("STREAMING AUDIO", "ANALYZING SPEECH"):
                         registered_devices[device_id]["state"] = "VAD ARMED"
                     dev_record = recalculate_pin_connection_state(device_id)
                     dev_record["lastSeen"] = f"Active at {now_str}"
