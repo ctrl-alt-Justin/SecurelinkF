@@ -33,6 +33,23 @@ SecureLink is an AI-powered campus safety and threat-detection platform designed
 - `esp32code.txt`: XIAO ESP32-S3 firmware with microphone capture, VAD, BLE, and camera streaming.
 - `changes/`: Phase-by-phase implementation and architectural records.
 
+## Local USB Audio Diagnostics
+
+For local USB audio diagnostics, stop the current backend and run these commands from `securelinkdb/` in PowerShell:
+
+```powershell
+$env:SECURELINK_USB_AUDIO_DIAGNOSTICS = '1'
+python server.py
+```
+
+Start the dashboard after the backend is ready. To disable capture, stop the backend, run `Remove-Item Env:SECURELINK_USB_AUDIO_DIAGNOSTICS -ErrorAction SilentlyContinue`, then restart the backend. The variable is read at startup and capture is off by default.
+
+The diagnostic captures up to five completed USB utterances of up to 16 seconds each per backend run. Each capture has one numbered folder under `.usb_audio_diagnostics/<session-id>/`. This private, Git-ignored directory is outside the HTTP recordings mount. Captures include the PIN's exact PCM16 WAV, the post-denoise/pre-gain array, and the exact pre-VAD Faster-Whisper input array. The two NumPy `.npy` files preserve the original floating-point samples. The pre-gain file represents the output of whichever denoising path actually ran. Short or electrically silent utterances can stop before denoising. An unavailable Whisper model can stop before the final input stage. `metrics.json` identifies missing stages.
+
+Metrics are written by a background worker. They use the same unpadded VAD windows detected on the PIN signal for each stage with the same sample count. The speech-to-background figure is an estimate from windowed RMS. It is unavailable when there is insufficient speech or background, unreliable separation, or no common timeline. The report distinguishes PIN PCM16 rails, pre-gain nominal full scale, and samples changed by the desktop limiter. It does not contain transcripts.
+
+To clear the captures, stop the backend, open `securelinkdb/` in File Explorer, and delete only the `.usb_audio_diagnostics` folder. Existing incident WAVs are in the separate `recordings/` folder.
+
 ## Automated Testing
 
 Run the full test suite:

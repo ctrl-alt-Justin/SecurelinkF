@@ -14,6 +14,7 @@ import wave
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 import collections
 
@@ -28,6 +29,8 @@ import uvicorn
 
 from tunnel_manager import CloudflareTunnelManager, TunnelState
 from mobile_pairing import MobilePairingManager, PairingState
+from ordinary_speech_preview import OrdinarySpeechPreview
+from usb_audio_diagnostics import AudioCapture, LIMIT_LEVEL, USBAudioDiagnostics
 
 import sys
 
@@ -103,6 +106,11 @@ app = FastAPI(title="SecureLink AI Inference Server")
 
 # Ensure required storage directories exist
 RECORDINGS_DIR = os.path.join(BASE_DIR, "recordings")
+usb_audio_diagnostics = USBAudioDiagnostics(
+    Path(BASE_DIR) / ".usb_audio_diagnostics",
+    enabled=os.getenv("SECURELINK_USB_AUDIO_DIAGNOSTICS") == "1",
+)
+ordinary_speech_preview = OrdinarySpeechPreview()
 AUDIO_RECORDINGS_DIR = os.path.join(RECORDINGS_DIR, "audio")
 SNAPSHOTS_RECORDINGS_DIR = os.path.join(RECORDINGS_DIR, "snapshots")
 os.makedirs(AUDIO_RECORDINGS_DIR, exist_ok=True)
@@ -2234,6 +2242,7 @@ async def startup_event():
     global fastapi_event_loop
     fastapi_event_loop = asyncio.get_running_loop()
     print(f"[SYS] Captured FastAPI main event loop: {fastapi_event_loop}")
+    await ordinary_speech_preview.start()
 
     # Initialize previously paired devices from persistent credentials storage
     init_registered_devices_from_credentials()
@@ -2265,11 +2274,16 @@ async def startup_event():
 async def shutdown_event():
     print("\n[SYS] Server shutting down. Cleaning up USB Serial...")
     usb_mgr.stop()
+    await ordinary_speech_preview.stop()
+    if usb_audio_diagnostics.enabled:
+        await asyncio.to_thread(usb_audio_diagnostics.close)
 
 # =========================================================================
 # 7. AUDIO PROCESSING PIPELINE (DENOISING + WHISPER STT)
 # =========================================================================
-def process_audio_buffer(pcm_bytes: bytes) -> tuple[TranscriptionResult, bytes]:
+def process_audio_buffer(
+    pcm_bytes: bytes, *, capture: AudioCapture | None = None
+) -> tuple[TranscriptionResult, bytes]:
     """Applies 85Hz HPF, MS-NSNet2 noise suppression, gentle quiet-speech post-gain, and Faster-Whisper ASR with segment validation."""
     if len(pcm_bytes) < 3200:  # Less than 100ms
         return TranscriptionResult(
@@ -2296,6 +2310,8 @@ def process_audio_buffer(pcm_bytes: bytes) -> tuple[TranscriptionResult, bytes]:
 
     # Drop pure electrical silence or dead mic line (peak < 0.003, raw ADC peak < 100)
     if hpf_peak < 0.003:
+        if capture is not None:
+            capture.unavailable_reason = "electrical silence gate before denoising"
         return TranscriptionResult(
             status=TranscriptionStatus.NO_SPEECH,
             reason=f"Electrical silence below threshold (Peak={hpf_peak:.4f} < 0.003)",
@@ -2333,6 +2349,8 @@ def process_audio_buffer(pcm_bytes: bytes) -> tuple[TranscriptionResult, bytes]:
             print(f"[WARN] NoiseReduce error: {e}")
 
     audio_float = np.asarray(audio_float, dtype=np.float32)
+    if capture is not None:
+        capture.snapshot("post_denoise_pre_gain", audio_float)
     denoised_peak = float(np.max(np.abs(audio_float)))
     denoised_rms = float(np.sqrt(np.mean(audio_float**2)))
 
@@ -2342,8 +2360,10 @@ def process_audio_buffer(pcm_bytes: bytes) -> tuple[TranscriptionResult, bytes]:
     if 0.01 < denoised_peak < 0.35:
         gain_scale = min(0.45 / (denoised_peak + 1e-6), 3.0)
         audio_float = audio_float * gain_scale
+        if capture is not None:
+            capture.gain = gain_scale
 
-    audio_float = np.clip(audio_float, -0.99, 0.99)
+    audio_float = np.clip(audio_float, -LIMIT_LEVEL, LIMIT_LEVEL)
 
     # 5. Convert clean audio float back to 16-bit PCM bytes for playback in recordings
     clean_int16 = np.clip(audio_float * 32767.0, -32768, 32767).astype(np.int16)
@@ -2358,6 +2378,8 @@ def process_audio_buffer(pcm_bytes: bytes) -> tuple[TranscriptionResult, bytes]:
 
     # 6. Faster-Whisper Speech Recognition
     if not (has_whisper and whisper_model is not None):
+        if capture is not None:
+            capture.unavailable_reason = "Whisper model unavailable"
         return TranscriptionResult(
             status=TranscriptionStatus.NO_SPEECH,
             reason="Whisper model unavailable",
@@ -2378,6 +2400,8 @@ def process_audio_buffer(pcm_bytes: bytes) -> tuple[TranscriptionResult, bytes]:
         "vad_parameters": dict(threshold=0.40, min_speech_duration_ms=250, speech_pad_ms=300),
     }
 
+    if capture is not None:
+        capture.snapshot("whisper_input", audio_float)
     try:
         segments_gen, info = whisper_model.transcribe(
             audio_float,
@@ -2580,6 +2604,17 @@ def process_audio_buffer(pcm_bytes: bytes) -> tuple[TranscriptionResult, bytes]:
     ), clean_pcm_bytes
 
 
+def _process_usb_audio_with_diagnostics(pcm_bytes: bytes) -> tuple[TranscriptionResult, bytes]:
+    diagnostics = usb_audio_diagnostics
+    capture = diagnostics.begin(pcm_bytes)
+    if capture is None:
+        return process_audio_buffer(pcm_bytes)
+    try:
+        return process_audio_buffer(pcm_bytes, capture=capture)
+    finally:
+        diagnostics.submit(capture)
+
+
 def save_wav(pcm_bytes: bytes, filepath: str):
     """Saves 16kHz 16-bit PCM bytes to standard WAV format."""
     with wave.open(filepath, "wb") as wav_file:
@@ -2601,6 +2636,11 @@ async def handle_completed_audio(
 ):
     """Processes accumulated speech audio buffer, runs Faster-Whisper + BERT, and updates UI."""
     if len(pcm_bytes) < 4800: # Less than 150ms
+        if source == "USB" and usb_audio_diagnostics.enabled:
+            capture = usb_audio_diagnostics.begin(pcm_bytes)
+            if capture is not None:
+                capture.unavailable_reason = "utterance below the 150 ms processing minimum"
+                usb_audio_diagnostics.submit(capture)
         if device_id in registered_devices:
             now_str = datetime.now().strftime("%H:%M:%S")
             if source == "USB":
@@ -2642,40 +2682,44 @@ async def handle_completed_audio(
 
     async with ai_inference_lock:
         t_infer_start = time.time()
-        result, clean_pcm = await asyncio.to_thread(process_audio_buffer, pcm_bytes)
+        processor = (
+            _process_usb_audio_with_diagnostics
+            if source == "USB" and usb_audio_diagnostics.enabled else process_audio_buffer
+        )
+        result, clean_pcm = await asyncio.to_thread(processor, pcm_bytes)
         infer_dur = time.time() - t_infer_start
 
         if result.status == TranscriptionStatus.TRANSCRIBED and result.transcript:
             transcript = result.transcript
-            print(f"[FINAL TRANSCRIPT] ({device_id} via {source} in {infer_dur:.2f}s, dur={dur_sec:.2f}s, peak={audio_peak:.2f}) -> \"{transcript}\"")
             score, category = context_engine.evaluate(transcript, device_id=device_id, transcription_result=result)
             is_danger = score >= 8.0
 
-            # --- HARMFUL WORDS ONLY FILTER ---
-            # When active, ignore benign/conversational speech and do not save WAV or log incident
             is_harmful = (category != "Conversational") or (score >= 2.0)
-            if harmful_words_only and not is_harmful:
-                print(f"[FILTER] Ignored conversational speech under 'Harmful Words Only' mode: \"{transcript}\" (cat={category}, score={score})")
+            if not is_harmful:
+                ordinary_speech_preview.publish(transcript, category, score)
                 if device_id in registered_devices:
                     now_str = datetime.now().strftime("%H:%M:%S")
                     if source == "USB":
                         is_still_connected = usb_mgr.is_authenticated and (usb_mgr.device_id == device_id)
+                        usb_mgr.audio_analyzing = False
+                        usb_mgr.vad_state = "VAD ARMED" if is_still_connected else "OFFLINE"
                         registered_devices[device_id]["online"] = is_still_connected
                         registered_devices[device_id]["connection_source"] = "USB"
                         registered_devices[device_id]["state"] = "VAD ARMED" if is_still_connected else "OFFLINE"
-                        registered_devices[device_id]["lastSeen"] = f"Filtered benign speech at {now_str}" if is_still_connected else f"Disconnected at {now_str}"
+                        registered_devices[device_id]["lastSeen"] = f"Active via USB at {now_str}" if is_still_connected else f"Disconnected at {now_str}"
                     elif source == "ESP32_DIRECT":
                         is_still_connected = any(d_id == device_id for d_id in active_pins.values())
                         registered_devices[device_id]["online"] = is_still_connected
                         registered_devices[device_id]["state"] = "VAD ARMED" if is_still_connected else "OFFLINE"
-                        registered_devices[device_id]["lastSeen"] = f"Filtered benign speech at {now_str}" if is_still_connected else f"Disconnected at {now_str}"
+                        registered_devices[device_id]["lastSeen"] = f"Active at {now_str}" if is_still_connected else f"Disconnected at {now_str}"
                     else:
                         if registered_devices[device_id].get("state") == "ANALYZING SPEECH":
                             registered_devices[device_id]["state"] = "STANDBY"
-                        registered_devices[device_id]["last_ble_seen"] = f"Filtered benign speech at {now_str}"
+                        registered_devices[device_id]["last_ble_seen"] = f"Relay active at {now_str}"
                     await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
                 return
 
+            print(f"[FINAL TRANSCRIPT] ({device_id} via {source} in {infer_dur:.2f}s, dur={dur_sec:.2f}s, peak={audio_peak:.2f}) -> \"{transcript}\"")
             if is_danger:
                 print(f"[THREAT] DANGER grade detected! Dispatching TRIGGER:DANGER to {device_id} (source: {source})...")
                 if source == "USB":
@@ -2744,7 +2788,7 @@ async def handle_completed_audio(
             await broadcast_to_ui(incident_payload)
         else:
             transcript = ""
-            print(f"[ASR] ({device_id} via {source} in {infer_dur:.2f}s) Audio ({dur_sec:.2f}s, peak={audio_peak:.2f}) -> Status: {result.status.value}, Reason: {result.reason}")
+            print(f"[ASR] ({device_id} via {source} in {infer_dur:.2f}s) Audio ({dur_sec:.2f}s, peak={audio_peak:.2f}) -> Status: {result.status.value}")
 
     if device_id in registered_devices:
         now_str = datetime.now().strftime("%H:%M:%S")

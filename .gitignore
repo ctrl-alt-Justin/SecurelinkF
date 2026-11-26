@@ -20,6 +20,7 @@
 # -------------------------------------------------------------------------
 recordings/
 **/recordings/
+/securelinkdb/.usb_audio_diagnostics/
 *.pcm
 *.wav
 *.mp3

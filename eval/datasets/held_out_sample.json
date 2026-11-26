@@ -1,0 +1,99 @@
+{
+  "schema_version": "1.0.0",
+  "dataset_name": "securelink_v4_held_out_sample",
+  "split": "held_out",
+  "description": "Small disjoint held-out evaluation fixture set for Task 2 verification (must remain separate from dev).",
+  "scenarios": [
+    {
+      "id": "HO-TXT-001",
+      "split": "held_out",
+      "mode": "text",
+      "language": "taglish",
+      "conversational_context": "Benign academic stress hyperbole.",
+      "utterance": "Grabe, nakakamatay yung project natin.",
+      "expected_intent": "ORDINARY_CONVERSATION",
+      "expected_level": "NORMAL",
+      "provisional_severity": 1.0,
+      "provisional_severity_range": [0.0, 1.9],
+      "expected_review_required": false,
+      "tags": ["idiom", "benign"]
+    },
+    {
+      "id": "HO-TXT-002",
+      "split": "held_out",
+      "mode": "text",
+      "language": "tl",
+      "conversational_context": "Explicitly negated harm statement.",
+      "utterance": "Hindi kita sasaktan.",
+      "expected_intent": "NEGATED_THREAT",
+      "expected_level": "NORMAL",
+      "provisional_severity": 1.2,
+      "provisional_severity_range": [0.0, 1.9],
+      "expected_review_required": false,
+      "tags": ["negation"]
+    },
+    {
+      "id": "HO-TXT-003",
+      "split": "held_out",
+      "mode": "text",
+      "language": "tl",
+      "conversational_context": "Indirect school intimidation after class.",
+      "utterance": "Alam mo na mangyayari sa'yo mamaya.",
+      "expected_intent": "DIRECT_THREAT",
+      "expected_level": "THREAT",
+      "provisional_severity": 6.5,
+      "provisional_severity_range": [5.5, 7.8],
+      "expected_review_required": true,
+      "is_serious_threat": true,
+      "tags": ["indirect_intimidation"]
+    },
+    {
+      "id": "HO-TXT-004",
+      "split": "held_out",
+      "mode": "text",
+      "language": "en",
+      "conversational_context": "Direct English physical threat.",
+      "utterance": "I will punch you right now!",
+      "expected_intent": "DIRECT_THREAT",
+      "expected_level": "DANGER",
+      "provisional_severity": 9.0,
+      "provisional_severity_range": [8.0, 10.0],
+      "expected_review_required": false,
+      "is_serious_threat": true,
+      "tags": ["english", "physical_threat"]
+    },
+    {
+      "id": "HO-TXT-005",
+      "split": "held_out",
+      "mode": "text",
+      "language": "taglish",
+      "conversational_context": "Extortion masked with 'biro lang' disclaimer.",
+      "utterance": "Ibigay mo na yang pera mo, biro lang.",
+      "expected_intent": "EXTORTION",
+      "expected_level": "THREAT",
+      "provisional_severity": 6.5,
+      "provisional_severity_range": [4.5, 7.8],
+      "expected_review_required": true,
+      "is_serious_threat": true,
+      "tags": ["adversarial", "humor_masked_extortion"]
+    },
+    {
+      "id": "HO-MT-001",
+      "split": "held_out",
+      "mode": "multi_turn",
+      "language": "tl",
+      "conversational_context": "Two extortion demands on same device within 90s.",
+      "turns": [
+        {"utterance": "Ilabas mo yung baon mo.", "timestamp_offset_sec": 0.0, "speaker_role": "aggressor"},
+        {"utterance": "Magbayad ka sa akin araw-araw.", "timestamp_offset_sec": 90.0, "speaker_role": "aggressor"}
+      ],
+      "expected_intent": "EXTORTION",
+      "expected_level": "THREAT",
+      "provisional_severity": 7.5,
+      "provisional_severity_range": [6.5, 7.8],
+      "expected_review_required": true,
+      "is_serious_threat": true,
+      "tags": ["multi_turn", "extortion"]
+    }
+  ]
+}

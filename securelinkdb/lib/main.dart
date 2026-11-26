@@ -12,6 +12,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'mobile/securelink_mobile_app.dart';
+import 'ordinary_speech_preview.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -1054,7 +1055,6 @@ class _DashboardShellState extends State<DashboardShell> with WindowListener {
 
   WebSocketChannel? _uiChannel;
   bool isServerConnected = false;
-  bool harmfulWordsOnly = false;
   String? cloudTunnelUrl;
   String cloudTunnelState = 'Offline';
   bool cloudTunnelInstalled = true;
@@ -1230,17 +1230,6 @@ class _DashboardShellState extends State<DashboardShell> with WindowListener {
 
   void _openReviewMobileDialog(Map<String, dynamic> requestData) {
     _openPairMobileDialog(initialPendingRequest: requestData);
-  }
-
-  void toggleHarmfulWordsOnly() {
-    final next = !harmfulWordsOnly;
-    setState(() => harmfulWordsOnly = next);
-    if (_uiChannel != null && isServerConnected) {
-      _uiChannel!.sink.add(jsonEncode({
-        'event_type': 'set_harmful_only',
-        'enabled': next,
-      }));
-    }
   }
 
   bool _showSplashScreen = true;
@@ -1450,15 +1439,7 @@ class _DashboardShellState extends State<DashboardShell> with WindowListener {
                   ),
                 );
               }
-            } else if (eventType == 'harmful_only_update') {
-              final enabled = data['enabled'] == true;
-              if (mounted) {
-                setState(() => harmfulWordsOnly = enabled);
-              }
             } else if (eventType == 'server_status') {
-              if (data.containsKey('harmful_words_only') && mounted) {
-                setState(() => harmfulWordsOnly = data['harmful_words_only'] == true);
-              }
               if (mounted) {
                 setState(() {
                   if (data['cloud_tunnel_url'] != null) {
@@ -1900,8 +1881,6 @@ class _DashboardShellState extends State<DashboardShell> with WindowListener {
                               },
                               onOpenPinSetup: _openPinSetupDialog,
                               hasOnlinePin: liveDevices.any((d) => d.online),
-                              harmfulWordsOnly: harmfulWordsOnly,
-                              onToggleHarmfulWordsOnly: toggleHarmfulWordsOnly,
                               cloudTunnelUrl: cloudTunnelUrl,
                               cloudTunnelState: cloudTunnelState,
                               primaryIp: primaryIp,
@@ -2515,8 +2494,6 @@ class _Header extends StatelessWidget {
   final ValueChanged<DashboardStatus> onStatusChanged;
   final VoidCallback onOpenPinSetup;
   final bool hasOnlinePin;
-  final bool harmfulWordsOnly;
-  final VoidCallback onToggleHarmfulWordsOnly;
   final String? cloudTunnelUrl;
   final String cloudTunnelState;
   final String primaryIp;
@@ -2534,8 +2511,6 @@ class _Header extends StatelessWidget {
     required this.onStatusChanged,
     required this.onOpenPinSetup,
     required this.hasOnlinePin,
-    required this.harmfulWordsOnly,
-    required this.onToggleHarmfulWordsOnly,
     this.cloudTunnelUrl,
     this.cloudTunnelState = 'Offline',
     this.primaryIp = '10.28.20.30',
@@ -2591,10 +2566,7 @@ class _Header extends StatelessWidget {
         const SizedBox(width: 8),
         _HeaderStatusPicker(status: status, onChanged: onStatusChanged),
         const SizedBox(width: 8),
-        _HarmfulWordsToggleButton(
-          active: harmfulWordsOnly,
-          onToggle: onToggleHarmfulWordsOnly,
-        ),
+        const OrdinarySpeechPreview(),
         const SizedBox(width: 8),
         _PairPinHeaderButton(
           hasPins: hasOnlinePin,
@@ -3640,100 +3612,6 @@ class _HeaderStatusPicker extends StatelessWidget {
             const SizedBox(width: 5),
             Text(status.label, style: TextStyle(color: c, fontSize: 8.5, fontWeight: FontWeight.w700, letterSpacing: .7)),
           ],
-        ),
-      ),
-    );
-  }
-}
-
-class _HarmfulWordsToggleButton extends StatelessWidget {
-  final bool active;
-  final VoidCallback onToggle;
-
-  const _HarmfulWordsToggleButton({
-    required this.active,
-    required this.onToggle,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Tooltip(
-      message: active
-          ? 'Harmful Words Filter: ACTIVE\nOnly threats, verbal harassment & harmful keywords trigger incidents.\nBenign conversational speech is ignored.'
-          : 'Harmful Words Filter: INACTIVE\nMonitoring all spoken conversation.\nClick to detect harmful words & threats only.',
-      waitDuration: const Duration(milliseconds: 300),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          onTap: onToggle,
-          borderRadius: BorderRadius.circular(11),
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 220),
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6.5),
-            decoration: BoxDecoration(
-              gradient: active
-                  ? const LinearGradient(
-                      colors: [Color(0xFF0C3829), Color(0xFF06221A)],
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                    )
-                  : LinearGradient(
-                      colors: [Colors.white.withOpacity(0.04), Colors.white.withOpacity(0.02)],
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                    ),
-              borderRadius: BorderRadius.circular(11),
-              border: Border.all(
-                color: active ? const Color(0xFF109C6D).withOpacity(0.85) : Colors.white.withOpacity(0.09),
-                width: active ? 1.2 : 1.0,
-              ),
-              boxShadow: active
-                  ? [
-                      BoxShadow(
-                        color: const Color(0xFF109C6D).withOpacity(0.40),
-                        blurRadius: 10,
-                        spreadRadius: 1,
-                      )
-                    ]
-                  : null,
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  active ? Icons.shield_rounded : Icons.shield_outlined,
-                  size: 13.5,
-                  color: active ? const Color(0xFF55E2C0) : Colors.white60,
-                ),
-                const SizedBox(width: 6),
-                Text(
-                  'HARMFUL ONLY',
-                  style: TextStyle(
-                    fontSize: 8.5,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: 0.6,
-                    color: active ? const Color(0xFF55E2C0) : Colors.white70,
-                  ),
-                ),
-                const SizedBox(width: 5),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 4.5, vertical: 1.5),
-                  decoration: BoxDecoration(
-                    color: active ? const Color(0xFF109C6D) : Colors.white.withOpacity(0.10),
-                    borderRadius: BorderRadius.circular(4),
-                  ),
-                  child: Text(
-                    active ? 'ON' : 'OFF',
-                    style: TextStyle(
-                      fontSize: 7.5,
-                      fontWeight: FontWeight.w900,
-                      color: active ? Colors.white : Colors.white54,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
         ),
       ),
     );

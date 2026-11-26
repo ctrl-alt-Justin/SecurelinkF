@@ -1,0 +1,1044 @@
+{
+  "generated_at_utc": "2026-11-25T01:29:01.848669+00:00",
+  "datasets": [
+    {
+      "name": "securelink_v4_dev_sample",
+      "split": "dev",
+      "schema_version": "1.0.0",
+      "scenario_count": 13
+    },
+    {
+      "name": "securelink_v4_held_out_sample",
+      "split": "held_out",
+      "schema_version": "1.0.0",
+      "scenario_count": 6
+    }
+  ],
+  "split_isolation_check": {
+    "overlapping_ids": [],
+    "overlapping_texts": []
+  },
+  "counts": {
+    "total_scenarios": 19,
+    "evaluated": 18,
+    "missing_fixtures": 1,
+    "unsupported_capabilities": 0,
+    "skipped": 0
+  },
+  "intent_classification": {
+    "total": 16,
+    "accuracy": 0.6875,
+    "macro_precision": 0.7375,
+    "macro_recall": 0.7417,
+    "macro_f1": 0.7146,
+    "per_class": {
+      "AMBIGUOUS_CONTEXT": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 1
+      },
+      "COERCION": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 1
+      },
+      "DIRECT_THREAT": {
+        "precision": 1.0,
+        "recall": 0.6,
+        "f1": 0.75,
+        "support": 5
+      },
+      "EXTORTION": {
+        "precision": 1.0,
+        "recall": 0.6667,
+        "f1": 0.8,
+        "support": 3
+      },
+      "NEGATED_THREAT": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 1
+      },
+      "ORDINARY_CONVERSATION": {
+        "precision": 0.4,
+        "recall": 0.6667,
+        "f1": 0.5,
+        "support": 3
+      },
+      "PAST_INCIDENT": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 0
+      },
+      "REPORTED_THREAT": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 1
+      },
+      "VERBAL_HARASSMENT": {
+        "precision": 0.5,
+        "recall": 1.0,
+        "f1": 0.6667,
+        "support": 1
+      }
+    },
+    "confusion_matrix": {
+      "AMBIGUOUS_CONTEXT": {
+        "AMBIGUOUS_CONTEXT": 0,
+        "COERCION": 0,
+        "DIRECT_THREAT": 0,
+        "EXTORTION": 0,
+        "NEGATED_THREAT": 0,
+        "ORDINARY_CONVERSATION": 1,
+        "PAST_INCIDENT": 0,
+        "REPORTED_THREAT": 0,
+        "VERBAL_HARASSMENT": 0
+      },
+      "COERCION": {
+        "AMBIGUOUS_CONTEXT": 0,
+        "COERCION": 1,
+        "DIRECT_THREAT": 0,
+        "EXTORTION": 0,
+        "NEGATED_THREAT": 0,
+        "ORDINARY_CONVERSATION": 0,
+        "PAST_INCIDENT": 0,
+        "REPORTED_THREAT": 0,
+        "VERBAL_HARASSMENT": 0
+      },
+      "DIRECT_THREAT": {
+        "AMBIGUOUS_CONTEXT": 0,
+        "COERCION": 0,
+        "DIRECT_THREAT": 3,
+        "EXTORTION": 0,
+        "NEGATED_THREAT": 0,
+        "ORDINARY_CONVERSATION": 1,
+        "PAST_INCIDENT": 1,
+        "REPORTED_THREAT": 0,
+        "VERBAL_HARASSMENT": 0
+      },
+      "EXTORTION": {
+        "AMBIGUOUS_CONTEXT": 0,
+        "COERCION": 0,
+        "DIRECT_THREAT": 0,
+        "EXTORTION": 2,
+        "NEGATED_THREAT": 0,
+        "ORDINARY_CONVERSATION": 1,
+        "PAST_INCIDENT": 0,
+        "REPORTED_THREAT": 0,
+        "VERBAL_HARASSMENT": 0
+      },
+      "NEGATED_THREAT": {
+        "AMBIGUOUS_CONTEXT": 0,
+        "COERCION": 0,
+        "DIRECT_THREAT": 0,
+        "EXTORTION": 0,
+        "NEGATED_THREAT": 1,
+        "ORDINARY_CONVERSATION": 0,
+        "PAST_INCIDENT": 0,
+        "REPORTED_THREAT": 0,
+        "VERBAL_HARASSMENT": 0
+      },
+      "ORDINARY_CONVERSATION": {
+        "AMBIGUOUS_CONTEXT": 0,
+        "COERCION": 0,
+        "DIRECT_THREAT": 0,
+        "EXTORTION": 0,
+        "NEGATED_THREAT": 0,
+        "ORDINARY_CONVERSATION": 2,
+        "PAST_INCIDENT": 0,
+        "REPORTED_THREAT": 0,
+        "VERBAL_HARASSMENT": 1
+      },
+      "PAST_INCIDENT": {
+        "AMBIGUOUS_CONTEXT": 0,
+        "COERCION": 0,
+        "DIRECT_THREAT": 0,
+        "EXTORTION": 0,
+        "NEGATED_THREAT": 0,
+        "ORDINARY_CONVERSATION": 0,
+        "PAST_INCIDENT": 0,
+        "REPORTED_THREAT": 0,
+        "VERBAL_HARASSMENT": 0
+      },
+      "REPORTED_THREAT": {
+        "AMBIGUOUS_CONTEXT": 0,
+        "COERCION": 0,
+        "DIRECT_THREAT": 0,
+        "EXTORTION": 0,
+        "NEGATED_THREAT": 0,
+        "ORDINARY_CONVERSATION": 0,
+        "PAST_INCIDENT": 0,
+        "REPORTED_THREAT": 1,
+        "VERBAL_HARASSMENT": 0
+      },
+      "VERBAL_HARASSMENT": {
+        "AMBIGUOUS_CONTEXT": 0,
+        "COERCION": 0,
+        "DIRECT_THREAT": 0,
+        "EXTORTION": 0,
+        "NEGATED_THREAT": 0,
+        "ORDINARY_CONVERSATION": 0,
+        "PAST_INCIDENT": 0,
+        "REPORTED_THREAT": 0,
+        "VERBAL_HARASSMENT": 1
+      }
+    }
+  },
+  "level_classification": {
+    "total": 17,
+    "accuracy": 0.7059,
+    "macro_precision": 0.6071,
+    "macro_recall": 0.5542,
+    "macro_f1": 0.5667,
+    "per_class": {
+      "DANGER": {
+        "precision": 1.0,
+        "recall": 0.6667,
+        "f1": 0.8,
+        "support": 3
+      },
+      "NORMAL": {
+        "precision": 0.5714,
+        "recall": 0.8,
+        "f1": 0.6667,
+        "support": 5
+      },
+      "THREAT": {
+        "precision": 0.8571,
+        "recall": 0.75,
+        "f1": 0.8,
+        "support": 8
+      },
+      "WARNING": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 1
+      }
+    },
+    "confusion_matrix": {
+      "DANGER": {
+        "DANGER": 2,
+        "NORMAL": 0,
+        "THREAT": 0,
+        "WARNING": 1
+      },
+      "NORMAL": {
+        "DANGER": 0,
+        "NORMAL": 4,
+        "THREAT": 1,
+        "WARNING": 0
+      },
+      "THREAT": {
+        "DANGER": 0,
+        "NORMAL": 2,
+        "THREAT": 6,
+        "WARNING": 0
+      },
+      "WARNING": {
+        "DANGER": 0,
+        "NORMAL": 1,
+        "THREAT": 0,
+        "WARNING": 0
+      }
+    }
+  },
+  "safety_and_severity": {
+    "friendly_teasing_total": 2,
+    "friendly_teasing_false_positives": 1,
+    "friendly_teasing_fp_rate": 0.5,
+    "friendly_teasing_fp_ids": [
+      "DEV-TXT-003"
+    ],
+    "serious_threat_total": 9,
+    "serious_threat_false_negatives": 3,
+    "serious_threat_fn_rate": 0.3333,
+    "serious_threat_fn_ids": [
+      "DEV-TXT-004",
+      "DEV-TXT-009",
+      "HO-TXT-005"
+    ],
+    "severity_level_total": 17,
+    "severity_level_exact_agreement": 0.7059,
+    "severity_range_total": 17,
+    "severity_range_agreement": 0.7059,
+    "severity_mae": 1.4059,
+    "non_danger_total": 14,
+    "false_danger_count": 0,
+    "false_danger_rate": 0.0,
+    "false_danger_ids": [],
+    "review_priority_total": 17,
+    "review_priority_accuracy": 0.7647,
+    "review_priority_precision": 0.8333,
+    "review_priority_recall": 0.625
+  },
+  "asr_metrics": {
+    "evaluated_audio_clips": 2,
+    "mean_wer": 0.0,
+    "mean_cer": 0.0,
+    "critical_words_total": 0,
+    "critical_words_missed": 0,
+    "critical_word_error_rate": null,
+    "negation_words_total": 0,
+    "negation_words_missed": 0,
+    "negation_word_error_rate": null
+  },
+  "latency": {
+    "text_and_multi_turn": {
+      "count": 16,
+      "mean_ms": 0.137,
+      "p50_ms": 0.074,
+      "p95_ms": 0.695,
+      "max_ms": 0.695
+    },
+    "audio_and_end_to_end": {
+      "count": 2,
+      "mean_ms": 22.638,
+      "p50_ms": 1.809,
+      "p95_ms": 43.467,
+      "max_ms": 43.467
+    }
+  },
+  "missing_fixtures": [
+    {
+      "id": "DEV-AUD-MISSING-001",
+      "audio_path": "eval/fixtures/audio/nonexistent_sample.wav",
+      "reason": "Audio fixture not found on disk: eval/fixtures/audio/nonexistent_sample.wav"
+    }
+  ],
+  "unsupported_capabilities": [],
+  "capabilities_audit": {
+    "context_engine_bert_active": false,
+    "usb_send_line_supported": false,
+    "whisper_loaded": true,
+    "nsnet2_loaded": true,
+    "notes": [
+      "ContextEngine V3 does not invoke TagalogBERT during evaluate() (audit finding #1).",
+      "USBDeviceManager lacks send_line(); end-to-end harness runs under mocked ESP32_DIRECT websocket to avoid triggering hardware or hitting server.py:2682 AttributeError.",
+      "UNCERTAIN_TRANSCRIPTION is currently dropped by server.py:2648 before reaching human review."
+    ]
+  },
+  "records": [
+    {
+      "id": "DEV-TXT-001",
+      "split": "dev",
+      "mode": "text",
+      "language": "taglish",
+      "status": "EVALUATED",
+      "utterance": "Tara kain tayo sa canteen mamaya.",
+      "expected_intent": "ORDINARY_CONVERSATION",
+      "predicted_intent": "ORDINARY_CONVERSATION",
+      "expected_level": "NORMAL",
+      "predicted_level": "NORMAL",
+      "provisional_severity": 1.0,
+      "provisional_severity_range": [
+        0.0,
+        1.9
+      ],
+      "predicted_score": 1.0,
+      "predicted_category": "Conversational",
+      "expected_review_required": false,
+      "predicted_review_required": false,
+      "is_friendly_teasing": false,
+      "is_serious_threat": false,
+      "risk_factors": [],
+      "explanation": "Ordinary conversational speech or benign idiom without threat indicators.",
+      "latency_ms": 0.306,
+      "tags": [
+        "benign",
+        "baseline"
+      ]
+    },
+    {
+      "id": "DEV-TXT-002",
+      "split": "dev",
+      "mode": "text",
+      "language": "tl",
+      "status": "EVALUATED",
+      "utterance": "Hoy, bakla ka!",
+      "expected_intent": "AMBIGUOUS_CONTEXT",
+      "predicted_intent": "ORDINARY_CONVERSATION",
+      "expected_level": "WARNING",
+      "predicted_level": "NORMAL",
+      "provisional_severity": 3.0,
+      "provisional_severity_range": [
+        2.0,
+        3.9
+      ],
+      "predicted_score": 1.0,
+      "predicted_category": "Conversational",
+      "expected_review_required": true,
+      "predicted_review_required": false,
+      "is_friendly_teasing": true,
+      "is_serious_threat": false,
+      "risk_factors": [],
+      "explanation": "Ordinary conversational speech or benign idiom without threat indicators.",
+      "latency_ms": 0.258,
+      "tags": [
+        "filipino_context",
+        "identity_term",
+        "ambiguous"
+      ]
+    },
+    {
+      "id": "DEV-TXT-003",
+      "split": "dev",
+      "mode": "text",
+      "language": "taglish",
+      "status": "EVALUATED",
+      "utterance": "Ang bobo mo naman sa ML pre haha!",
+      "expected_intent": "ORDINARY_CONVERSATION",
+      "predicted_intent": "VERBAL_HARASSMENT",
+      "expected_level": "NORMAL",
+      "predicted_level": "THREAT",
+      "provisional_severity": 1.5,
+      "provisional_severity_range": [
+        0.0,
+        2.5
+      ],
+      "predicted_score": 6.0,
+      "predicted_category": "Verbal Harassment",
+      "expected_review_required": false,
+      "predicted_review_required": false,
+      "is_friendly_teasing": true,
+      "is_serious_threat": false,
+      "risk_factors": [
+        "Targeted derogatory insult / verbal harassment detected"
+      ],
+      "explanation": "Direct personal insults or derogatory slurs targeting another individual.",
+      "latency_ms": 0.074,
+      "tags": [
+        "friendly_teasing",
+        "gaming_banter"
+      ]
+    },
+    {
+      "id": "DEV-TXT-004",
+      "split": "dev",
+      "mode": "text",
+      "language": "taglish",
+      "status": "EVALUATED",
+      "utterance": "Papatayin kita mamaya sa gate, joke lang.",
+      "expected_intent": "DIRECT_THREAT",
+      "predicted_intent": "ORDINARY_CONVERSATION",
+      "expected_level": "THREAT",
+      "predicted_level": "NORMAL",
+      "provisional_severity": 7.0,
+      "provisional_severity_range": [
+        5.5,
+        9.0
+      ],
+      "predicted_score": 1.0,
+      "predicted_category": "Conversational",
+      "expected_review_required": true,
+      "predicted_review_required": false,
+      "is_friendly_teasing": false,
+      "is_serious_threat": true,
+      "risk_factors": [
+        "Recognized benign idiom: Explicit conversational humor / joke indicator"
+      ],
+      "explanation": "Ordinary conversational speech or benign idiom without threat indicators.",
+      "latency_ms": 0.033,
+      "tags": [
+        "adversarial",
+        "humor_masked_threat",
+        "filipino_context"
+      ]
+    },
+    {
+      "id": "DEV-TXT-005",
+      "split": "dev",
+      "mode": "text",
+      "language": "tl",
+      "status": "EVALUATED",
+      "utterance": "Bubugbugin kita mamaya sa gate.",
+      "expected_intent": "DIRECT_THREAT",
+      "predicted_intent": "DIRECT_THREAT",
+      "expected_level": "DANGER",
+      "predicted_level": "DANGER",
+      "provisional_severity": 8.8,
+      "provisional_severity_range": [
+        8.0,
+        10.0
+      ],
+      "predicted_score": 9.1,
+      "predicted_category": "Physical Threat",
+      "expected_review_required": false,
+      "predicted_review_required": false,
+      "is_friendly_teasing": false,
+      "is_serious_threat": true,
+      "risk_factors": [
+        "Explicit direct physical violence threat detected",
+        "Specific scheduled timeframe (+0.3)",
+        "Specific campus location referenced (+0.3)"
+      ],
+      "explanation": "Direct physical threat of battery, punching, or assault.",
+      "latency_ms": 0.046,
+      "tags": [
+        "physical_threat",
+        "danger"
+      ]
+    },
+    {
+      "id": "DEV-TXT-006",
+      "split": "dev",
+      "mode": "text",
+      "language": "tl",
+      "status": "EVALUATED",
+      "utterance": "Akin na yang baon mo kundi aabangan kita sa gate.",
+      "expected_intent": "EXTORTION",
+      "predicted_intent": "EXTORTION",
+      "expected_level": "THREAT",
+      "predicted_level": "THREAT",
+      "provisional_severity": 6.8,
+      "provisional_severity_range": [
+        5.0,
+        7.8
+      ],
+      "predicted_score": 7.1,
+      "predicted_category": "Extortion / Demand",
+      "expected_review_required": true,
+      "predicted_review_required": true,
+      "is_friendly_teasing": false,
+      "is_serious_threat": true,
+      "risk_factors": [
+        "Extortion / demand for money or property detected",
+        "Specific scheduled timeframe (+0.3)",
+        "Specific campus location referenced (+0.3)"
+      ],
+      "explanation": "Coercive demand for money, allowance, or food under threat of harm.",
+      "latency_ms": 0.062,
+      "tags": [
+        "extortion"
+      ]
+    },
+    {
+      "id": "DEV-TXT-007",
+      "split": "dev",
+      "mode": "text",
+      "language": "tl",
+      "status": "EVALUATED",
+      "utterance": "Huwag mong sabihin sa teacher.",
+      "expected_intent": "COERCION",
+      "predicted_intent": "COERCION",
+      "expected_level": "THREAT",
+      "predicted_level": "THREAT",
+      "provisional_severity": 5.5,
+      "provisional_severity_range": [
+        4.5,
+        7.0
+      ],
+      "predicted_score": 5.5,
+      "predicted_category": "Coercion / Intimidation",
+      "expected_review_required": true,
+      "predicted_review_required": true,
+      "is_friendly_teasing": false,
+      "is_serious_threat": true,
+      "risk_factors": [
+        "Coercion / secrecy enforcement pattern detected"
+      ],
+      "explanation": "Coercive intimidation enforcing secrecy or obedience (e.g. 'Huwag mong sabihin sa teacher').",
+      "latency_ms": 0.054,
+      "tags": [
+        "coercion"
+      ]
+    },
+    {
+      "id": "DEV-TXT-008",
+      "split": "dev",
+      "mode": "text",
+      "language": "tl",
+      "status": "EVALUATED",
+      "utterance": "Sinabi niya na papatayin niya ako.",
+      "expected_intent": "REPORTED_THREAT",
+      "predicted_intent": "REPORTED_THREAT",
+      "expected_level": "THREAT",
+      "predicted_level": "THREAT",
+      "provisional_severity": 5.0,
+      "provisional_severity_range": [
+        4.0,
+        6.0
+      ],
+      "predicted_score": 5.0,
+      "predicted_category": "Reported Threat",
+      "expected_review_required": true,
+      "predicted_review_required": true,
+      "is_friendly_teasing": false,
+      "is_serious_threat": false,
+      "risk_factors": [
+        "Reported speech: speaker is reporting what another person said"
+      ],
+      "explanation": "Speaker reported a threat made by someone else. High administrative priority; not an active physical emergency.",
+      "latency_ms": 0.044,
+      "tags": [
+        "reported_speech"
+      ]
+    },
+    {
+      "id": "DEV-TXT-009",
+      "split": "dev",
+      "mode": "text",
+      "language": "tl",
+      "status": "EVALUATED",
+      "utterance": "Kanina pa kita hinihintay, bubugbugin kita ngayon.",
+      "expected_intent": "DIRECT_THREAT",
+      "predicted_intent": "PAST_INCIDENT",
+      "expected_level": "DANGER",
+      "predicted_level": "WARNING",
+      "provisional_severity": 8.8,
+      "provisional_severity_range": [
+        7.0,
+        10.0
+      ],
+      "predicted_score": 3.5,
+      "predicted_category": "Warning / Incident Report",
+      "expected_review_required": false,
+      "predicted_review_required": true,
+      "is_friendly_teasing": false,
+      "is_serious_threat": true,
+      "risk_factors": [
+        "Past incident reference: event occurred in prior timeframe"
+      ],
+      "explanation": "Speaker described a past confrontation or historic altercation. Not an active emergency.",
+      "latency_ms": 0.052,
+      "tags": [
+        "adversarial",
+        "past_plus_active_threat"
+      ]
+    },
+    {
+      "id": "DEV-MT-001",
+      "split": "dev",
+      "mode": "multi_turn",
+      "language": "tl",
+      "status": "EVALUATED",
+      "num_turns": 3,
+      "turn_results": [
+        {
+          "turn_index": 0,
+          "timestamp_offset_sec": 0.0,
+          "speaker_role": "aggressor",
+          "utterance": "Ang bobo mo talaga.",
+          "expected_intent": null,
+          "predicted_intent": "VERBAL_HARASSMENT",
+          "expected_level": null,
+          "predicted_level": "THREAT",
+          "predicted_score": 6.0,
+          "predicted_category": "Verbal Harassment",
+          "predicted_review_required": false,
+          "risk_factors": [
+            "Targeted derogatory insult / verbal harassment detected"
+          ],
+          "latency_ms": 0.039
+        },
+        {
+          "turn_index": 1,
+          "timestamp_offset_sec": 60.0,
+          "speaker_role": "aggressor",
+          "utterance": "Pangit mo inutil ka!",
+          "expected_intent": null,
+          "predicted_intent": "VERBAL_HARASSMENT",
+          "expected_level": null,
+          "predicted_level": "THREAT",
+          "predicted_score": 6.5,
+          "predicted_category": "Verbal Harassment",
+          "predicted_review_required": false,
+          "risk_factors": [
+            "Targeted derogatory insult / verbal harassment detected",
+            "Second consecutive harassment event in window"
+          ],
+          "latency_ms": 0.04
+        },
+        {
+          "turn_index": 2,
+          "timestamp_offset_sec": 120.0,
+          "speaker_role": "aggressor",
+          "utterance": "Wala kang kwenta gago ka!",
+          "expected_intent": null,
+          "predicted_intent": "VERBAL_HARASSMENT",
+          "expected_level": null,
+          "predicted_level": "THREAT",
+          "predicted_score": 7.2,
+          "predicted_category": "Escalated Harassment",
+          "predicted_review_required": false,
+          "risk_factors": [
+            "Targeted derogatory insult / verbal harassment detected",
+            "Repeated verbal harassment escalation (3 events in window)"
+          ],
+          "latency_ms": 0.049
+        }
+      ],
+      "expected_intent": "VERBAL_HARASSMENT",
+      "predicted_intent": "VERBAL_HARASSMENT",
+      "expected_level": "THREAT",
+      "predicted_level": "THREAT",
+      "provisional_severity": 7.2,
+      "provisional_severity_range": [
+        6.5,
+        7.8
+      ],
+      "predicted_score": 7.2,
+      "predicted_category": "Escalated Harassment",
+      "expected_review_required": false,
+      "predicted_review_required": false,
+      "is_friendly_teasing": false,
+      "is_serious_threat": false,
+      "risk_factors": [
+        "Targeted derogatory insult / verbal harassment detected",
+        "Repeated verbal harassment escalation (3 events in window)"
+      ],
+      "explanation": "Direct personal insults or derogatory slurs targeting another individual.",
+      "latency_ms": 0.128,
+      "tags": [
+        "multi_turn",
+        "escalation"
+      ]
+    },
+    {
+      "id": "DEV-AUD-001",
+      "split": "dev",
+      "mode": "audio",
+      "language": "silence",
+      "status": "EVALUATED",
+      "audio_path": "eval/fixtures/audio/silence_1s.wav",
+      "reference_transcript": "",
+      "hypothesis_transcript": "",
+      "expected_transcription_status": "NO_SPEECH",
+      "transcription_status": "NO_SPEECH",
+      "transcription_reason": "Electrical silence below threshold (Peak=0.0000 < 0.003)",
+      "asr_metrics": {},
+      "audio_quality": {
+        "raw_peak": 0.0,
+        "raw_rms": 0.0,
+        "hpf_peak": 0.0,
+        "hpf_rms": 0.0
+      },
+      "wer": 0.0,
+      "cer": 0.0,
+      "critical_word_errors": {
+        "total": 0,
+        "missed_count": 0,
+        "error_rate": null,
+        "missed_words": []
+      },
+      "negation_word_errors": {
+        "total": 0,
+        "missed_count": 0,
+        "error_rate": null,
+        "missed_words": []
+      },
+      "asr_latency_ms": 1.809,
+      "latency_ms": 1.809,
+      "tags": [
+        "audio",
+        "silence"
+      ]
+    },
+    {
+      "id": "DEV-E2E-001",
+      "split": "dev",
+      "mode": "end_to_end",
+      "language": "noise",
+      "status": "EVALUATED",
+      "audio_path": "eval/fixtures/audio/fan_hum_2s.wav",
+      "reference_transcript": "",
+      "hypothesis_transcript": "",
+      "expected_transcription_status": "NO_SPEECH",
+      "transcription_status": "NO_SPEECH",
+      "transcription_reason": "No speech segments detected by VAD",
+      "asr_metrics": {},
+      "audio_quality": {
+        "raw_peak": 0.0099,
+        "raw_rms": 0.0039,
+        "hpf_peak": 0.0067,
+        "denoised_peak": 0.0042
+      },
+      "wer": 0.0,
+      "cer": 0.0,
+      "critical_word_errors": {
+        "total": 0,
+        "missed_count": 0,
+        "error_rate": null,
+        "missed_words": []
+      },
+      "negation_word_errors": {
+        "total": 0,
+        "missed_count": 0,
+        "error_rate": null,
+        "missed_words": []
+      },
+      "asr_latency_ms": 38.393,
+      "latency_ms": 43.467,
+      "tags": [
+        "end_to_end",
+        "noise"
+      ],
+      "e2e_incident_emitted": false,
+      "e2e_incident_payload_keys": [],
+      "e2e_danger_triggers_intercepted": [],
+      "expected_intent": null,
+      "predicted_intent": "NO_INCIDENT",
+      "expected_level": "NORMAL",
+      "predicted_level": "NORMAL",
+      "provisional_severity": 0.0,
+      "provisional_severity_range": [
+        0.0,
+        1.9
+      ],
+      "predicted_score": 0.0,
+      "predicted_category": "No Speech",
+      "expected_review_required": false,
+      "predicted_review_required": false,
+      "is_friendly_teasing": false,
+      "is_serious_threat": false
+    },
+    {
+      "id": "DEV-AUD-MISSING-001",
+      "split": "dev",
+      "mode": "audio",
+      "language": "tl",
+      "status": "MISSING_FIXTURE",
+      "reason": "Audio fixture not found on disk: eval/fixtures/audio/nonexistent_sample.wav",
+      "audio_path": "eval/fixtures/audio/nonexistent_sample.wav",
+      "tags": [
+        "missing_fixture_check"
+      ]
+    },
+    {
+      "id": "HO-TXT-001",
+      "split": "held_out",
+      "mode": "text",
+      "language": "taglish",
+      "status": "EVALUATED",
+      "utterance": "Grabe, nakakamatay yung project natin.",
+      "expected_intent": "ORDINARY_CONVERSATION",
+      "predicted_intent": "ORDINARY_CONVERSATION",
+      "expected_level": "NORMAL",
+      "predicted_level": "NORMAL",
+      "provisional_severity": 1.0,
+      "provisional_severity_range": [
+        0.0,
+        1.9
+      ],
+      "predicted_score": 1.0,
+      "predicted_category": "Conversational",
+      "expected_review_required": false,
+      "predicted_review_required": false,
+      "is_friendly_teasing": false,
+      "is_serious_threat": false,
+      "risk_factors": [
+        "Recognized benign idiom: Academic or environmental hyperbole ('nakakamatay ang exam')"
+      ],
+      "explanation": "Ordinary conversational speech or benign idiom without threat indicators.",
+      "latency_ms": 0.695,
+      "tags": [
+        "idiom",
+        "benign"
+      ]
+    },
+    {
+      "id": "HO-TXT-002",
+      "split": "held_out",
+      "mode": "text",
+      "language": "tl",
+      "status": "EVALUATED",
+      "utterance": "Hindi kita sasaktan.",
+      "expected_intent": "NEGATED_THREAT",
+      "predicted_intent": "NEGATED_THREAT",
+      "expected_level": "NORMAL",
+      "predicted_level": "NORMAL",
+      "provisional_severity": 1.2,
+      "provisional_severity_range": [
+        0.0,
+        1.9
+      ],
+      "predicted_score": 1.2,
+      "predicted_category": "Conversational",
+      "expected_review_required": false,
+      "predicted_review_required": false,
+      "is_friendly_teasing": false,
+      "is_serious_threat": false,
+      "risk_factors": [
+        "Threat action explicitly negated / disclaimed"
+      ],
+      "explanation": "Potentially violent terms detected but explicitly negated (e.g. 'Hindi kita sasaktan').",
+      "latency_ms": 0.079,
+      "tags": [
+        "negation"
+      ]
+    },
+    {
+      "id": "HO-TXT-003",
+      "split": "held_out",
+      "mode": "text",
+      "language": "tl",
+      "status": "EVALUATED",
+      "utterance": "Alam mo na mangyayari sa'yo mamaya.",
+      "expected_intent": "DIRECT_THREAT",
+      "predicted_intent": "DIRECT_THREAT",
+      "expected_level": "THREAT",
+      "predicted_level": "THREAT",
+      "provisional_severity": 6.5,
+      "provisional_severity_range": [
+        5.5,
+        7.8
+      ],
+      "predicted_score": 6.5,
+      "predicted_category": "Social Intimidation",
+      "expected_review_required": true,
+      "predicted_review_required": true,
+      "is_friendly_teasing": false,
+      "is_serious_threat": true,
+      "risk_factors": [
+        "Indirect or veiled intimidation pattern detected",
+        "Specific scheduled timeframe (+0.3)"
+      ],
+      "explanation": "Veiled or indirect school intimidation forecasting future harm.",
+      "latency_ms": 0.099,
+      "tags": [
+        "indirect_intimidation"
+      ]
+    },
+    {
+      "id": "HO-TXT-004",
+      "split": "held_out",
+      "mode": "text",
+      "language": "en",
+      "status": "EVALUATED",
+      "utterance": "I will punch you right now!",
+      "expected_intent": "DIRECT_THREAT",
+      "predicted_intent": "DIRECT_THREAT",
+      "expected_level": "DANGER",
+      "predicted_level": "DANGER",
+      "provisional_severity": 9.0,
+      "provisional_severity_range": [
+        8.0,
+        10.0
+      ],
+      "predicted_score": 9.0,
+      "predicted_category": "Physical Threat",
+      "expected_review_required": false,
+      "predicted_review_required": false,
+      "is_friendly_teasing": false,
+      "is_serious_threat": true,
+      "risk_factors": [
+        "Explicit direct physical violence threat detected",
+        "Immediate temporal proximity (+0.5)"
+      ],
+      "explanation": "Direct physical threat of battery, punching, or assault.",
+      "latency_ms": 0.079,
+      "tags": [
+        "english",
+        "physical_threat"
+      ]
+    },
+    {
+      "id": "HO-TXT-005",
+      "split": "held_out",
+      "mode": "text",
+      "language": "taglish",
+      "status": "EVALUATED",
+      "utterance": "Ibigay mo na yang pera mo, biro lang.",
+      "expected_intent": "EXTORTION",
+      "predicted_intent": "ORDINARY_CONVERSATION",
+      "expected_level": "THREAT",
+      "predicted_level": "NORMAL",
+      "provisional_severity": 6.5,
+      "provisional_severity_range": [
+        4.5,
+        7.8
+      ],
+      "predicted_score": 1.0,
+      "predicted_category": "Conversational",
+      "expected_review_required": true,
+      "predicted_review_required": false,
+      "is_friendly_teasing": false,
+      "is_serious_threat": true,
+      "risk_factors": [
+        "Recognized benign idiom: Explicit conversational humor / joke indicator"
+      ],
+      "explanation": "Ordinary conversational speech or benign idiom without threat indicators.",
+      "latency_ms": 0.055,
+      "tags": [
+        "adversarial",
+        "humor_masked_extortion"
+      ]
+    },
+    {
+      "id": "HO-MT-001",
+      "split": "held_out",
+      "mode": "multi_turn",
+      "language": "tl",
+      "status": "EVALUATED",
+      "num_turns": 2,
+      "turn_results": [
+        {
+          "turn_index": 0,
+          "timestamp_offset_sec": 0.0,
+          "speaker_role": "aggressor",
+          "utterance": "Ilabas mo yung baon mo.",
+          "expected_intent": null,
+          "predicted_intent": "EXTORTION",
+          "expected_level": null,
+          "predicted_level": "THREAT",
+          "predicted_score": 6.8,
+          "predicted_category": "Extortion / Demand",
+          "predicted_review_required": true,
+          "risk_factors": [
+            "Extortion / demand for money or property detected",
+            "Specific campus location referenced (+0.3)"
+          ],
+          "latency_ms": 0.052
+        },
+        {
+          "turn_index": 1,
+          "timestamp_offset_sec": 90.0,
+          "speaker_role": "aggressor",
+          "utterance": "Magbayad ka sa akin araw-araw.",
+          "expected_intent": null,
+          "predicted_intent": "EXTORTION",
+          "expected_level": null,
+          "predicted_level": "THREAT",
+          "predicted_score": 7.5,
+          "predicted_category": "Extortion / Demand",
+          "predicted_review_required": true,
+          "risk_factors": [
+            "Extortion / demand for money or property detected",
+            "Repeated extortion pattern detected (2 demands in window)"
+          ],
+          "latency_ms": 0.083
+        }
+      ],
+      "expected_intent": "EXTORTION",
+      "predicted_intent": "EXTORTION",
+      "expected_level": "THREAT",
+      "predicted_level": "THREAT",
+      "provisional_severity": 7.5,
+      "provisional_severity_range": [
+        6.5,
+        7.8
+      ],
+      "predicted_score": 7.5,
+      "predicted_category": "Extortion / Demand",
+      "expected_review_required": true,
+      "predicted_review_required": true,
+      "is_friendly_teasing": false,
+      "is_serious_threat": true,
+      "risk_factors": [
+        "Extortion / demand for money or property detected",
+        "Repeated extortion pattern detected (2 demands in window)"
+      ],
+      "explanation": "Coercive demand for money, allowance, or food under threat of harm.",
+      "latency_ms": 0.134,
+      "tags": [
+        "multi_turn",
+        "extortion"
+      ]
+    }
+  ]
+}

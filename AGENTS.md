@@ -63,6 +63,7 @@ Quality takes priority over minimizing quota consumption, execution time, or rea
 An implementation is not complete merely because the code compiles.
 
 Before declaring completion, report:
+
 - What was implemented.
 - What was tested.
 - Which tests passed or failed.
@@ -77,3 +78,23 @@ Never claim that functionality is fully working without supporting evidence.
 If a previous fix failed, do not blindly attempt another patch. Reassess the underlying assumptions, inspect the complete relevant execution path, and investigate why the previous solution failed.
 
 The goal is to minimize repeated debugging cycles and deliver reliable implementations, even when doing so requires substantial reasoning and usage quota.
+
+## AI Resource Efficiency and Implementation Discipline
+
+- Prioritize verified functionality, correctness and regression prevention.
+- Perform only the requested implementation and its necessary dependencies.
+- Do not launch subagents, parallel research agents or orchestrators without explicit user approval.
+- Avoid full-repository audits unless specifically requested.
+- Reuse existing architectural findings and project documentation.
+- Inspect relevant source files and functions rather than repeatedly reading the entire codebase.
+- Do not repeat previously completed investigations unless new evidence requires verification.
+- Avoid unnecessary refactoring and unrelated improvements.
+- Run targeted tests during implementation and broader regression tests at appropriate checkpoints.
+- Keep implementation reports concise, factual and actionable.
+- Do not generate redundant documentation.
+- Stop when the defined acceptance criteria are satisfied.
+- If significant scope expansion is necessary, explain why and request approval before proceeding.
+- Never fabricate test results or sacrifice implementation quality merely to reduce AI usage.
+- Preserve all working functionality and protected Git branches.
+
+The objective is maximum verified engineering progress per unit of AI usage, not minimum usage at the expense of correctness.
