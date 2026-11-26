@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import collections
+import contextlib
 import json
 import os
 import sys
@@ -34,12 +35,15 @@ if str(SECURELINKDB_DIR) not in sys.path:
 
 from context_engine import ContextEngine  # noqa: E402
 from eval.metrics import (  # noqa: E402
+    compute_asr_metrics,
     compute_cer,
     compute_classification_metrics,
     compute_keyword_recognition_errors,
     compute_latency_stats,
+    compute_negation_preservation,
     compute_safety_and_severity_metrics,
     compute_wer,
+    compute_word_edit_counts,
 )
 from eval.schema import (  # noqa: E402
     EvalDataset,
@@ -190,6 +194,28 @@ def evaluate_multi_turn_scenario(scenario: EvalScenario) -> Dict[str, Any]:
     }
 
 
+def _level_from_score(score: float) -> str:
+    if score >= 8.0:
+        return "DANGER"
+    if score >= 4.0:
+        return "THREAT"
+    if score >= 2.0:
+        return "WARNING"
+    return "NORMAL"
+
+
+def _is_non_speech_control_scenario(scenario: EvalScenario) -> bool:
+    if scenario.language.value in ("silence", "noise"):
+        return True
+    if scenario.expected_transcription_status == "NO_SPEECH":
+        return True
+    if set(scenario.tags) & {"non_speech_control", "silence", "noise"}:
+        return True
+    if scenario.reference_transcript is not None and scenario.reference_transcript.strip() == "":
+        return True
+    return False
+
+
 def evaluate_audio_scenario(
     scenario: EvalScenario,
     server_mod: Any,
@@ -230,11 +256,18 @@ def evaluate_audio_scenario(
     asr_result, _clean_pcm = server_mod.process_audio_buffer(pcm_bytes)
     asr_latency_ms = (time.perf_counter() - t0) * 1000.0
     hyp = asr_result.transcript or ""
+    is_ctrl = _is_non_speech_control_scenario(scenario)
 
-    wer = compute_wer(scenario.reference_transcript, hyp) if scenario.reference_transcript is not None else None
-    cer = compute_cer(scenario.reference_transcript, hyp) if scenario.reference_transcript is not None else None
+    wer = compute_wer(scenario.reference_transcript, hyp) if (scenario.reference_transcript is not None and not is_ctrl) else None
+    cer = compute_cer(scenario.reference_transcript, hyp) if (scenario.reference_transcript is not None and not is_ctrl) else None
+    edit_counts = compute_word_edit_counts(scenario.reference_transcript, hyp) if scenario.reference_transcript is not None else None
     crit_err = compute_keyword_recognition_errors(scenario.critical_words, hyp)
     neg_err = compute_keyword_recognition_errors(scenario.negation_words, hyp)
+    neg_pres = (
+        compute_negation_preservation(scenario.reference_transcript, hyp, scenario.negation_words)
+        if (scenario.reference_transcript is not None and not is_ctrl)
+        else None
+    )
 
     rec: Dict[str, Any] = {
         "id": scenario.id,
@@ -242,8 +275,10 @@ def evaluate_audio_scenario(
         "mode": scenario.mode.value,
         "language": scenario.language.value,
         "status": "EVALUATED",
+        "is_non_speech_control": is_ctrl,
         "audio_path": scenario.audio_path,
         "reference_transcript": scenario.reference_transcript,
+        "original_transcript": hyp,
         "hypothesis_transcript": hyp,
         "expected_transcription_status": scenario.expected_transcription_status,
         "transcription_status": asr_result.status.value,
@@ -252,8 +287,10 @@ def evaluate_audio_scenario(
         "audio_quality": dict(asr_result.audio_quality or {}),
         "wer": wer,
         "cer": cer,
+        "word_edit_counts": edit_counts,
         "critical_word_errors": crit_err,
         "negation_word_errors": neg_err,
+        "negation_preservation": neg_pres,
         "asr_latency_ms": round(asr_latency_ms, 3),
         "latency_ms": round(asr_latency_ms, 3),
         "tags": list(scenario.tags),
@@ -262,68 +299,102 @@ def evaluate_audio_scenario(
     if not end_to_end:
         return rec
 
-    # 2. End-to-end isolated audio-to-incident evaluation via handle_completed_audio
-    # Strictly mock all side effects: zero WAV writes, zero UI broadcasts, zero hardware triggers.
+    # 2. End-to-end isolated audio-to-incident evaluation via handle_completed_audio.
+    # Strictly mock all side effects: zero WAV writes, zero UI broadcasts, zero hardware triggers,
+    # zero preview publishes, zero diagnostic bundles. Never substitute a direct classifier fallback!
     isolated_engine = ContextEngine(escalation_window_seconds=600.0)
     dev_id = f"EVAL-{scenario.id}"
     mock_ws = AsyncMock()
     captured_broadcasts: List[Dict[str, Any]] = []
     captured_incidents: collections.deque = collections.deque(maxlen=50)
+    captured_reviews: collections.deque = collections.deque(maxlen=50)
+    captured_auth_audio: Dict[str, Any] = {}
     mock_registered: Dict[str, Any] = {dev_id: {"id": dev_id, "state": "VAD ARMED", "online": True}}
+    isolated_incident_store = None
+    temp_store_dir = None
 
     async def _capture_broadcast(payload: dict):
         captured_broadcasts.append(payload)
 
     t_e2e_start = time.perf_counter()
-    with (
-        patch.object(server_mod, "process_audio_buffer", return_value=(asr_result, _clean_pcm)),
-        patch.object(server_mod, "context_engine", isolated_engine),
-        patch.object(server_mod, "broadcast_to_ui", side_effect=_capture_broadcast),
-        patch.object(server_mod, "save_wav", MagicMock()),
-        patch.object(server_mod, "recent_incidents", captured_incidents),
-        patch.object(server_mod, "registered_devices", mock_registered),
-        patch.object(server_mod, "active_pins", {mock_ws: dev_id}),
-        patch.object(server_mod, "harmful_words_only", False),
-    ):
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patch.object(server_mod, "process_audio_buffer", return_value=(asr_result, _clean_pcm)))
+        stack.enter_context(patch.object(server_mod, "context_engine", isolated_engine))
+        stack.enter_context(patch.object(server_mod, "broadcast_to_ui", side_effect=_capture_broadcast))
+        stack.enter_context(patch.object(server_mod, "save_wav", MagicMock()))
+        stack.enter_context(patch.object(server_mod, "recent_incidents", captured_incidents))
+        stack.enter_context(patch.object(server_mod, "registered_devices", mock_registered))
+        stack.enter_context(patch.object(server_mod, "active_pins", {mock_ws: dev_id}))
+        stack.enter_context(patch.object(server_mod, "harmful_words_only", False))
+        if hasattr(server_mod, "incident_store"):
+            import tempfile
+            from incident_store import IncidentStore
+            temp_store_dir = stack.enter_context(tempfile.TemporaryDirectory())
+            isolated_incident_store = IncidentStore(os.path.join(temp_store_dir, "eval_incidents.db"))
+            stack.enter_context(patch.object(server_mod, "incident_store", isolated_incident_store))
+            stack.callback(isolated_incident_store.close)
+        if hasattr(server_mod, "ordinary_speech_preview"):
+            stack.enter_context(patch.object(server_mod, "ordinary_speech_preview", MagicMock()))
+        if hasattr(server_mod, "usb_audio_diagnostics"):
+            stack.enter_context(patch.object(server_mod, "usb_audio_diagnostics", MagicMock(enabled=False)))
+        if hasattr(server_mod, "recent_uncertain_reviews"):
+            stack.enter_context(patch.object(server_mod, "recent_uncertain_reviews", captured_reviews))
+        if hasattr(server_mod, "authorized_review_audio"):
+            stack.enter_context(patch.object(server_mod, "authorized_review_audio", captured_auth_audio))
+
         asyncio.run(
             server_mod.handle_completed_audio(
                 dev_id, pcm_bytes, websocket=mock_ws, source="ESP32_DIRECT"
             )
         )
-    e2e_latency_ms = asr_latency_ms + (time.perf_counter() - t_e2e_start) * 1000.0
+    downstream_latency_ms = (time.perf_counter() - t_e2e_start) * 1000.0
+    e2e_latency_ms = asr_latency_ms + downstream_latency_ms
 
     incident_events = [e for e in captured_broadcasts if e.get("event_type") == "incident"]
     danger_triggers_intercepted = [
         call.args[0] for call in mock_ws.send_text.call_args_list if call.args
     ]
 
-    # Also evaluate isolated ContextEngine directly when transcript exists so intent/review metrics are visible
-    assessment = None
-    if hyp:
-        assessment = isolated_engine.evaluate(hyp, device_id=f"{dev_id}-DIRECT", transcription_result=asr_result)
+    if incident_events:
+        live_inc = incident_events[0]
+        pred_score = float(live_inc["score"])
+        pred_category = str(live_inc.get("category", ""))
+        pred_level = str(live_inc["level"]) if live_inc.get("level") else _level_from_score(pred_score)
+        pred_intent = live_inc.get("intent")
+        pred_review = bool(live_inc.get("human_review_required", False))
+        e2e_review_routed = bool(
+            live_inc.get("human_review_required", False)
+            or live_inc.get("transcription_status") == "UNCERTAIN_TRANSCRIPTION"
+        )
+    else:
+        pred_score = 0.0
+        pred_category = "No Incident Emitted"
+        pred_level = "NORMAL"
+        pred_intent = "NO_INCIDENT"
+        pred_review = False
+        e2e_review_routed = False
 
     rec.update({
         "e2e_incident_emitted": len(incident_events) > 0,
+        "e2e_review_routed": e2e_review_routed,
         "e2e_incident_payload_keys": sorted(incident_events[0].keys()) if incident_events else [],
         "e2e_danger_triggers_intercepted": danger_triggers_intercepted,
         "expected_intent": scenario.expected_intent,
-        "predicted_intent": assessment.intent.value if assessment else "NO_INCIDENT",
+        "predicted_intent": pred_intent,
         "expected_level": scenario.expected_level,
-        "predicted_level": assessment.level if assessment else "NORMAL",
+        "predicted_level": pred_level,
         "provisional_severity": scenario.provisional_severity,
         "provisional_severity_range": list(scenario.provisional_severity_range)
         if scenario.provisional_severity_range
         else None,
-        "predicted_score": float(incident_events[0]["score"])
-        if incident_events
-        else (float(assessment.score) if assessment else 0.0),
-        "predicted_category": incident_events[0]["category"]
-        if incident_events
-        else (assessment.category if assessment else "No Speech"),
+        "predicted_score": pred_score,
+        "predicted_category": pred_category,
         "expected_review_required": scenario.expected_review_required,
-        "predicted_review_required": bool(assessment.human_review_required) if assessment else False,
+        "predicted_review_required": pred_review,
         "is_friendly_teasing": scenario.is_friendly_teasing,
         "is_serious_threat": scenario.is_serious_threat,
+        "downstream_latency_ms": round(downstream_latency_ms, 3),
+        "e2e_latency_ms": round(e2e_latency_ms, 3),
         "latency_ms": round(e2e_latency_ms, 3),
     })
     return rec
@@ -344,12 +415,22 @@ def run_evaluation(
     unsupported_capabilities: List[Dict[str, str]] = []
     loaded_server = server_mod
 
-    # Split-isolation verification when both dev and held_out are supplied
+    # Split-isolation verification across all dev vs held_out pairs
     split_checks: Dict[str, Any] = {}
     dev_sets = [d for d in datasets if d.split.value == "dev"]
     held_sets = [d for d in datasets if d.split.value == "held_out"]
     if dev_sets and held_sets:
-        split_checks = verify_split_isolation(dev_sets[0], held_sets[0])
+        overlap_ids: set[str] = set()
+        overlap_texts: set[str] = set()
+        for ds_d in dev_sets:
+            for ds_h in held_sets:
+                chk = verify_split_isolation(ds_d, ds_h)
+                overlap_ids.update(chk.get("overlapping_ids", []))
+                overlap_texts.update(chk.get("overlapping_texts", []))
+        split_checks = {
+            "overlapping_ids": sorted(overlap_ids),
+            "overlapping_texts": sorted(overlap_texts),
+        }
 
     for ds in datasets:
         for sc in ds.scenarios:
@@ -404,56 +485,81 @@ def run_evaluation(
                 elif rec["status"] == "UNSUPPORTED_CAPABILITY":
                     unsupported_capabilities.append({"id": sc.id, "reason": rec["reason"]})
 
-    # Aggregate intent classification metrics
+    # Aggregate downstream scoring metrics strictly over text, multi_turn, and end_to_end modes.
+    # Pure ASR scenarios (`mode == "audio"`) never enter downstream classification/severity scoring.
+    downstream_records = [
+        rec
+        for rec in records
+        if rec.get("status") == "EVALUATED" and rec.get("mode") in ("text", "multi_turn", "end_to_end")
+    ]
     intent_true: List[str] = []
     intent_pred: List[str] = []
     level_true: List[str] = []
     level_pred: List[str] = []
     text_latencies: List[float] = []
-    audio_latencies: List[float] = []
-    wers: List[float] = []
-    cers: List[float] = []
-    crit_total = 0
-    crit_missed = 0
-    neg_total = 0
-    neg_missed = 0
+    e2e_latencies: List[float] = []
+    audio_and_e2e_latencies: List[float] = []
 
     for rec in records:
         if rec.get("status") != "EVALUATED":
             continue
+        if rec["mode"] in ("text", "multi_turn") and rec.get("latency_ms") is not None:
+            text_latencies.append(float(rec["latency_ms"]))
+        elif rec["mode"] == "end_to_end":
+            if rec.get("e2e_latency_ms") is not None:
+                e2e_latencies.append(float(rec["e2e_latency_ms"]))
+            if rec.get("latency_ms") is not None:
+                audio_and_e2e_latencies.append(float(rec["latency_ms"]))
+        elif rec["mode"] == "audio" and rec.get("latency_ms") is not None:
+            audio_and_e2e_latencies.append(float(rec["latency_ms"]))
+
+    for rec in downstream_records:
         if rec.get("expected_intent") and rec.get("predicted_intent"):
             intent_true.append(str(rec["expected_intent"]))
             intent_pred.append(str(rec["predicted_intent"]))
         if rec.get("expected_level") and rec.get("predicted_level"):
             level_true.append(str(rec["expected_level"]))
             level_pred.append(str(rec["predicted_level"]))
-        if rec["mode"] in ("text", "multi_turn") and rec.get("latency_ms") is not None:
-            text_latencies.append(float(rec["latency_ms"]))
-        if rec["mode"] in ("audio", "end_to_end"):
-            if rec.get("latency_ms") is not None:
-                audio_latencies.append(float(rec["latency_ms"]))
-            if rec.get("wer") is not None:
-                wers.append(float(rec["wer"]))
-            if rec.get("cer") is not None:
-                cers.append(float(rec["cer"]))
-            cw = rec.get("critical_word_errors") or {}
-            nw = rec.get("negation_word_errors") or {}
-            crit_total += int(cw.get("total", 0))
-            crit_missed += int(cw.get("missed_count", 0))
-            neg_total += int(nw.get("total", 0))
-            neg_missed += int(nw.get("missed_count", 0))
+
+    asr_metrics = compute_asr_metrics(records)
+    intent_metrics = compute_classification_metrics(intent_true, intent_pred)
+    level_metrics = compute_classification_metrics(level_true, level_pred)
+    safety_metrics = compute_safety_and_severity_metrics(downstream_records)
 
     # Runtime capability audit (factual, never fabricated)
+    usb_mgr_obj = getattr(loaded_server, "usb_mgr", None) if loaded_server else None
+    usb_send_line_supported = hasattr(usb_mgr_obj, "send_line") if usb_mgr_obj is not None else False
+    uncertain_routing_supported = hasattr(loaded_server, "UNCERTAIN_REVIEW_AUDIO_DIR") if loaded_server else None
+    ce_obj = getattr(loaded_server, "context_engine", None) if loaded_server else None
+    bert_active = bool(
+        ce_obj is not None
+        and getattr(ce_obj, "bert_model", None) is not None
+        and getattr(ce_obj, "tokenizer", None) is not None
+        and hasattr(ce_obj, "predict_transformer")
+    ) if loaded_server else False
+    notes = [
+        (
+            "ContextEngine V4 actively invokes TagalogBERT with confidence-gated rules fallback."
+            if bert_active
+            else "ContextEngine V4 runs compositional rules + episode tracking (TagalogBERT weights not attached in isolated mode)."
+        ),
+    ]
+    if not usb_send_line_supported:
+        notes.append(
+            "USBDeviceManager lacks send_line(); end-to-end harness runs under mocked ESP32_DIRECT websocket to avoid triggering hardware or hitting server.py AttributeError."
+        )
+    if uncertain_routing_supported is False:
+        notes.append("UNCERTAIN_TRANSCRIPTION is dropped before reaching human review.")
+    elif uncertain_routing_supported is True:
+        notes.append("UNCERTAIN_TRANSCRIPTION routes for human review without triggering DANGER.")
+
     capabilities: Dict[str, Any] = {
-        "context_engine_bert_active": False,
-        "usb_send_line_supported": False,
+        "context_engine_bert_active": bert_active,
+        "usb_send_line_supported": usb_send_line_supported,
+        "uncertain_review_routing_supported": uncertain_routing_supported,
         "whisper_loaded": bool(getattr(loaded_server, "has_whisper", False)) if loaded_server else None,
         "nsnet2_loaded": bool(getattr(loaded_server, "has_nsnet2", False)) if loaded_server else None,
-        "notes": [
-            "ContextEngine V3 does not invoke TagalogBERT during evaluate() (audit finding #1).",
-            "USBDeviceManager lacks send_line(); end-to-end harness runs under mocked ESP32_DIRECT websocket to avoid triggering hardware or hitting server.py:2682 AttributeError.",
-            "UNCERTAIN_TRANSCRIPTION is currently dropped by server.py:2648 before reaching human review.",
-        ],
+        "notes": notes,
     }
 
     summary = {
@@ -475,23 +581,21 @@ def run_evaluation(
             "unsupported_capabilities": len(unsupported_capabilities),
             "skipped": sum(1 for r in records if r["status"] == "SKIPPED"),
         },
-        "intent_classification": compute_classification_metrics(intent_true, intent_pred),
-        "level_classification": compute_classification_metrics(level_true, level_pred),
-        "safety_and_severity": compute_safety_and_severity_metrics(records),
-        "asr_metrics": {
-            "evaluated_audio_clips": len(audio_latencies),
-            "mean_wer": round(sum(wers) / len(wers), 4) if wers else None,
-            "mean_cer": round(sum(cers) / len(cers), 4) if cers else None,
-            "critical_words_total": crit_total,
-            "critical_words_missed": crit_missed,
-            "critical_word_error_rate": round(crit_missed / crit_total, 4) if crit_total > 0 else None,
-            "negation_words_total": neg_total,
-            "negation_words_missed": neg_missed,
-            "negation_word_error_rate": round(neg_missed / neg_total, 4) if neg_total > 0 else None,
+        "asr_metrics": asr_metrics,
+        "downstream_scoring": {
+            "evaluated_scenarios": len(downstream_records),
+            "intent_classification": intent_metrics,
+            "level_classification": level_metrics,
+            "safety_and_severity": safety_metrics,
         },
+        "intent_classification": intent_metrics,
+        "level_classification": level_metrics,
+        "safety_and_severity": safety_metrics,
         "latency": {
             "text_and_multi_turn": compute_latency_stats(text_latencies),
-            "audio_and_end_to_end": compute_latency_stats(audio_latencies),
+            "asr_only": asr_metrics["asr_latency_ms"],
+            "end_to_end": compute_latency_stats(e2e_latencies),
+            "audio_and_end_to_end": compute_latency_stats(audio_and_e2e_latencies),
         },
         "missing_fixtures": missing_fixtures,
         "unsupported_capabilities": unsupported_capabilities,
@@ -521,16 +625,29 @@ def format_markdown_report(report: Dict[str, Any], command_used: str = "") -> st
     ]
     if command_used:
         lines.append(f"**Reproduction Command:** `{command_used}`  ")
+    speech_out = asr.get("speech_outcomes", {})
+    ctrl_out = asr.get("control_outcomes", {})
+    asr_lat = lat.get("asr_only", {})
+    e2e_lat = lat.get("end_to_end", {})
     lines.extend([
         "",
         "## 1. Execution Summary",
         f"- Total scenarios: **{counts['total_scenarios']}** | Evaluated: **{counts['evaluated']}** | Missing fixtures: **{counts['missing_fixtures']}** | Unsupported: **{counts['unsupported_capabilities']}** | Skipped: **{counts['skipped']}**",
         "",
-        "## 2. Intent & Severity Classification Metrics",
+        "## 2. ASR & Control Metrics (Separated from Downstream Scoring)",
+        f"- **Evaluated Audio Clips:** `{asr['evaluated_audio_clips']}` (Speech: `{asr.get('speech_clips', 0)}`, Confirmed Non-Speech Controls: `{asr.get('non_speech_controls_total', 0)}`)",
+        f"- **Speech Outcomes (accepted/uncertain/rejected/no_speech):** `{speech_out.get('accepted', 0)}/{speech_out.get('uncertain', 0)}/{speech_out.get('rejected', 0)}/{speech_out.get('no_speech', 0)}`",
+        f"- **Corpus WER (Speech):** `{asr.get('corpus_wer')}` ({asr.get('word_edits', 0)}/{asr.get('reference_words', 0)} edits) | **Mean WER:** `{asr['mean_wer']}` | **Mean CER:** `{asr['mean_cer']}`",
+        f"- **Critical-Word Recognition Error Rate:** `{asr['critical_word_error_rate']}` ({asr['critical_words_missed']}/{asr['critical_words_total']} missed)",
+        f"- **Negation Token Preservation:** `{asr.get('negation_tokens_preserved', 0)}/{asr.get('negation_tokens_expected', 0)}` (rate=`{asr.get('negation_preservation_rate')}`, extra_inserted=`{asr.get('negation_extra_inserted', 0)}`) | **Explicit Negation Word Error Rate:** `{asr['negation_word_error_rate']}` ({asr['negation_words_missed']}/{asr['negation_words_total']} missed)",
+        f"- **Confirmed Non-Speech Control False Transcripts:** `{asr.get('non_speech_false_transcripts', 0)}/{asr.get('non_speech_controls_total', 0)}` (rate=`{asr.get('non_speech_false_transcript_rate')}`, IDs={asr.get('non_speech_false_transcript_ids', [])}; outcomes a/u/r/n={ctrl_out.get('accepted', 0)}/{ctrl_out.get('uncertain', 0)}/{ctrl_out.get('rejected', 0)}/{ctrl_out.get('no_speech', 0)})",
+        f"- **ASR Latency (ms):** mean=`{asr_lat.get('mean_ms')}`, p50=`{asr_lat.get('p50_ms')}`, p95=`{asr_lat.get('p95_ms')}`, max=`{asr_lat.get('max_ms')}` (n={asr_lat.get('count', 0)})",
+        "",
+        "## 3. Downstream Scoring Metrics (Text, Multi-Turn & Live End-to-End Only)",
         f"- **Intent Accuracy:** `{intent_m['accuracy']}` | **Macro Precision:** `{intent_m['macro_precision']}` | **Macro Recall:** `{intent_m['macro_recall']}` | **Macro F1:** `{intent_m['macro_f1']}` (n={intent_m['total']})",
         f"- **Level Accuracy:** `{level_m['accuracy']}` | **Level Macro F1:** `{level_m['macro_f1']}` (n={level_m['total']})",
         "",
-        "## 3. Safety, Severity Agreement & Review Priority",
+        "## 4. Safety, Severity Agreement & Review Priority",
         f"- **Friendly-Teasing False Positives:** `{safety['friendly_teasing_false_positives']}/{safety['friendly_teasing_total']}` (rate={safety['friendly_teasing_fp_rate']}, IDs={safety['friendly_teasing_fp_ids']})",
         f"- **Serious-Threat False Negatives:** `{safety['serious_threat_false_negatives']}/{safety['serious_threat_total']}` (rate={safety['serious_threat_fn_rate']}, IDs={safety['serious_threat_fn_ids']})",
         f"- **False DANGER Classifications:** `{safety['false_danger_count']}/{safety['non_danger_total']}` (rate={safety['false_danger_rate']}, IDs={safety['false_danger_ids']})",
@@ -538,15 +655,10 @@ def format_markdown_report(report: Dict[str, Any], command_used: str = "") -> st
         f"- **Provisional Severity Range Agreement:** `{safety['severity_range_agreement']}` (n={safety['severity_range_total']}) | **Severity MAE:** `{safety['severity_mae']}`",
         f"- **Review-Priority Accuracy:** `{safety['review_priority_accuracy']}` | Precision: `{safety['review_priority_precision']}` | Recall: `{safety['review_priority_recall']}` (n={safety['review_priority_total']})",
         "",
-        "## 4. ASR & Audio Metrics",
-        f"- **Evaluated Audio Clips:** `{asr['evaluated_audio_clips']}`",
-        f"- **Mean WER:** `{asr['mean_wer']}` | **Mean CER:** `{asr['mean_cer']}`",
-        f"- **Critical-Word Recognition Error Rate:** `{asr['critical_word_error_rate']}` ({asr['critical_words_missed']}/{asr['critical_words_total']} missed)",
-        f"- **Negation Recognition Error Rate:** `{asr['negation_word_error_rate']}` ({asr['negation_words_missed']}/{asr['negation_words_total']} missed)",
-        "",
         "## 5. Processing Latency",
         f"- **Text / Multi-Turn (ms):** mean=`{lat['text_and_multi_turn']['mean_ms']}`, p50=`{lat['text_and_multi_turn']['p50_ms']}`, p95=`{lat['text_and_multi_turn']['p95_ms']}`, max=`{lat['text_and_multi_turn']['max_ms']}` (n={lat['text_and_multi_turn']['count']})",
-        f"- **Audio / End-to-End (ms):** mean=`{lat['audio_and_end_to_end']['mean_ms']}`, p50=`{lat['audio_and_end_to_end']['p50_ms']}`, p95=`{lat['audio_and_end_to_end']['p95_ms']}`, max=`{lat['audio_and_end_to_end']['max_ms']}` (n={lat['audio_and_end_to_end']['count']})",
+        f"- **ASR Only (ms):** mean=`{asr_lat.get('mean_ms')}`, p50=`{asr_lat.get('p50_ms')}`, p95=`{asr_lat.get('p95_ms')}`, max=`{asr_lat.get('max_ms')}` (n={asr_lat.get('count', 0)})",
+        f"- **End-to-End (ms):** mean=`{e2e_lat.get('mean_ms')}`, p50=`{e2e_lat.get('p50_ms')}`, p95=`{e2e_lat.get('p95_ms')}`, max=`{e2e_lat.get('max_ms')}` (n={e2e_lat.get('count', 0)})",
         "",
         "## 6. Missing Fixtures & Unsupported Capabilities",
     ])

@@ -24,9 +24,11 @@ if SECURELINK_DIR not in sys.path:
     sys.path.insert(0, SECURELINK_DIR)
 
 import httpx
+import server
 from server import (
     app,
     active_pairing_codes,
+    pending_registrations,
     load_device_credentials,
     save_device_credentials,
     hash_device_token,
@@ -42,22 +44,30 @@ class TestBlePairingBackend(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.temp_creds_file = os.path.join(self.temp_dir.name, "test_credentials.json")
+        self.temp_codes_file = os.path.join(self.temp_dir.name, "test_pairing_codes.json")
 
         self.creds_patch = patch("server.DEVICE_CREDENTIALS_FILE", self.temp_creds_file)
+        self.codes_patch = patch("server.ACTIVE_PAIRING_CODES_FILE", self.temp_codes_file)
         self.creds_patch.start()
+        self.codes_patch.start()
 
         active_pairing_codes.clear()
+        pending_registrations.clear()
+        registered_devices.clear()
         transport = httpx.ASGITransport(app=app)
         self.client = httpx.AsyncClient(transport=transport, base_url="http://testserver")
 
     async def asyncTearDown(self):
         await self.client.aclose()
+        self.codes_patch.stop()
         self.creds_patch.stop()
         self.temp_dir.cleanup()
         active_pairing_codes.clear()
+        pending_registrations.clear()
+        registered_devices.clear()
 
     async def test_01_generate_pairing_code(self):
-        """Generates 6-digit cryptographic pairing code with 5-minute TTL."""
+        """Generates 6-digit cryptographic pairing code with 10-minute TTL."""
         resp = await self.client.post("/api/pairing-code/generate")
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
@@ -66,7 +76,7 @@ class TestBlePairingBackend(unittest.IsolatedAsyncioTestCase):
         code = data["pairing_code"]
         self.assertEqual(len(code), 6)
         self.assertTrue(code.isdigit())
-        self.assertEqual(data["expires_in"], 300)
+        self.assertEqual(data["expires_in"], 600)
         self.assertIn(code, active_pairing_codes)
         self.assertFalse(active_pairing_codes[code]["used"])
 
@@ -87,10 +97,10 @@ class TestBlePairingBackend(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(data["valid"])
         self.assertFalse(data["used"])
         self.assertFalse(data["expired"])
-        self.assertGreater(data["remaining_seconds"], 290)
+        self.assertGreater(data["remaining_seconds"], 590)
 
     async def test_03_pin_registration_success(self):
-        """Registers a Smart Pin using a valid code and receives a 32-byte secret credential."""
+        """Registers a Smart Pin into PENDING state using a valid code and receives a 32-byte secret."""
         gen_resp = (await self.client.post("/api/pairing-code/generate")).json()
         code = gen_resp["pairing_code"]
 
@@ -105,23 +115,21 @@ class TestBlePairingBackend(unittest.IsolatedAsyncioTestCase):
         reg_data = reg_resp.json()
 
         self.assertEqual(reg_data["status"], "success")
+        self.assertEqual(reg_data["registration_state"], server.PinRegistrationState.PENDING)
         self.assertEqual(reg_data["device_id"], "PIN-4A8C")
         token = reg_data["device_token"]
         self.assertEqual(len(token), 64)  # 32 bytes in hex = 64 characters
 
-        # Check code is marked used
+        # Check code is marked used and pending registration holds the hashed token
         self.assertTrue(active_pairing_codes[code]["used"])
         self.assertEqual(active_pairing_codes[code]["device_id"], "PIN-4A8C")
-
-        # Check credentials storage on disk
-        with open(self.temp_creds_file, "r", encoding="utf-8") as f:
-            stored = json.load(f)
-        self.assertIn("PIN-4A8C", stored)
-        stored_hash = stored["PIN-4A8C"]["token_hash"]
-
-        # Ensure plaintext token is NOT stored on disk
-        self.assertNotIn(token, json.dumps(stored))
-        self.assertEqual(stored_hash, hashlib.sha256(token.encode("utf-8")).hexdigest())
+        self.assertIn("PIN-4A8C", pending_registrations)
+        self.assertEqual(
+            pending_registrations["PIN-4A8C"]["token_hash"],
+            hashlib.sha256(token.encode("utf-8")).hexdigest(),
+        )
+        # Paired credentials are NOT persisted until WebSocket auth promotion
+        self.assertFalse(os.path.exists(self.temp_creds_file))
 
     async def test_04_single_use_pairing_code_consumption(self):
         """Pairing codes are strictly single-use; subsequent registration attempts are rejected."""

@@ -18,15 +18,17 @@ import unittest
 import wave
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
 
 from eval.metrics import (
+    compute_asr_metrics,
     compute_cer,
     compute_classification_metrics,
     compute_keyword_recognition_errors,
     compute_latency_stats,
+    compute_negation_preservation,
     compute_safety_and_severity_metrics,
     compute_wer,
 )
@@ -307,8 +309,191 @@ class TestEvalSchemaAndRunner(unittest.TestCase):
         report = run_evaluation([dev], skip_audio=True)
         md = format_markdown_report(report, command_used="python -m eval.runner --dataset eval/datasets/dev_sample.json --skip-audio")
         self.assertIn("# SecureLink V3 Baseline Evaluation Report", md)
+        self.assertIn("ASR & Control Metrics", md)
         self.assertIn("Friendly-Teasing False Positives", md)
         self.assertIn("DEV-TXT-002", md)
+
+    def test_e2e_dropped_utterance_does_not_fallback_to_classifier(self):
+        """When handle_completed_audio emits NO incident, E2E must NOT substitute ContextEngine direct scoring."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            wav_path = Path(tmpdir) / "rejected_threat.wav"
+            pcm = np.zeros(16000, dtype=np.int16).tobytes()
+            with wave.open(str(wav_path), "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(16000)
+                wf.writeframes(pcm)
+
+            sc = EvalScenario(
+                id="E2E-DROP-1",
+                split=SplitType.DEV,
+                mode=EvaluationMode.END_TO_END,
+                language=LanguageCode.TL,
+                audio_path=str(wav_path),
+                reference_transcript="Papatayin kita!",
+                expected_intent="DIRECT_THREAT",
+                expected_level="DANGER",
+                is_serious_threat=True,
+                critical_words=["papatayin"],
+            )
+
+            asr_result = SimpleNamespace(
+                status=SimpleNamespace(value="TRANSCRIPTION_REJECTED"),
+                transcript="Papatayin kita!",
+                reason="Mock lexical rejection",
+                metrics={"avg_logprob": -1.5},
+                audio_quality={"raw_peak": 0.4},
+            )
+
+            async def _drop_handle(dev_id, pcm_bytes, websocket=None, source="ESP32_DIRECT"):
+                res, _clean = fake_server.process_audio_buffer(pcm_bytes)
+                if res.status.value == "TRANSCRIBED" and res.transcript:
+                    await fake_server.broadcast_to_ui({"event_type": "incident"})
+
+            fake_server = SimpleNamespace(
+                process_audio_buffer=MagicMock(return_value=(asr_result, pcm)),
+                handle_completed_audio=_drop_handle,
+                context_engine=None,
+                broadcast_to_ui=AsyncMock(),
+                save_wav=MagicMock(),
+                recent_incidents=[],
+                registered_devices={},
+                active_pins={},
+                harmful_words_only=False,
+            )
+
+            rec = evaluate_audio_scenario(sc, fake_server, end_to_end=True)
+            self.assertEqual(rec["status"], "EVALUATED")
+            self.assertFalse(rec["e2e_incident_emitted"])
+            self.assertEqual(rec["predicted_intent"], "NO_INCIDENT")
+            self.assertEqual(rec["predicted_level"], "NORMAL")
+            self.assertEqual(rec["predicted_score"], 0.0)
+            self.assertFalse(rec["predicted_review_required"])
+            safety = compute_safety_and_severity_metrics([rec])
+            self.assertEqual(safety["serious_threat_false_negatives"], 1)
+
+    def test_asr_metrics_separates_controls_negations_and_outcomes(self):
+        """Confirmed non-speech controls must stay out of speech WER and report false transcripts separately."""
+        neg_ok = compute_negation_preservation("Hindi kita sasaktan", "hindi kita sasaktan", ["hindi"])
+        self.assertEqual(neg_ok["expected_count"], 1)
+        self.assertEqual(neg_ok["preserved_count"], 1)
+        self.assertEqual(neg_ok["extra_inserted_count"], 0)
+
+        neg_flip = compute_negation_preservation("Sasaktan kita", "hindi kita sasaktan")
+        self.assertEqual(neg_flip["expected_count"], 0)
+        self.assertEqual(neg_flip["extra_inserted_count"], 1)
+
+        records = [
+            {
+                "id": "SP-1",
+                "mode": "audio",
+                "status": "EVALUATED",
+                "is_non_speech_control": False,
+                "transcription_status": "TRANSCRIBED",
+                "hypothesis_transcript": "hindi kita sasaktan",
+                "reference_transcript": "hindi kita sasaktan",
+                "wer": 0.0,
+                "cer": 0.0,
+                "word_edit_counts": {"reference_words": 3, "hypothesis_words": 3, "edits": 0},
+                "critical_word_errors": {"total": 1, "missed_count": 0},
+                "negation_word_errors": {"total": 1, "missed_count": 0},
+                "negation_preservation": neg_ok,
+                "asr_latency_ms": 500.0,
+            },
+            {
+                "id": "SP-2",
+                "mode": "end_to_end",
+                "status": "EVALUATED",
+                "is_non_speech_control": False,
+                "transcription_status": "UNCERTAIN_TRANSCRIPTION",
+                "hypothesis_transcript": "wala",
+                "reference_transcript": "hindi",
+                "wer": 1.0,
+                "cer": 0.8,
+                "word_edit_counts": {"reference_words": 1, "hypothesis_words": 1, "edits": 1},
+                "critical_word_errors": {"total": 0, "missed_count": 0},
+                "negation_word_errors": {"total": 1, "missed_count": 1},
+                "negation_preservation": compute_negation_preservation("hindi", "wala", ["hindi"]),
+                "asr_latency_ms": 700.0,
+            },
+            {
+                "id": "CTRL-1",
+                "mode": "audio",
+                "status": "EVALUATED",
+                "is_non_speech_control": True,
+                "transcription_status": "NO_SPEECH",
+                "hypothesis_transcript": "",
+                "reference_transcript": "",
+                "asr_latency_ms": 5.0,
+            },
+            {
+                "id": "CTRL-2",
+                "mode": "audio",
+                "status": "EVALUATED",
+                "is_non_speech_control": True,
+                "transcription_status": "TRANSCRIBED",
+                "hypothesis_transcript": "thank you",
+                "reference_transcript": "",
+                "asr_latency_ms": 100.0,
+            },
+        ]
+        asr = compute_asr_metrics(records)
+        self.assertEqual(asr["evaluated_audio_clips"], 4)
+        self.assertEqual(asr["speech_clips"], 2)
+        self.assertEqual(asr["corpus_wer"], 0.25)  # 1 edit / 4 ref words; controls excluded
+        self.assertEqual(asr["mean_wer"], 0.5)
+        self.assertEqual(asr["non_speech_controls_total"], 2)
+        self.assertEqual(asr["non_speech_false_transcripts"], 1)
+        self.assertEqual(asr["non_speech_false_transcript_ids"], ["CTRL-2"])
+        self.assertEqual(asr["speech_outcomes"], {"accepted": 1, "uncertain": 1, "rejected": 0, "no_speech": 0, "other": 0})
+        self.assertEqual(asr["control_outcomes"], {"accepted": 1, "uncertain": 0, "rejected": 0, "no_speech": 1, "other": 0})
+        self.assertEqual(asr["negation_tokens_preserved"], 1)
+        self.assertEqual(asr["negation_tokens_expected"], 2)
+
+    def test_e2e_uncertain_transcript_routed_without_danger_trigger(self):
+        """Real server.handle_completed_audio routes UNCERTAIN_TRANSCRIPTION without firing DANGER."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            wav_path = Path(tmpdir) / "uncertain_threat.wav"
+            pcm = np.zeros(16000, dtype=np.int16).tobytes()
+            with wave.open(str(wav_path), "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(16000)
+                wf.writeframes(pcm)
+
+            import server as real_server  # imported via sys.path injected by eval.runner
+
+            sc = EvalScenario(
+                id="E2E-UNCERTAIN-1",
+                split=SplitType.DEV,
+                mode=EvaluationMode.END_TO_END,
+                language=LanguageCode.TL,
+                audio_path=str(wav_path),
+                reference_transcript="Papatayin kita!",
+                expected_intent="DIRECT_THREAT",
+                expected_level="THREAT",
+                expected_review_required=True,
+                critical_words=["papatayin"],
+            )
+            uncertain_res = real_server.TranscriptionResult(
+                status=real_server.TranscriptionStatus.UNCERTAIN_TRANSCRIPTION,
+                transcript="Papatayin kita!",
+                reason="Borderline acoustic confidence (avg_logprob=-1.250 < -1.10)",
+                metrics={"avg_logprob": -1.25, "no_speech_prob": 0.1, "compression_ratio": 1.1},
+                audio_quality={"raw_peak": 0.35},
+            )
+            with (
+                patch.object(real_server, "process_audio_buffer", return_value=(uncertain_res, pcm)),
+                patch.object(real_server, "UNCERTAIN_REVIEW_AUDIO_DIR", tmpdir),
+            ):
+                rec = evaluate_audio_scenario(sc, real_server, end_to_end=True)
+
+            self.assertEqual(rec["status"], "EVALUATED")
+            self.assertTrue(rec["e2e_incident_emitted"])
+            self.assertTrue(rec["e2e_review_routed"])
+            self.assertEqual(rec["e2e_danger_triggers_intercepted"], [])
+            self.assertLess(rec["predicted_score"], 8.0)
+            self.assertTrue(rec["predicted_review_required"])
 
     def test_v4_dev_300_dataset_integrity_and_isolation(self):
         from eval.validate_dataset import find_exact_and_near_duplicates, summarize_dataset

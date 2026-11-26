@@ -12,17 +12,19 @@ import subprocess
 import time
 import wave
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 import collections
+import base64
 
 import numpy as np
 import scipy.signal as signal
 import torch
 import torch.nn.functional as F
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Response
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Response, HTTPException
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 import uvicorn
@@ -31,6 +33,7 @@ from tunnel_manager import CloudflareTunnelManager, TunnelState
 from mobile_pairing import MobilePairingManager, PairingState
 from ordinary_speech_preview import OrdinarySpeechPreview
 from usb_audio_diagnostics import AudioCapture, LIMIT_LEVEL, USBAudioDiagnostics
+from incident_store import IncidentStore, VALID_REVIEW_STATUSES
 
 import sys
 
@@ -113,8 +116,10 @@ usb_audio_diagnostics = USBAudioDiagnostics(
 ordinary_speech_preview = OrdinarySpeechPreview()
 AUDIO_RECORDINGS_DIR = os.path.join(RECORDINGS_DIR, "audio")
 SNAPSHOTS_RECORDINGS_DIR = os.path.join(RECORDINGS_DIR, "snapshots")
+UNCERTAIN_REVIEW_AUDIO_DIR = os.path.join(BASE_DIR, "recordings_review")
 os.makedirs(AUDIO_RECORDINGS_DIR, exist_ok=True)
 os.makedirs(SNAPSHOTS_RECORDINGS_DIR, exist_ok=True)
+os.makedirs(UNCERTAIN_REVIEW_AUDIO_DIR, exist_ok=True)
 
 # Mount recordings directory so dashboard and client devices can fetch/replay audio and snapshots
 app.mount("/recordings", StaticFiles(directory=RECORDINGS_DIR), name="recordings")
@@ -373,12 +378,66 @@ def init_registered_devices_from_credentials():
             }
 
 
-# --- CLOUDFLARE QUICK TUNNEL & MOBILE PAIRING MANAGERS ---
+# --- CLOUDFLARE QUICK TUNNEL, MOBILE PAIRING & SQLITE INCIDENT STORE ---
 TUNNEL_CONFIG_FILE = os.path.join(BASE_DIR, "tunnel_config.json")
+INCIDENTS_DB_FILE = os.path.join(BASE_DIR, "incidents.db")
+incident_store = IncidentStore(INCIDENTS_DB_FILE)
 current_cloud_tunnel_url: Optional[str] = None
 active_mobile_clients: Dict[WebSocket, dict] = {}
 relayed_audio_accumulators: Dict[str, bytearray] = {}
 recent_incidents: collections.deque = collections.deque(maxlen=50)
+recent_uncertain_reviews: collections.deque = collections.deque(maxlen=50)
+authorized_review_audio: Dict[str, Dict[str, Any]] = {}
+
+
+def _hydrate_recent_incidents_from_store() -> None:
+    """Load persisted incidents & pending uncertain reviews into in-memory caches."""
+    try:
+        persisted = incident_store.list_incidents(limit=50, newest_first=False)
+        recent_incidents.clear()
+        recent_incidents.extend(persisted)
+
+        uncertain = incident_store.list_incidents(limit=50, uncertain_only=True, newest_first=False)
+        recent_uncertain_reviews.clear()
+        recent_uncertain_reviews.extend(uncertain)
+    except Exception as exc:
+        print(f"[STORE-WARN] Could not hydrate recent incidents from SQLite: {exc}")
+
+
+_hydrate_recent_incidents_from_store()
+
+
+def _generate_incident_id() -> str:
+    candidate = f"EVT-{int(time.time() * 1000) % 1000000:06d}"
+    if incident_store.get_incident(candidate) is not None:
+        return f"{candidate}-{secrets.token_hex(2).upper()}"
+    return candidate
+
+
+def _normalize_transcript_for_analysis(text: str) -> str:
+    """Non-destructive normalization preserving original transcript separately for analysis."""
+    if not text:
+        return ""
+    cleaned = text.lower().strip()
+    cleaned = re.sub(r"[^a-z0-9ñ'\s-]", " ", cleaned)
+    cleaned = cleaned.replace("-", " ")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
+def _register_authorized_review_audio(incident_id: str, wav_filename: str, device_id: str) -> str:
+    """Register a short-lived SHA-256-verified bearer token for uncertain review audio access."""
+    token = secrets.token_urlsafe(24)
+    authorized_review_audio[incident_id] = {
+        "token_hash": hashlib.sha256(token.encode("utf-8")).hexdigest(),
+        "wav_filename": os.path.basename(wav_filename),
+        "device_id": device_id,
+        "created_at": time.time(),
+    }
+    while len(authorized_review_audio) > 200:
+        oldest_key = next(iter(authorized_review_audio))
+        authorized_review_audio.pop(oldest_key, None)
+    return token
 
 # --- USB SERIAL DEVICE MANAGER (DIRECT HARDWARE PIPELINE) ---
 from usb_manager import USBDeviceManager, HEARTBEAT_TIMEOUT_SEC
@@ -658,6 +717,119 @@ async def health_check():
         "classifier": bert_model is not None,
         "cloud_tunnel_url": get_active_tunnel_url(),
         "tunnel_state": tunnel_mgr.state,
+    }
+
+
+@app.get("/api/review/audio/{incident_id}")
+async def get_authorized_review_audio(
+    incident_id: str,
+    request: Request,
+    token: Optional[str] = None,
+):
+    """Serve uncertain review audio only when presented with a valid per-incident token."""
+    provided = token
+    auth_header = request.headers.get("authorization") or ""
+    if not provided and auth_header.lower().startswith("bearer "):
+        provided = auth_header[7:].strip()
+
+    entry = authorized_review_audio.get(incident_id)
+    if not entry:
+        try:
+            entry = incident_store.get_authorized_audio_record(incident_id)
+        except Exception:
+            entry = None
+    if not entry or not provided:
+        raise HTTPException(status_code=401, detail="Unauthorized review audio access")
+
+    provided_hash = hashlib.sha256(provided.encode("utf-8")).hexdigest()
+    if not secrets.compare_digest(provided_hash, entry.get("token_hash", "")):
+        raise HTTPException(status_code=401, detail="Unauthorized review audio access")
+
+    wav_path = os.path.join(UNCERTAIN_REVIEW_AUDIO_DIR, os.path.basename(entry["wav_filename"]))
+    if not os.path.isfile(wav_path):
+        raise HTTPException(status_code=404, detail="Review audio file not found")
+
+    return FileResponse(wav_path, media_type="audio/wav", filename=os.path.basename(wav_path))
+
+
+@app.get("/api/review/uncertain")
+async def get_uncertain_reviews(limit: int = 50):
+    """Return bounded queue of uncertain transcripts routed for human review."""
+    try:
+        items = incident_store.list_incidents(limit=limit, uncertain_only=True, newest_first=True)
+    except Exception:
+        items = list(recent_uncertain_reviews)
+    if not items and recent_uncertain_reviews:
+        items = list(recent_uncertain_reviews)
+    return {
+        "status": "success",
+        "count": len(items),
+        "items": items,
+    }
+
+
+@app.get("/api/incidents")
+async def list_incidents_api(limit: int = 50, review_status: Optional[str] = None):
+    """Return persisted incidents (newest first) with optional review_status filter."""
+    if review_status:
+        cleaned_status = review_status.strip().upper()
+        if cleaned_status not in VALID_REVIEW_STATUSES and cleaned_status != "NONE":
+            raise HTTPException(status_code=400, detail="Invalid review_status filter")
+        review_status = cleaned_status
+    items = incident_store.list_incidents(limit=limit, review_status=review_status, newest_first=True)
+    return {
+        "status": "success",
+        "count": len(items),
+        "incidents": items,
+    }
+
+
+@app.get("/api/incidents/{incident_id}")
+async def get_incident_api(incident_id: str):
+    """Fetch a single persisted incident by ID."""
+    item = incident_store.get_incident(incident_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    return {
+        "status": "success",
+        "incident": item,
+    }
+
+
+@app.post("/api/incidents/{incident_id}/review")
+async def update_incident_review_api(incident_id: str, payload: dict):
+    """Allow an authorized adult reviewer to confirm, dismiss, or hold an incident for review."""
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="JSON object body required")
+    raw_status = str(payload.get("review_status", "")).strip().upper()
+    if raw_status not in VALID_REVIEW_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid review_status '{raw_status}'. Must be one of {VALID_REVIEW_STATUSES}.",
+        )
+    reviewer_notes = payload.get("reviewer_notes")
+    reviewed_by = payload.get("reviewed_by")
+
+    updated = incident_store.update_review(
+        incident_id=incident_id,
+        review_status=raw_status,
+        reviewer_notes=reviewer_notes,
+        reviewed_by=reviewed_by,
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Incident not found")
+
+    for idx, cached in enumerate(list(recent_incidents)):
+        if isinstance(cached, dict) and cached.get("id") == incident_id:
+            recent_incidents[idx] = updated
+    for idx, cached in enumerate(list(recent_uncertain_reviews)):
+        if isinstance(cached, dict) and cached.get("id") == incident_id:
+            recent_uncertain_reviews[idx] = updated
+
+    await broadcast_to_ui({"event_type": "incident_updated", "incident": updated})
+    return {
+        "status": "success",
+        "incident": updated,
     }
 
 @app.get("/api/cloud-tunnel")
@@ -1956,6 +2128,10 @@ async def mobile_websocket_endpoint(websocket: WebSocket):
     print(f"\n[WS-MOBILE] Mobile Companion '{device_id}' ({device_info.get('user_name')} [{device_info.get('role')}]) connected via {conn_type.upper()}.")
 
     # Send initial state synchronization payload
+    try:
+        persisted_recent = incident_store.list_incidents(limit=50, newest_first=False)
+    except Exception:
+        persisted_recent = []
     initial_sync = {
         "event_type": "mobile_sync_init",
         "cs_id": "CS-CAMPUS-01",
@@ -1968,7 +2144,7 @@ async def mobile_websocket_endpoint(websocket: WebSocket):
         "harmful_words_only": harmful_words_only,
         "devices": [recalculate_pin_connection_state(p) for p in list(registered_devices.keys())],
         "checkpoints": load_checkpoints(),
-        "recent_incidents": list(recent_incidents),
+        "recent_incidents": persisted_recent if persisted_recent else list(recent_incidents),
         "timestamp": datetime.now().strftime("%H:%M:%S")
     }
     await websocket.send_text(json.dumps(initial_sync))
@@ -2218,7 +2394,7 @@ async def periodic_recordings_cleanup():
             now = time.time()
             cutoff_sec = now - (RECORDINGS_RETENTION_DAYS * 86400)
             deleted_count = 0
-            for folder in [AUDIO_RECORDINGS_DIR, SNAPSHOTS_RECORDINGS_DIR]:
+            for folder in [AUDIO_RECORDINGS_DIR, SNAPSHOTS_RECORDINGS_DIR, UNCERTAIN_REVIEW_AUDIO_DIR]:
                 if os.path.exists(folder):
                     for fname in os.listdir(folder):
                         fpath = os.path.join(folder, fname)
@@ -2244,8 +2420,9 @@ async def startup_event():
     print(f"[SYS] Captured FastAPI main event loop: {fastapi_event_loop}")
     await ordinary_speech_preview.start()
 
-    # Initialize previously paired devices from persistent credentials storage
+    # Initialize previously paired devices and persisted incidents
     init_registered_devices_from_credentials()
+    _hydrate_recent_incidents_from_store()
 
     loop = fastapi_event_loop
     try:
@@ -2665,11 +2842,13 @@ async def handle_completed_audio(
     audio_int16 = np.frombuffer(pcm_bytes, dtype=np.int16)
     audio_peak = float(np.max(np.abs(audio_int16))) / 32768.0
 
+    if source == "USB":
+        usb_mgr.audio_analyzing = True
+        usb_mgr.vad_state = "ANALYZING SPEECH"
+
     if device_id in registered_devices:
         registered_devices[device_id]["state"] = "ANALYZING SPEECH"
         if source == "USB":
-            usb_mgr.audio_analyzing = True
-            usb_mgr.vad_state = "ANALYZING SPEECH"
             registered_devices[device_id]["online"] = True
             registered_devices[device_id]["connection_source"] = "USB"
             registered_devices[device_id]["lastSeen"] = "USB Whisper inferencing..."
@@ -2680,145 +2859,215 @@ async def handle_completed_audio(
             registered_devices[device_id]["last_ble_seen"] = "Relayed Whisper inferencing..."
         await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
 
-    async with ai_inference_lock:
-        t_infer_start = time.time()
-        processor = (
-            _process_usb_audio_with_diagnostics
-            if source == "USB" and usb_audio_diagnostics.enabled else process_audio_buffer
-        )
-        result, clean_pcm = await asyncio.to_thread(processor, pcm_bytes)
-        infer_dur = time.time() - t_infer_start
+    transcript = ""
+    try:
+        async with ai_inference_lock:
+            t_infer_start = time.time()
+            processor = (
+                _process_usb_audio_with_diagnostics
+                if source == "USB" and usb_audio_diagnostics.enabled else process_audio_buffer
+            )
+            result, clean_pcm = await asyncio.to_thread(processor, pcm_bytes)
+            infer_dur = time.time() - t_infer_start
 
-        if result.status == TranscriptionStatus.TRANSCRIBED and result.transcript:
-            transcript = result.transcript
-            score, category = context_engine.evaluate(transcript, device_id=device_id, transcription_result=result)
-            is_danger = score >= 8.0
+            is_uncertain = (result.status == TranscriptionStatus.UNCERTAIN_TRANSCRIPTION)
+            if result.status in (TranscriptionStatus.TRANSCRIBED, TranscriptionStatus.UNCERTAIN_TRANSCRIPTION) and result.transcript:
+                original_transcript = result.transcript
+                transcript = original_transcript
+                normalized_transcript = _normalize_transcript_for_analysis(original_transcript)
+                eval_result = context_engine.evaluate(
+                    original_transcript, device_id=device_id, transcription_result=result
+                )
+                score, category = eval_result
+                assessment = eval_result if hasattr(eval_result, "level") else None
 
-            is_harmful = (category != "Conversational") or (score >= 2.0)
-            if not is_harmful:
-                ordinary_speech_preview.publish(transcript, category, score)
-                if device_id in registered_devices:
-                    now_str = datetime.now().strftime("%H:%M:%S")
-                    if source == "USB":
-                        is_still_connected = usb_mgr.is_authenticated and (usb_mgr.device_id == device_id)
-                        usb_mgr.audio_analyzing = False
-                        usb_mgr.vad_state = "VAD ARMED" if is_still_connected else "OFFLINE"
-                        registered_devices[device_id]["online"] = is_still_connected
-                        registered_devices[device_id]["connection_source"] = "USB"
-                        registered_devices[device_id]["state"] = "VAD ARMED" if is_still_connected else "OFFLINE"
-                        registered_devices[device_id]["lastSeen"] = f"Active via USB at {now_str}" if is_still_connected else f"Disconnected at {now_str}"
-                    elif source == "ESP32_DIRECT":
-                        is_still_connected = any(d_id == device_id for d_id in active_pins.values())
-                        registered_devices[device_id]["online"] = is_still_connected
-                        registered_devices[device_id]["state"] = "VAD ARMED" if is_still_connected else "OFFLINE"
-                        registered_devices[device_id]["lastSeen"] = f"Active at {now_str}" if is_still_connected else f"Disconnected at {now_str}"
-                    else:
-                        if registered_devices[device_id].get("state") == "ANALYZING SPEECH":
-                            registered_devices[device_id]["state"] = "STANDBY"
-                        registered_devices[device_id]["last_ble_seen"] = f"Relay active at {now_str}"
-                    await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
-                return
+                is_harmful = (category != "Conversational") or (float(score) >= 2.0)
+                if (not is_uncertain) and (not is_harmful):
+                    ordinary_speech_preview.publish(original_transcript, category, score)
+                    transcript = ""
+                    return
 
-            print(f"[FINAL TRANSCRIPT] ({device_id} via {source} in {infer_dur:.2f}s, dur={dur_sec:.2f}s, peak={audio_peak:.2f}) -> \"{transcript}\"")
-            if is_danger:
-                print(f"[THREAT] DANGER grade detected! Dispatching TRIGGER:DANGER to {device_id} (source: {source})...")
-                if source == "USB":
-                    usb_mgr.send_line("SL:TRIGGER:DANGER")
-                elif source == "MOBILE_BLE_RELAY":
-                    if websocket is not None:
-                        try:
-                            await websocket.send_text(json.dumps({
-                                "event_type": "trigger_danger",
-                                "type": "trigger_danger",
-                                "pin_id": device_id
-                            }))
-                        except Exception as e:
-                            print(f"[THREAT] Error notifying mobile relay: {e}")
+                if is_uncertain:
+                    # Uncertain transcripts MUST be routed for human review and strictly capped < DANGER.
+                    score = round(min(max(float(score), 2.0), 6.5), 1)
+                    if category == "Conversational":
+                        category = "Uncertain Transcription (Needs Review)"
+                    elif "(Uncertain)" not in category:
+                        category = f"{category} (Uncertain)"
+                    is_danger = False
+                    human_review_required = True
+                    review_status = "PENDING_REVIEW"
                 else:
-                    if websocket is not None:
-                        try:
-                            await websocket.send_text("TRIGGER:DANGER")
-                        except Exception as e:
-                            print(f"[THREAT] Error sending direct TRIGGER:DANGER: {e}")
+                    score = float(score)
+                    is_danger = score >= 8.0
+                    human_review_required = bool(getattr(assessment, "human_review_required", False))
+                    review_status = "PENDING_REVIEW" if human_review_required else "NONE"
 
-                for pin_ws, p_id in list(active_pins.items()):
-                    if p_id == device_id and pin_ws != websocket:
+                if not is_uncertain:
+                    print(f"[FINAL TRANSCRIPT] ({device_id} via {source} in {infer_dur:.2f}s, dur={dur_sec:.2f}s, peak={audio_peak:.2f}) -> \"{original_transcript}\"")
+                if is_danger:
+                    print(f"[THREAT] DANGER grade detected! Dispatching TRIGGER:DANGER to {device_id} (source: {source})...")
+                    if source == "USB":
                         try:
-                            await pin_ws.send_text("TRIGGER:DANGER")
-                        except Exception:
-                            pass
+                            delivered = usb_mgr.send_danger_trigger(device_id)
+                            if not delivered:
+                                print(f"[THREAT-WARN] USB TRIGGER:DANGER failed or unavailable for {device_id}; continuing with WAV save and UI broadcast.")
+                        except Exception as usb_err:
+                            print(f"[THREAT-WARN] USB TRIGGER:DANGER exception for {device_id}: {usb_err}; continuing with WAV save and UI broadcast.")
+                    elif source == "MOBILE_BLE_RELAY":
+                        if websocket is not None:
+                            try:
+                                await websocket.send_text(json.dumps({
+                                    "event_type": "trigger_danger",
+                                    "type": "trigger_danger",
+                                    "pin_id": device_id
+                                }))
+                            except Exception as e:
+                                print(f"[THREAT] Error notifying mobile relay: {e}")
+                    else:
+                        if websocket is not None:
+                            try:
+                                await websocket.send_text("TRIGGER:DANGER")
+                            except Exception as e:
+                                print(f"[THREAT] Error sending direct TRIGGER:DANGER: {e}")
 
-            incident_id = f"EVT-{int(time.time() * 1000) % 1000000}"
-            if device_id in registered_devices:
-                registered_devices[device_id]["latest_incident_id"] = incident_id
-            else:
-                registered_devices[device_id] = {
-                    "latest_incident_id": incident_id,
-                    "state": "ANALYZING SPEECH",
-                    "online": (source in ("ESP32_DIRECT", "USB"))
+                    for pin_ws, p_id in list(active_pins.items()):
+                        if p_id == device_id and pin_ws != websocket:
+                            try:
+                                await pin_ws.send_text("TRIGGER:DANGER")
+                            except Exception:
+                                pass
+
+                incident_id = _generate_incident_id()
+                if device_id in registered_devices:
+                    registered_devices[device_id]["latest_incident_id"] = incident_id
+                else:
+                    registered_devices[device_id] = {
+                        "latest_incident_id": incident_id,
+                        "state": "ANALYZING SPEECH",
+                        "online": (source in ("ESP32_DIRECT", "USB"))
+                    }
+
+                wav_filename = f"{incident_id}.wav"
+                primary_ip = get_primary_ip()
+                active_tunnel = get_active_tunnel_url()
+                base_audio = active_tunnel if active_tunnel else f"http://{primary_ip}:8080"
+
+                audio_token_hash: Optional[str] = None
+                if is_uncertain:
+                    wav_path = os.path.join(UNCERTAIN_REVIEW_AUDIO_DIR, wav_filename)
+                    await asyncio.to_thread(save_wav, clean_pcm, wav_path)
+                    audio_token = _register_authorized_review_audio(incident_id, wav_filename, device_id)
+                    audio_token_hash = hashlib.sha256(audio_token.encode("utf-8")).hexdigest()
+                    audio_review_path = f"/api/review/audio/{incident_id}?token={audio_token}"
+                    audio_url = f"{base_audio}{audio_review_path}"
+                    local_audio_url = f"http://127.0.0.1:8080{audio_review_path}"
+                    lan_audio_url = f"http://{primary_ip}:8080{audio_review_path}"
+                    audio_authorized = True
+                    avg_lp = (result.metrics or {}).get("avg_logprob")
+                    print(
+                        f"[ASR-REVIEW] Routed {incident_id} ({device_id} via {source}, "
+                        f"status={result.status.value}, avg_logprob={avg_lp}) for human review"
+                    )
+                else:
+                    wav_path = os.path.join(AUDIO_RECORDINGS_DIR, wav_filename)
+                    # Save the clean, denoised audio to WAV so playback is crystal-clear and fan-free
+                    await asyncio.to_thread(save_wav, clean_pcm, wav_path)
+                    audio_review_path = None
+                    audio_url = f"{base_audio}/recordings/audio/{wav_filename}"
+                    local_audio_url = f"http://127.0.0.1:8080/recordings/audio/{wav_filename}"
+                    lan_audio_url = f"http://{primary_ip}:8080/recordings/audio/{wav_filename}"
+                    audio_authorized = False
+
+                level_str = (
+                    "DANGER" if is_danger
+                    else ("THREAT" if float(score) >= 4.0 else ("WARNING" if float(score) >= 2.0 else "NORMAL"))
+                )
+                incident_payload = {
+                    "event_type": "incident",
+                    "id": incident_id,
+                    "device_id": device_id,
+                    "score": float(score),
+                    "level": level_str,
+                    "category": category,
+                    "intent": assessment.intent.value if assessment is not None else None,
+                    "transcript": original_transcript,
+                    "original_transcript": original_transcript,
+                    "normalized_transcript": normalized_transcript,
+                    "transcription_status": result.status.value,
+                    "transcription_reason": result.reason,
+                    "confidence": dict(result.metrics or {}),
+                    "human_review_required": human_review_required,
+                    "review_status": review_status,
+                    "reviewer_notes": "",
+                    "reviewed_by": None,
+                    "reviewed_at": None,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "audio": True,
+                    "audio_authorized": audio_authorized,
+                    "audio_url": audio_url,
+                    "local_audio_url": local_audio_url,
+                    "lan_audio_url": lan_audio_url,
+                    "audio_file": wav_filename,
+                    "video": is_danger,
+                    "duration": f"00:{max(1, int(dur_sec)):02d}",
+                    "source": source,
+                    "relayed_by": relayed_by,
                 }
+                if audio_review_path is not None:
+                    incident_payload["audio_review_url"] = audio_review_path
 
-            wav_filename = f"{incident_id}.wav"
-            wav_path = os.path.join(AUDIO_RECORDINGS_DIR, wav_filename)
-            # Save the clean, denoised audio to WAV so playback is crystal-clear and fan-free
-            await asyncio.to_thread(save_wav, clean_pcm, wav_path)
+                try:
+                    incident_payload = incident_store.save_incident(
+                        incident_payload,
+                        audio_token_hash=audio_token_hash,
+                    )
+                except Exception as store_err:
+                    print(f"[STORE-WARN] Failed to persist incident {incident_id}: {store_err}")
 
-            primary_ip = get_primary_ip()
-            active_tunnel = get_active_tunnel_url()
-            base_audio = active_tunnel if active_tunnel else f"http://{primary_ip}:8080"
-
-            incident_payload = {
-                "event_type": "incident",
-                "id": incident_id,
-                "device_id": device_id,
-                "score": float(score),
-                "category": category,
-                "transcript": transcript,
-                "audio": True,
-                "audio_url": f"{base_audio}/recordings/audio/{wav_filename}",
-                "local_audio_url": f"http://127.0.0.1:8080/recordings/audio/{wav_filename}",
-                "lan_audio_url": f"http://{primary_ip}:8080/recordings/audio/{wav_filename}",
-                "audio_file": wav_filename,
-                "video": is_danger,
-                "duration": f"00:{max(1, int(dur_sec)):02d}",
-                "source": source,
-                "relayed_by": relayed_by,
-            }
-            recent_incidents.append(incident_payload)
-            await broadcast_to_ui(incident_payload)
-        else:
-            transcript = ""
-            print(f"[ASR] ({device_id} via {source} in {infer_dur:.2f}s) Audio ({dur_sec:.2f}s, peak={audio_peak:.2f}) -> Status: {result.status.value}")
-
-    if device_id in registered_devices:
-        now_str = datetime.now().strftime("%H:%M:%S")
+                recent_incidents.append(incident_payload)
+                if is_uncertain:
+                    recent_uncertain_reviews.append(incident_payload)
+                await broadcast_to_ui(incident_payload)
+            else:
+                transcript = ""
+                print(f"[ASR] ({device_id} via {source} in {infer_dur:.2f}s) Audio ({dur_sec:.2f}s, peak={audio_peak:.2f}) -> Status: {result.status.value}")
+    finally:
         if source == "USB":
-            is_still_connected = usb_mgr.is_authenticated and (usb_mgr.device_id == device_id)
+            is_still_connected = bool(usb_mgr.is_authenticated and (usb_mgr.device_id == device_id))
             usb_mgr.audio_analyzing = False
             usb_mgr.vad_state = "VAD ARMED" if is_still_connected else "OFFLINE"
-            registered_devices[device_id]["online"] = is_still_connected
-            registered_devices[device_id]["connection_source"] = "USB"
-            if registered_devices[device_id].get("state") == "ANALYZING SPEECH":
-                registered_devices[device_id]["state"] = "VAD ARMED" if is_still_connected else "OFFLINE"
-            if is_still_connected:
-                registered_devices[device_id]["lastSeen"] = f'Heard: "{transcript[:25]}..."' if transcript else f"Active via USB at {now_str}"
-            else:
-                registered_devices[device_id]["lastSeen"] = f"Disconnected at {now_str}"
-        elif source == "ESP32_DIRECT":
-            is_still_connected = any(d_id == device_id for d_id in active_pins.values())
-            registered_devices[device_id]["online"] = is_still_connected
-            if registered_devices[device_id].get("state") == "ANALYZING SPEECH":
-                registered_devices[device_id]["state"] = "VAD ARMED" if is_still_connected else "OFFLINE"
-            if is_still_connected:
-                registered_devices[device_id]["lastSeen"] = f'Heard: "{transcript[:25]}..."' if transcript else f"Active at {now_str}"
-            else:
-                registered_devices[device_id]["lastSeen"] = f"Disconnected at {now_str}"
-        else:
-            if registered_devices[device_id].get("state") == "ANALYZING SPEECH":
-                registered_devices[device_id]["state"] = "STANDBY"
-            registered_devices[device_id]["last_ble_seen"] = f"Relayed speech finished at {now_str}"
 
-        await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
+        if device_id in registered_devices:
+            now_str = datetime.now().strftime("%H:%M:%S")
+            if source == "USB":
+                is_still_connected = bool(usb_mgr.is_authenticated and (usb_mgr.device_id == device_id))
+                registered_devices[device_id]["online"] = is_still_connected
+                registered_devices[device_id]["connection_source"] = "USB"
+                if registered_devices[device_id].get("state") == "ANALYZING SPEECH":
+                    registered_devices[device_id]["state"] = "VAD ARMED" if is_still_connected else "OFFLINE"
+                if is_still_connected:
+                    registered_devices[device_id]["lastSeen"] = f'Heard: "{transcript[:25]}..."' if transcript else f"Active via USB at {now_str}"
+                else:
+                    registered_devices[device_id]["lastSeen"] = f"Disconnected at {now_str}"
+            elif source == "ESP32_DIRECT":
+                is_still_connected = any(d_id == device_id for d_id in active_pins.values())
+                registered_devices[device_id]["online"] = is_still_connected
+                if registered_devices[device_id].get("state") == "ANALYZING SPEECH":
+                    registered_devices[device_id]["state"] = "VAD ARMED" if is_still_connected else "OFFLINE"
+                if is_still_connected:
+                    registered_devices[device_id]["lastSeen"] = f'Heard: "{transcript[:25]}..."' if transcript else f"Active at {now_str}"
+                else:
+                    registered_devices[device_id]["lastSeen"] = f"Disconnected at {now_str}"
+            else:
+                if registered_devices[device_id].get("state") == "ANALYZING SPEECH":
+                    registered_devices[device_id]["state"] = "STANDBY"
+                registered_devices[device_id]["last_ble_seen"] = f"Relayed speech finished at {now_str}"
+
+            try:
+                await broadcast_to_ui({"event_type": "device_update", "device": registered_devices[device_id]})
+            except Exception as bcast_err:
+                print(f"[UI-WARN] Failed to broadcast final device state for {device_id}: {bcast_err}")
 
 # =========================================================================
 # 8. PHYSICAL PIN WEBSOCKET ENDPOINT (AUDIO STREAM & DANGER TRIGGER)

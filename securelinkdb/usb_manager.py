@@ -310,6 +310,7 @@ class USBDeviceManager:
         self.vad_state = "OFFLINE"
         self.vad_disarm_reason = reason
         self.audio_streaming = False
+        self.audio_analyzing = False
         self.audio_accumulator.clear()
         self.seen_chunk_seqs.clear()
         if self.connection_state != "ERROR":
@@ -421,6 +422,8 @@ class USBDeviceManager:
         self._attempted_ports.add(port_name)
         self.device_id = self.mac_address = self.fw_version = None
         self.auth_error_reason = None
+        self.audio_streaming = False
+        self.audio_analyzing = False
         ser = None
         try:
             self.connection_state = "OPENING PORT"
@@ -465,6 +468,50 @@ class USBDeviceManager:
                 port.write(text.encode("utf-8"))
             except Exception as e:
                 logger.error(f"Error sending text over USB: {e}")
+
+    def send_line(self, line: str) -> bool:
+        """Send a single newline-terminated command line to the active USB serial port."""
+        payload = line if line.endswith("\n") else f"{line}\n"
+        with self.lock:
+            port = self.serial_port
+            if port is None or not getattr(port, "is_open", False):
+                logger.warning("Cannot send USB command '%s': serial port is not open.", payload.strip())
+                return False
+            try:
+                port.write(payload.encode("utf-8"))
+                if hasattr(port, "flush"):
+                    port.flush()
+                logger.info(f"[USB-TX] {payload.strip()}")
+                return True
+            except Exception as e:
+                logger.error(f"[USB-ERR] Failed to write USB command '{payload.strip()}': {e}")
+                return False
+
+    def send_danger_trigger(self, device_id: Optional[str] = None) -> bool:
+        """
+        Deliver SL:TRIGGER:DANGER to the connected, authenticated USB Smart Pin.
+        Never raises on serial errors so evidence capture and UI alerts always continue.
+        """
+        if not self.serial_port_open or not self.is_authenticated:
+            logger.warning(
+                "Skipping USB danger trigger for %s: port_open=%s, authenticated=%s",
+                device_id or self.device_id,
+                self.serial_port_open,
+                self.is_authenticated,
+            )
+            return False
+        if device_id and self.device_id and str(device_id).upper() != str(self.device_id).upper():
+            logger.warning(
+                "Skipping USB danger trigger: target device %s does not match active USB pin %s",
+                device_id,
+                self.device_id,
+            )
+            return False
+        try:
+            return self.send_line("SL:TRIGGER:DANGER")
+        except Exception as e:
+            logger.error(f"[USB-ERR] Unexpected danger trigger exception: {e}")
+            return False
 
     def _request_handshake(self):
         self._last_handshake_request_ts = time.monotonic()

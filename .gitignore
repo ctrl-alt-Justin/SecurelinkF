@@ -16,11 +16,19 @@
 **/checkpoint-*/
 
 # -------------------------------------------------------------------------
-# 2. Audio Recordings & Incident Dumps (Privacy & Large Binaries)
+# 2. Audio Recordings, Local Incident Databases & Dumps (Privacy & Binaries)
 # -------------------------------------------------------------------------
 recordings/
 **/recordings/
+recordings_review/
+**/recordings_review/
 /securelinkdb/.usb_audio_diagnostics/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+securelinkdb/incidents.db*
 *.pcm
 *.wav
 *.mp3

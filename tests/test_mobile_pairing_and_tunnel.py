@@ -15,6 +15,7 @@ import sys
 import time
 import json
 import asyncio
+import tempfile
 import unittest
 from unittest.mock import patch, MagicMock
 
@@ -33,6 +34,7 @@ if SECURELINK_DIR not in sys.path:
     sys.path.insert(0, SECURELINK_DIR)
 
 import httpx
+import mobile_pairing
 from server import app, mobile_pairing_mgr, tunnel_mgr, active_mobile_clients
 from tunnel_manager import TunnelState, CloudflareTunnelManager
 from mobile_pairing import MobilePairingManager, PairingState
@@ -40,6 +42,11 @@ from mobile_pairing import MobilePairingManager, PairingState
 class TestMobilePairingAndTunnel(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.temp_mobile_devices_file = os.path.join(self.temp_dir.name, "mobile_devices.json")
+        self.mobile_file_patch = patch("mobile_pairing.MOBILE_DEVICES_FILE", self.temp_mobile_devices_file)
+        self.mobile_file_patch.start()
+
         # Reset mobile pairing manager sessions and rate limits
         mobile_pairing_mgr.sessions.clear()
         mobile_pairing_mgr.code_to_session.clear()
@@ -53,6 +60,12 @@ class TestMobilePairingAndTunnel(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         await self.client.aclose()
+        mobile_pairing_mgr.sessions.clear()
+        mobile_pairing_mgr.code_to_session.clear()
+        mobile_pairing_mgr.rate_limits.clear()
+        mobile_pairing_mgr.lockouts.clear()
+        self.mobile_file_patch.stop()
+        self.temp_dir.cleanup()
 
     async def test_01_create_mobile_pairing_session(self):
         """Test POST /api/mobile-pairing/create generates 8-digit numeric code and valid QR payload."""

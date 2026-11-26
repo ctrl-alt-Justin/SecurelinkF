@@ -568,6 +568,31 @@ class TestUSBSerialProtocol(unittest.TestCase):
             finally:
                 self.mgr.stop()
 
+    def test_20_send_line_and_danger_trigger_resilience_and_analyzing_reset(self):
+        """send_line/send_danger_trigger write safely, survive serial errors, and disconnect resets audio_analyzing."""
+        self.mgr._handle_command("SL:IDENT:PIN-F360:E8:F6:0A:8C:F3:60:2.1")
+        self.mock_serial.write_buffer.clear()
+
+        # Healthy danger delivery
+        ok = self.mgr.send_danger_trigger("PIN-F360")
+        self.assertTrue(ok)
+        self.assertIn(b"SL:TRIGGER:DANGER\n", bytes(self.mock_serial.write_buffer))
+
+        # Mismatched device ID is skipped safely
+        self.assertFalse(self.mgr.send_danger_trigger("PIN-OTHER"))
+
+        # Serial write exception is caught and returns False
+        failing_port = MagicMock()
+        failing_port.is_open = True
+        failing_port.write.side_effect = serial.SerialException("USB cable pulled mid-write")
+        self.mgr.serial_port = failing_port
+        self.assertFalse(self.mgr.send_danger_trigger("PIN-F360"))
+
+        # Disconnect cleanly resets audio_analyzing
+        self.mgr.audio_analyzing = True
+        self.mgr._mark_disconnected("Simulated unplug")
+        self.assertFalse(self.mgr.audio_analyzing)
+
 
 if __name__ == "__main__":
     unittest.main()

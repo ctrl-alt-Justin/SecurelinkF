@@ -9,8 +9,15 @@ from __future__ import annotations
 
 import math
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+
+NEGATION_TOKENS: frozenset[str] = frozenset({
+    "hindi", "di", "'di", "huwag", "wag", "wala", "walang", "ayaw",
+    "not", "no", "never", "don't", "dont", "can't", "cant",
+    "won't", "wont", "didn't", "didnt", "isn't", "isnt", "aren't", "arent",
+})
 
 
 def normalize_text(text: str) -> str:
@@ -101,6 +108,229 @@ def compute_keyword_recognition_errors(
         "missed_count": len(missed),
         "error_rate": round(len(missed) / len(expected_clean), 4),
         "missed_words": missed,
+    }
+
+
+def compute_word_edit_counts(reference: str, hypothesis: str) -> Dict[str, int]:
+    """Return reference word count, hypothesis word count, and Levenshtein word edits."""
+    ref_words = tokenize_words(reference)
+    hyp_words = tokenize_words(hypothesis)
+    dist = _levenshtein(ref_words, hyp_words)
+    return {
+        "reference_words": len(ref_words),
+        "hypothesis_words": len(hyp_words),
+        "edits": dist,
+    }
+
+
+def compute_negation_preservation(
+    reference: str,
+    hypothesis: str,
+    expected_negations: Sequence[str] = (),
+) -> Dict[str, Any]:
+    """
+    Evaluate occurrence-aware negation token preservation and extra negation insertions.
+    If expected_negations is omitted, expected negation tokens are derived from NEGATION_TOKENS
+    present in reference.
+    """
+    ref_toks = tokenize_words(reference)
+    hyp_toks = tokenize_words(hypothesis)
+
+    explicit_clean = [normalize_text(w) for w in expected_negations if normalize_text(w)]
+    if explicit_clean:
+        target_set = set(explicit_clean)
+    else:
+        target_set = {t for t in ref_toks if t in NEGATION_TOKENS}
+
+    rc = Counter(t for t in ref_toks if t in target_set)
+    hc = Counter(t for t in hyp_toks if t in target_set)
+    expected_count = sum(rc.values())
+    preserved_count = sum(min(rc[k], hc[k]) for k in rc)
+    missed_count = expected_count - preserved_count
+    missed_tokens = sorted(k for k in rc if hc[k] < rc[k])
+
+    rc_all = Counter(t for t in ref_toks if t in NEGATION_TOKENS)
+    hc_all = Counter(t for t in hyp_toks if t in NEGATION_TOKENS)
+    extra_inserted_count = sum(max(0, hc_all[k] - rc_all[k]) for k in hc_all)
+
+    return {
+        "expected_count": expected_count,
+        "preserved_count": preserved_count,
+        "missed_count": missed_count,
+        "preservation_rate": round(preserved_count / expected_count, 4) if expected_count > 0 else None,
+        "missed_tokens": missed_tokens,
+        "extra_inserted_count": extra_inserted_count,
+    }
+
+
+def is_non_speech_control_record(rec: Dict[str, Any]) -> bool:
+    """Return True if an audio/end-to-end record represents a confirmed non-speech control."""
+    if rec.get("is_non_speech_control") is True:
+        return True
+    if rec.get("language") in ("silence", "noise"):
+        return True
+    if rec.get("expected_transcription_status") == "NO_SPEECH":
+        return True
+    tags = set(rec.get("tags") or [])
+    if tags & {"non_speech_control", "silence", "noise"}:
+        return True
+    ref = rec.get("reference_transcript")
+    if ref is not None and str(ref).strip() == "":
+        return True
+    return False
+
+
+def compute_asr_metrics(records: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Aggregate ASR metrics cleanly separated from downstream classification scoring.
+    Confirmed non-speech controls are evaluated for false transcripts and excluded from speech WER/CER.
+    Preserves TRANSCRIBED (accepted), UNCERTAIN_TRANSCRIPTION (uncertain),
+    TRANSCRIPTION_REJECTED (rejected), and NO_SPEECH outcome counts.
+    """
+    status_counts: Counter = Counter()
+    speech_outcomes: Counter = Counter()
+    control_outcomes: Counter = Counter()
+
+    audio_latencies: List[float] = []
+    speech_wers: List[float] = []
+    speech_cers: List[float] = []
+    total_ref_words = 0
+    total_edits = 0
+    speech_clips = 0
+
+    crit_total = 0
+    crit_missed = 0
+    kw_neg_total = 0
+    kw_neg_missed = 0
+
+    neg_expected = 0
+    neg_preserved = 0
+    neg_missed = 0
+    neg_extra = 0
+
+    ctrl_total = 0
+    ctrl_false_transcripts = 0
+    ctrl_false_ids: List[str] = []
+
+    def _bucket(ts: Optional[str]) -> str:
+        if ts == "TRANSCRIBED":
+            return "accepted"
+        if ts == "UNCERTAIN_TRANSCRIPTION":
+            return "uncertain"
+        if ts == "TRANSCRIPTION_REJECTED":
+            return "rejected"
+        if ts == "NO_SPEECH":
+            return "no_speech"
+        return "other"
+
+    for rec in records:
+        if rec.get("status") != "EVALUATED" or rec.get("mode") not in ("audio", "end_to_end"):
+            continue
+
+        lat_val = rec.get("asr_latency_ms")
+        if lat_val is None:
+            lat_val = rec.get("latency_ms")
+        if lat_val is not None:
+            audio_latencies.append(float(lat_val))
+
+        ts = rec.get("transcription_status")
+        if ts:
+            status_counts[str(ts)] += 1
+        bucket = _bucket(ts)
+
+        is_ctrl = is_non_speech_control_record(rec)
+        if is_ctrl:
+            ctrl_total += 1
+            control_outcomes[bucket] += 1
+            hyp = (rec.get("hypothesis_transcript") or "").strip()
+            if hyp:
+                ctrl_false_transcripts += 1
+                ctrl_false_ids.append(str(rec.get("id", "")))
+            continue
+
+        speech_clips += 1
+        speech_outcomes[bucket] += 1
+
+        if rec.get("wer") is not None:
+            speech_wers.append(float(rec["wer"]))
+        if rec.get("cer") is not None:
+            speech_cers.append(float(rec["cer"]))
+
+        wec = rec.get("word_edit_counts")
+        if wec:
+            total_ref_words += int(wec.get("reference_words", 0))
+            total_edits += int(wec.get("edits", 0))
+        elif rec.get("reference_transcript") is not None:
+            counts = compute_word_edit_counts(
+                str(rec["reference_transcript"]),
+                str(rec.get("hypothesis_transcript") or ""),
+            )
+            total_ref_words += counts["reference_words"]
+            total_edits += counts["edits"]
+
+        cw = rec.get("critical_word_errors") or {}
+        crit_total += int(cw.get("total", 0))
+        crit_missed += int(cw.get("missed_count", 0))
+
+        nw = rec.get("negation_word_errors") or {}
+        kw_neg_total += int(nw.get("total", 0))
+        kw_neg_missed += int(nw.get("missed_count", 0))
+
+        np_info = rec.get("negation_preservation")
+        if np_info is not None:
+            neg_expected += int(np_info.get("expected_count", 0))
+            neg_preserved += int(np_info.get("preserved_count", 0))
+            neg_missed += int(np_info.get("missed_count", 0))
+            neg_extra += int(np_info.get("extra_inserted_count", 0))
+        elif rec.get("reference_transcript") is not None:
+            np_calc = compute_negation_preservation(
+                str(rec["reference_transcript"]),
+                str(rec.get("hypothesis_transcript") or ""),
+            )
+            neg_expected += np_calc["expected_count"]
+            neg_preserved += np_calc["preserved_count"]
+            neg_missed += np_calc["missed_count"]
+            neg_extra += np_calc["extra_inserted_count"]
+
+    return {
+        "evaluated_audio_clips": speech_clips + ctrl_total,
+        "speech_clips": speech_clips,
+        "reference_words": total_ref_words,
+        "word_edits": total_edits,
+        "corpus_wer": round(total_edits / total_ref_words, 4) if total_ref_words > 0 else None,
+        "mean_wer": round(sum(speech_wers) / len(speech_wers), 4) if speech_wers else None,
+        "mean_cer": round(sum(speech_cers) / len(speech_cers), 4) if speech_cers else None,
+        "critical_words_total": crit_total,
+        "critical_words_missed": crit_missed,
+        "critical_word_error_rate": round(crit_missed / crit_total, 4) if crit_total > 0 else None,
+        "negation_words_total": kw_neg_total,
+        "negation_words_missed": kw_neg_missed,
+        "negation_word_error_rate": round(kw_neg_missed / kw_neg_total, 4) if kw_neg_total > 0 else None,
+        "negation_tokens_expected": neg_expected,
+        "negation_tokens_preserved": neg_preserved,
+        "negation_tokens_missed": neg_missed,
+        "negation_preservation_rate": round(neg_preserved / neg_expected, 4) if neg_expected > 0 else None,
+        "negation_extra_inserted": neg_extra,
+        "non_speech_controls_total": ctrl_total,
+        "non_speech_false_transcripts": ctrl_false_transcripts,
+        "non_speech_false_transcript_rate": round(ctrl_false_transcripts / ctrl_total, 4) if ctrl_total > 0 else None,
+        "non_speech_false_transcript_ids": ctrl_false_ids,
+        "transcription_status_counts": dict(status_counts),
+        "speech_outcomes": {
+            "accepted": speech_outcomes["accepted"],
+            "uncertain": speech_outcomes["uncertain"],
+            "rejected": speech_outcomes["rejected"],
+            "no_speech": speech_outcomes["no_speech"],
+            "other": speech_outcomes["other"],
+        },
+        "control_outcomes": {
+            "accepted": control_outcomes["accepted"],
+            "uncertain": control_outcomes["uncertain"],
+            "rejected": control_outcomes["rejected"],
+            "no_speech": control_outcomes["no_speech"],
+            "other": control_outcomes["other"],
+        },
+        "asr_latency_ms": compute_latency_stats(audio_latencies),
     }
 
 

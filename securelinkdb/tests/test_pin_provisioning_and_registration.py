@@ -187,13 +187,18 @@ class TestPinRegistrationPromotion(unittest.IsolatedAsyncioTestCase):
         registered_devices.clear()
         active_pins.clear()
 
-        # Use temporary file for device_credentials.json to keep tests isolated
+        # Use temporary files for device_credentials.json & active_pairing_codes.json
         self.temp_dir = tempfile.TemporaryDirectory()
         self.orig_creds_file = server.DEVICE_CREDENTIALS_FILE
+        self.orig_codes_file = server.ACTIVE_PAIRING_CODES_FILE
         server.DEVICE_CREDENTIALS_FILE = os.path.join(self.temp_dir.name, "device_credentials.json")
+        server.ACTIVE_PAIRING_CODES_FILE = os.path.join(self.temp_dir.name, "active_pairing_codes.json")
 
     async def asyncTearDown(self):
+        active_pairing_codes.clear()
+        pending_registrations.clear()
         server.DEVICE_CREDENTIALS_FILE = self.orig_creds_file
+        server.ACTIVE_PAIRING_CODES_FILE = self.orig_codes_file
         self.temp_dir.cleanup()
 
     async def test_05_invalid_or_expired_pairing_code(self):

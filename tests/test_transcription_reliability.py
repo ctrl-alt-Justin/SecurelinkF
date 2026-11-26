@@ -1,9 +1,12 @@
 import asyncio
+from collections import deque
 import os
 import sys
+import tempfile
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 import wave
+import httpx
 import numpy as np
 
 # Ensure torch/lib is in DLL directory for Windows CUDA before importing server
@@ -21,6 +24,8 @@ SECURELINK_DIR = os.path.join(WORKSPACE_ROOT, "securelinkdb")
 if SECURELINK_DIR not in sys.path:
     sys.path.insert(0, SECURELINK_DIR)
 
+from incident_store import IncidentStore
+import server
 from server import (
     TranscriptionStatus,
     TranscriptionResult,
@@ -181,30 +186,133 @@ class TestDangerGatingAndMockDeviceCommands(unittest.IsolatedAsyncioTestCase):
         for call in mock_ws.send_text.call_args_list:
             self.assertNotEqual(call[0][0], "TRIGGER:DANGER")
 
-    async def test_uncertain_transcription_never_calls_evaluate_or_triggers_danger(self):
+    async def test_uncertain_transcription_routes_for_human_review_without_danger(self):
         """
-        When a result is UNCERTAIN_TRANSCRIPTION, it must never enter context_engine.evaluate()
-        or trigger hardware danger.
+        When a result is UNCERTAIN_TRANSCRIPTION, it must route for human review with original + normalized text,
+        confidence metrics, and authorized audio linkage, while NEVER triggering DANGER or emergency hardware.
         """
         mock_ws = AsyncMock()
         device_id = "TEST-PIN-002"
         pcm = np.zeros(16000, dtype=np.int16).tobytes()
 
-        # Simulate process_audio_buffer returning UNCERTAIN_TRANSCRIPTION
         uncertain_res = TranscriptionResult(
             status=TranscriptionStatus.UNCERTAIN_TRANSCRIPTION,
-            transcript="borderline acoustic noise",
-            reason="Borderline acoustic confidence",
-            metrics={"avg_logprob": -1.25}
+            transcript="Papatayin kita mamaya!",
+            reason="Borderline acoustic confidence (avg_logprob=-1.250 < -1.10)",
+            metrics={"avg_logprob": -1.25, "no_speech_prob": 0.12, "compression_ratio": 1.15},
         )
 
-        with patch("server.process_audio_buffer", return_value=(uncertain_res, pcm)):
-            with patch.object(context_engine, "evaluate") as mock_eval:
-                await handle_completed_audio(device_id, pcm, mock_ws)
-                mock_eval.assert_not_called()
+        # Direct WebSocket source verification
+        direct_incidents = deque()
+        direct_reviews = deque()
+        direct_auth_audio = {}
+        direct_broadcast = AsyncMock()
+        direct_preview = MagicMock()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            iso_store = IncidentStore(os.path.join(tmpdir, "incidents.db"))
+            try:
+                with (
+                    patch("server.process_audio_buffer", return_value=(uncertain_res, pcm)),
+                    patch("server.broadcast_to_ui", direct_broadcast),
+                    patch("server.save_wav") as mock_save,
+                    patch("server.incident_store", iso_store),
+                    patch("server.recent_incidents", direct_incidents),
+                    patch("server.recent_uncertain_reviews", direct_reviews),
+                    patch("server.authorized_review_audio", direct_auth_audio),
+                    patch("server.ordinary_speech_preview", direct_preview),
+                    patch("server.UNCERTAIN_REVIEW_AUDIO_DIR", tmpdir),
+                ):
+                    await handle_completed_audio(device_id, pcm, mock_ws, source="ESP32_DIRECT")
+            finally:
+                iso_store.close()
 
         for call in mock_ws.send_text.call_args_list:
             self.assertNotEqual(call[0][0], "TRIGGER:DANGER")
+        mock_save.assert_called_once()
+        saved_path = mock_save.call_args[0][1]
+        self.assertTrue(os.path.dirname(saved_path).endswith(os.path.basename(tmpdir)))
+        direct_preview.publish.assert_not_called()
+
+        self.assertEqual(len(direct_incidents), 1)
+        self.assertEqual(len(direct_reviews), 1)
+        payload = direct_incidents[0]
+        self.assertLess(payload["score"], 8.0)
+        self.assertFalse(payload["video"])
+        self.assertTrue(payload["human_review_required"])
+        self.assertEqual(payload["review_status"], "PENDING_REVIEW")
+        self.assertEqual(payload["transcription_status"], "UNCERTAIN_TRANSCRIPTION")
+        self.assertEqual(payload["original_transcript"], "Papatayin kita mamaya!")
+        self.assertEqual(payload["normalized_transcript"], "papatayin kita mamaya")
+        self.assertEqual(payload["confidence"]["avg_logprob"], -1.25)
+        self.assertTrue(payload["audio_authorized"])
+        self.assertTrue(payload["audio_review_url"].startswith("/api/review/audio/"))
+
+        # USB source verification: must NEVER invoke USB danger hardware methods
+        usb_mock = MagicMock()
+        usb_mock.is_authenticated = True
+        usb_mock.device_id = device_id
+        with tempfile.TemporaryDirectory() as tmpdir:
+            iso_store_usb = IncidentStore(os.path.join(tmpdir, "incidents_usb.db"))
+            try:
+                with (
+                    patch("server.process_audio_buffer", return_value=(uncertain_res, pcm)),
+                    patch("server.broadcast_to_ui", new_callable=AsyncMock),
+                    patch("server.save_wav"),
+                    patch("server.usb_mgr", usb_mock),
+                    patch("server.incident_store", iso_store_usb),
+                    patch("server.recent_incidents", deque()),
+                    patch("server.recent_uncertain_reviews", deque()),
+                    patch("server.authorized_review_audio", {}),
+                    patch("server.UNCERTAIN_REVIEW_AUDIO_DIR", tmpdir),
+                ):
+                    await handle_completed_audio(device_id, pcm, websocket=None, source="USB")
+            finally:
+                iso_store_usb.close()
+        usb_mock.send_line.assert_not_called()
+        usb_mock.send_danger_trigger.assert_not_called()
+        usb_mock._send_text.assert_not_called()
+
+    async def test_review_audio_endpoint_requires_valid_token(self):
+        """Uncertain review audio endpoint must reject missing/bad tokens and serve WAV only to valid tokens."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            wav_name = "EVT-TESTREV.wav"
+            wav_path = os.path.join(tmpdir, wav_name)
+            with wave.open(wav_path, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(16000)
+                wf.writeframes(np.zeros(1600, dtype=np.int16).tobytes())
+
+            auth_store = {}
+            iso_store = IncidentStore(os.path.join(tmpdir, "incidents.db"))
+            try:
+                with (
+                    patch.object(server, "UNCERTAIN_REVIEW_AUDIO_DIR", tmpdir),
+                    patch.object(server, "authorized_review_audio", auth_store),
+                    patch.object(server, "incident_store", iso_store),
+                    patch.object(server, "recent_uncertain_reviews", deque()),
+                ):
+                    token = server._register_authorized_review_audio("EVT-TESTREV", wav_name, "PIN-001")
+                    transport = httpx.ASGITransport(app=server.app)
+                    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
+                        r_no_tok = await client.get("/api/review/audio/EVT-TESTREV")
+                        r_bad_tok = await client.get("/api/review/audio/EVT-TESTREV?token=wrongtoken")
+                        r_query_ok = await client.get(f"/api/review/audio/EVT-TESTREV?token={token}")
+                        r_bearer_ok = await client.get(
+                            "/api/review/audio/EVT-TESTREV",
+                            headers={"Authorization": f"Bearer {token}"},
+                        )
+                        r_list = await client.get("/api/review/uncertain")
+
+                    self.assertEqual(r_no_tok.status_code, 401)
+                    self.assertEqual(r_bad_tok.status_code, 401)
+                    self.assertEqual(r_query_ok.status_code, 200)
+                    self.assertEqual(r_query_ok.headers.get("content-type"), "audio/wav")
+                    self.assertEqual(r_bearer_ok.status_code, 200)
+                    self.assertEqual(r_list.status_code, 200)
+                    self.assertEqual(r_list.json()["status"], "success")
+            finally:
+                iso_store.close()
 
     async def test_genuine_threat_transcribed_triggers_danger_safely_mocked(self):
         """
@@ -222,10 +330,19 @@ class TestDangerGatingAndMockDeviceCommands(unittest.IsolatedAsyncioTestCase):
             metrics={"avg_logprob": -0.35}
         )
 
-        with patch("server.process_audio_buffer", return_value=(threat_res, pcm)):
-            with patch("server.broadcast_to_ui", new_callable=AsyncMock):
-                with patch("server.save_wav"):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            iso_store = IncidentStore(os.path.join(tmpdir, "incidents.db"))
+            try:
+                with (
+                    patch("server.process_audio_buffer", return_value=(threat_res, pcm)),
+                    patch("server.broadcast_to_ui", new_callable=AsyncMock),
+                    patch("server.save_wav"),
+                    patch("server.incident_store", iso_store),
+                    patch("server.recent_incidents", deque(maxlen=50)),
+                ):
                     await handle_completed_audio(device_id, pcm, mock_ws)
+            finally:
+                iso_store.close()
 
         # Mock websocket should have received TRIGGER:DANGER
         dispatched_messages = [c[0][0] for c in mock_ws.send_text.call_args_list]

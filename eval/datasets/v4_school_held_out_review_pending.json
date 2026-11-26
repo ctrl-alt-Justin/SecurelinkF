@@ -1,0 +1,1092 @@
+{
+  "schema_version": "1.0.0",
+  "dataset_name": "securelink_v4_school_held_out_review_pending",
+  "split": "held_out",
+  "description": "Pending independent human annotation and approval. Four normal-conversation prompts were supplied by the project user. The remaining prompts and all proposed labels are synthetic. No real conversations were collected for this file. Reserve this file for held-out text evaluation only. Keep utterances, labels, and predictions out of training, development, prompting, and tuning. Before final evaluation, have Filipino/English/Taglish-speaking reviewers independently verify naturalness, intent, severity, and review flags, resolve disagreements under a fixed rubric, and freeze the approved version without consulting model predictions. The current text evaluator receives only the utterance. Use the context field as an annotation aid and flag cases that cannot be judged from the utterance alone.",
+  "scenarios": [
+    {
+      "id": "V4-SCHOOL-HO-001",
+      "split": "held_out",
+      "mode": "text",
+      "language": "tl",
+      "utterance": "Mamaya paglabas mo ng gym, susuntukin kita. Tandaan mo yan.",
+      "conversational_context": "A student threatens to hit a classmate when the classmate leaves the gym.",
+      "expected_intent": "DIRECT_THREAT",
+      "expected_level": "THREAT",
+      "expected_review_required": true,
+      "is_friendly_teasing": false,
+      "is_serious_threat": true,
+      "tags": [
+        "category:threat",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-002",
+      "split": "held_out",
+      "mode": "text",
+      "language": "tl",
+      "utterance": "Bitawan mo yung bag ko. Sisipain kita pag di mo binitawan.",
+      "conversational_context": "A classmate is holding the student's bag during a face-to-face dispute.",
+      "expected_intent": "DIRECT_THREAT",
+      "expected_level": "DANGER",
+      "expected_review_required": true,
+      "is_friendly_teasing": false,
+      "is_serious_threat": true,
+      "tags": [
+        "category:threat",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-003",
+      "split": "held_out",
+      "mode": "text",
+      "language": "tl",
+      "utterance": "Pag tinulak mo ulit kapatid ko, tutulak din kita.",
+      "conversational_context": "A student threatens to shove a classmate the next time they push the student's sibling.",
+      "expected_intent": "DIRECT_THREAT",
+      "expected_level": "THREAT",
+      "expected_review_required": true,
+      "is_friendly_teasing": false,
+      "is_serious_threat": true,
+      "tags": [
+        "category:threat",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-004",
+      "split": "held_out",
+      "mode": "text",
+      "language": "tl",
+      "utterance": "Ano, uulitin mo pa? Sasampalin kita ngayon din.",
+      "conversational_context": "A student threatens to slap a classmate immediately during a face-to-face argument.",
+      "expected_intent": "DIRECT_THREAT",
+      "expected_level": "DANGER",
+      "expected_review_required": true,
+      "is_friendly_teasing": false,
+      "is_serious_threat": true,
+      "tags": [
+        "category:threat",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-005",
+      "split": "held_out",
+      "mode": "text",
+      "language": "en",
+      "utterance": "Get your hands off me or I'm gonna hit you.",
+      "conversational_context": "A student threatens to hit the classmate currently grabbing them.",
+      "expected_intent": "DIRECT_THREAT",
+      "expected_level": "DANGER",
+      "expected_review_required": true,
+      "is_friendly_teasing": false,
+      "is_serious_threat": true,
+      "tags": [
+        "category:threat",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-006",
+      "split": "held_out",
+      "mode": "text",
+      "language": "en",
+      "utterance": "Touch my stuff again and I'll shove you.",
+      "conversational_context": "A student threatens a classmate who has been touching their belongings.",
+      "expected_intent": "DIRECT_THREAT",
+      "expected_level": "THREAT",
+      "expected_review_required": true,
+      "is_friendly_teasing": false,
+      "is_serious_threat": true,
+      "tags": [
+        "category:threat",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-007",
+      "split": "held_out",
+      "mode": "text",
+      "language": "en",
+      "utterance": "I'll punch you after practice. I'm serious.",
+      "conversational_context": "A student threatens another student after a disagreement at practice.",
+      "expected_intent": "DIRECT_THREAT",
+      "expected_level": "THREAT",
+      "expected_review_required": true,
+      "is_friendly_teasing": false,
+      "is_serious_threat": true,
+      "tags": [
+        "category:threat",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-008",
+      "split": "held_out",
+      "mode": "text",
+      "language": "en",
+      "utterance": "Let me through or I'll kick you right now.",
+      "conversational_context": "A student threatens to kick a classmate blocking the doorway.",
+      "expected_intent": "DIRECT_THREAT",
+      "expected_level": "DANGER",
+      "expected_review_required": true,
+      "is_friendly_teasing": false,
+      "is_serious_threat": true,
+      "tags": [
+        "category:threat",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-009",
+      "split": "held_out",
+      "mode": "text",
+      "language": "taglish",
+      "utterance": "After quiz, aabangan kita. Sasapakin kita mamaya, tignan mo.",
+      "conversational_context": "A student threatens to wait for and punch a classmate after the quiz.",
+      "expected_intent": "DIRECT_THREAT",
+      "expected_level": "THREAT",
+      "expected_review_required": true,
+      "is_friendly_teasing": false,
+      "is_serious_threat": true,
+      "tags": [
+        "category:threat",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-010",
+      "split": "held_out",
+      "mode": "text",
+      "language": "taglish",
+      "utterance": "Ulitin mo nga yan sa harap ko. I'll slap you right now.",
+      "conversational_context": "A student confronts a classmate face to face over an insult.",
+      "expected_intent": "DIRECT_THREAT",
+      "expected_level": "DANGER",
+      "expected_review_required": true,
+      "is_friendly_teasing": false,
+      "is_serious_threat": true,
+      "tags": [
+        "category:threat",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-011",
+      "split": "held_out",
+      "mode": "text",
+      "language": "taglish",
+      "utterance": "Hawakan mo ulit yung ID ko, I'll shove you. Seryoso ako.",
+      "conversational_context": "A student threatens to shove a classmate if they touch the student's ID again.",
+      "expected_intent": "DIRECT_THREAT",
+      "expected_level": "THREAT",
+      "expected_review_required": true,
+      "is_friendly_teasing": false,
+      "is_serious_threat": true,
+      "tags": [
+        "category:threat",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-012",
+      "split": "held_out",
+      "mode": "text",
+      "language": "taglish",
+      "utterance": "Sige, tatawa ka pa. Pag uwian na, I'll punch you.",
+      "conversational_context": "A student threatens a classmate after being laughed at.",
+      "expected_intent": "DIRECT_THREAT",
+      "expected_level": "THREAT",
+      "expected_review_required": true,
+      "is_friendly_teasing": false,
+      "is_serious_threat": true,
+      "tags": [
+        "category:threat",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-013",
+      "split": "held_out",
+      "mode": "text",
+      "language": "tl",
+      "utterance": "Burahin mo yung video. Pag di mo binura, di ka na namin isasali sa laro.",
+      "conversational_context": "A student uses exclusion from a game to pressure another student into deleting a video.",
+      "expected_intent": "COERCION",
+      "expected_level": "THREAT",
+      "expected_review_required": true,
+      "is_friendly_teasing": false,
+      "is_serious_threat": true,
+      "tags": [
+        "category:coercion",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-014",
+      "split": "held_out",
+      "mode": "text",
+      "language": "tl",
+      "utterance": "Bente kada araw. Pag di ka nagbigay, sasabihin ko sa buong klase yung sikreto mo.",
+      "conversational_context": "A student threatens to reveal a classmate's secret unless the classmate pays daily.",
+      "expected_intent": "EXTORTION",
+      "expected_level": "THREAT",
+      "expected_review_required": true,
+      "is_friendly_teasing": false,
+      "is_serious_threat": true,
+      "tags": [
+        "category:coercion",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-015",
+      "split": "held_out",
+      "mode": "text",
+      "language": "tl",
+      "utterance": "Isama mo pangalan ko sa papel. Pag hindi, sasabihin ko sa teacher na kinopya mo yan.",
+      "conversational_context": "A student pressures a groupmate into giving them credit for work they did not do.",
+      "expected_intent": "COERCION",
+      "expected_level": "THREAT",
+      "expected_review_required": true,
+      "is_friendly_teasing": false,
+      "is_serious_threat": true,
+      "tags": [
+        "category:coercion",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-016",
+      "split": "held_out",
+      "mode": "text",
+      "language": "tl",
+      "utterance": "Akin na baon mo. Pag di mo binigay, kukunin ko ulit yung bag mo.",
+      "conversational_context": "A student demands a classmate's allowance and threatens to take their bag again.",
+      "expected_intent": "EXTORTION",
+      "expected_level": "THREAT",
+      "expected_review_required": true,
+      "is_friendly_teasing": false,
+      "is_serious_threat": true,
+      "tags": [
+        "category:coercion",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-017",
+      "split": "held_out",
+      "mode": "text",
+      "language": "en",
+      "utterance": "Put my name on the project or I'll tell the teacher you copied it.",
+      "conversational_context": "A student threatens a false accusation to get credit for a class project.",
+      "expected_intent": "COERCION",
+      "expected_level": "THREAT",
+      "expected_review_required": true,
+      "is_friendly_teasing": false,
+      "is_serious_threat": true,
+      "tags": [
+        "category:coercion",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-018",
+      "split": "held_out",
+      "mode": "text",
+      "language": "en",
+      "utterance": "Bring me your lunch money tomorrow or I'll share that photo.",
+      "conversational_context": "A student demands money by threatening to circulate an embarrassing photo.",
+      "expected_intent": "EXTORTION",
+      "expected_level": "THREAT",
+      "expected_review_required": true,
+      "is_friendly_teasing": false,
+      "is_serious_threat": true,
+      "tags": [
+        "category:coercion",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-019",
+      "split": "held_out",
+      "mode": "text",
+      "language": "en",
+      "utterance": "Move your paper so I can see it. Do it or you're out of the group chat.",
+      "conversational_context": "A student with control of the chat pressures a classmate into showing their answers.",
+      "expected_intent": "COERCION",
+      "expected_level": "THREAT",
+      "expected_review_required": true,
+      "is_friendly_teasing": false,
+      "is_serious_threat": true,
+      "tags": [
+        "category:coercion",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-020",
+      "split": "held_out",
+      "mode": "text",
+      "language": "en",
+      "utterance": "Give me fifty by Friday or I'll send your messages to the whole class.",
+      "conversational_context": "A student threatens to share a classmate's private messages unless paid.",
+      "expected_intent": "EXTORTION",
+      "expected_level": "THREAT",
+      "expected_review_required": true,
+      "is_friendly_teasing": false,
+      "is_serious_threat": true,
+      "tags": [
+        "category:coercion",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-021",
+      "split": "held_out",
+      "mode": "text",
+      "language": "taglish",
+      "utterance": "Send mo sagot mo sa number five. Pag hindi, sasabihin ko kay ma'am na ikaw yung nangopya.",
+      "conversational_context": "A student threatens a false accusation to get a classmate's answer.",
+      "expected_intent": "COERCION",
+      "expected_level": "THREAT",
+      "expected_review_required": true,
+      "is_friendly_teasing": false,
+      "is_serious_threat": true,
+      "tags": [
+        "category:coercion",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-022",
+      "split": "held_out",
+      "mode": "text",
+      "language": "taglish",
+      "utterance": "Bente bukas. Pag wala, ise-send ko yung pic mo sa GC.",
+      "conversational_context": "A student demands money and threatens to send an embarrassing photo to the group chat.",
+      "expected_intent": "EXTORTION",
+      "expected_level": "THREAT",
+      "expected_review_required": true,
+      "is_friendly_teasing": false,
+      "is_serious_threat": true,
+      "tags": [
+        "category:coercion",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-023",
+      "split": "held_out",
+      "mode": "text",
+      "language": "taglish",
+      "utterance": "Pag nag-attendance, sabihin mo nandito ako. Pag di mo ginawa, kick kita sa GC.",
+      "conversational_context": "A student with control of the chat threatens exclusion to get a classmate to lie about attendance.",
+      "expected_intent": "COERCION",
+      "expected_level": "THREAT",
+      "expected_review_required": true,
+      "is_friendly_teasing": false,
+      "is_serious_threat": true,
+      "tags": [
+        "category:coercion",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-024",
+      "split": "held_out",
+      "mode": "text",
+      "language": "taglish",
+      "utterance": "Ako piliin mo sa poll. Pag di ako pinili mo, tatanggalin kita sa team.",
+      "conversational_context": "A team captain threatens to drop a teammate who will not vote for them in a group poll.",
+      "expected_intent": "COERCION",
+      "expected_level": "THREAT",
+      "expected_review_required": true,
+      "is_friendly_teasing": false,
+      "is_serious_threat": true,
+      "tags": [
+        "category:coercion",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-025",
+      "split": "held_out",
+      "mode": "text",
+      "language": "tl",
+      "utterance": "Uy, ang aga mo! Kakapatay lang ng ilaw. Tara, sabay na tayo.",
+      "conversational_context": "A friend jokingly greets a late classmate as an after-school activity is closing and offers to walk with them.",
+      "expected_intent": "ORDINARY_CONVERSATION",
+      "expected_level": "NORMAL",
+      "expected_review_required": false,
+      "is_friendly_teasing": true,
+      "is_serious_threat": false,
+      "tags": [
+        "category:teasing_banter",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-026",
+      "split": "held_out",
+      "mode": "text",
+      "language": "tl",
+      "utterance": "Aba, may pose pa. Ulitin mo nga, di ko nakunan!",
+      "conversational_context": "Friends laugh and take another photo after one of them makes an exaggerated pose.",
+      "expected_intent": "ORDINARY_CONVERSATION",
+      "expected_level": "NORMAL",
+      "expected_review_required": false,
+      "is_friendly_teasing": true,
+      "is_serious_threat": false,
+      "tags": [
+        "category:teasing_banter",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-027",
+      "split": "held_out",
+      "mode": "text",
+      "language": "tl",
+      "utterance": "Hoy, ikaw lang ba naiinitan? Usog ka konti, pati ako walang hangin.",
+      "conversational_context": "Two friends laugh as one asks the other to share space in front of the classroom fan.",
+      "expected_intent": "ORDINARY_CONVERSATION",
+      "expected_level": "NORMAL",
+      "expected_review_required": false,
+      "is_friendly_teasing": true,
+      "is_serious_threat": false,
+      "tags": [
+        "category:teasing_banter",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-028",
+      "split": "held_out",
+      "mode": "text",
+      "language": "tl",
+      "utterance": "Nabantayan mo ba bag ko o yung siomai lang? Uy, penge rin.",
+      "conversational_context": "A friend jokes with the classmate who watched their bag next to a canteen stall.",
+      "expected_intent": "ORDINARY_CONVERSATION",
+      "expected_level": "NORMAL",
+      "expected_review_required": false,
+      "is_friendly_teasing": true,
+      "is_serious_threat": false,
+      "tags": [
+        "category:teasing_banter",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-029",
+      "split": "held_out",
+      "mode": "text",
+      "language": "en",
+      "utterance": "Hey, two matching socks today. Look at you.",
+      "conversational_context": "Friends share a running joke about one of them wearing mismatched socks.",
+      "expected_intent": "ORDINARY_CONVERSATION",
+      "expected_level": "NORMAL",
+      "expected_review_required": false,
+      "is_friendly_teasing": true,
+      "is_serious_threat": false,
+      "tags": [
+        "category:teasing_banter",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-030",
+      "split": "held_out",
+      "mode": "text",
+      "language": "en",
+      "utterance": "One basket and now you're the coach? Okay, show me how you did it.",
+      "conversational_context": "Friends tease each other during a casual basketball game.",
+      "expected_intent": "ORDINARY_CONVERSATION",
+      "expected_level": "NORMAL",
+      "expected_review_required": false,
+      "is_friendly_teasing": true,
+      "is_serious_threat": false,
+      "tags": [
+        "category:teasing_banter",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-031",
+      "split": "held_out",
+      "mode": "text",
+      "language": "en",
+      "utterance": "Wait, you brought a ruler for once? Let me borrow it.",
+      "conversational_context": "A friend playfully reacts to a classmate remembering a ruler and asks to borrow it.",
+      "expected_intent": "ORDINARY_CONVERSATION",
+      "expected_level": "NORMAL",
+      "expected_review_required": false,
+      "is_friendly_teasing": true,
+      "is_serious_threat": false,
+      "tags": [
+        "category:teasing_banter",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-032",
+      "split": "held_out",
+      "mode": "text",
+      "language": "en",
+      "utterance": "How do you have five pens and still end up borrowing mine?",
+      "conversational_context": "Friends laugh about one classmate preferring a pen borrowed from the other.",
+      "expected_intent": "ORDINARY_CONVERSATION",
+      "expected_level": "NORMAL",
+      "expected_review_required": false,
+      "is_friendly_teasing": true,
+      "is_serious_threat": false,
+      "tags": [
+        "category:teasing_banter",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-033",
+      "split": "held_out",
+      "mode": "text",
+      "language": "taglish",
+      "utterance": "Uy, iced coffee na naman? Kilala ka na nung nasa counter, no?",
+      "conversational_context": "Friends joke about how often one of them buys coffee at the canteen.",
+      "expected_intent": "ORDINARY_CONVERSATION",
+      "expected_level": "NORMAL",
+      "expected_review_required": false,
+      "is_friendly_teasing": true,
+      "is_serious_threat": false,
+      "tags": [
+        "category:teasing_banter",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-034",
+      "split": "held_out",
+      "mode": "text",
+      "language": "taglish",
+      "utterance": "Parang slow-mo yung layup mo, ah. Pero nice shot!",
+      "conversational_context": "Teammates joke warmly after a slow but successful layup.",
+      "expected_intent": "ORDINARY_CONVERSATION",
+      "expected_level": "NORMAL",
+      "expected_review_required": false,
+      "is_friendly_teasing": true,
+      "is_serious_threat": false,
+      "tags": [
+        "category:teasing_banter",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-035",
+      "split": "held_out",
+      "mode": "text",
+      "language": "taglish",
+      "utterance": "Uy, may bangs na! May pa-reveal pa sa class GC? Bagay naman.",
+      "conversational_context": "A close friend teases a classmate about making a big announcement for their haircut and then compliments it.",
+      "expected_intent": "ORDINARY_CONVERSATION",
+      "expected_level": "NORMAL",
+      "expected_review_required": false,
+      "is_friendly_teasing": true,
+      "is_serious_threat": false,
+      "tags": [
+        "category:teasing_banter",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-036",
+      "split": "held_out",
+      "mode": "text",
+      "language": "taglish",
+      "utterance": "DJ, iba naman. Apat na beses mo nang pinatugtog yang song mo.",
+      "conversational_context": "Friends tease a classmate about repeating the same song during group work.",
+      "expected_intent": "ORDINARY_CONVERSATION",
+      "expected_level": "NORMAL",
+      "expected_review_required": false,
+      "is_friendly_teasing": true,
+      "is_serious_threat": false,
+      "tags": [
+        "category:teasing_banter",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-037",
+      "split": "held_out",
+      "mode": "text",
+      "language": "tl",
+      "utterance": "Di ko ibabato sa'yo yung bola. Bibigay ko lang kay kuya.",
+      "conversational_context": "A student reassures a nearby classmate who thought the ball was aimed at them.",
+      "expected_intent": "NEGATED_THREAT",
+      "expected_level": "NORMAL",
+      "expected_review_required": false,
+      "is_friendly_teasing": false,
+      "is_serious_threat": false,
+      "tags": [
+        "category:negated_threat",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-038",
+      "split": "held_out",
+      "mode": "text",
+      "language": "tl",
+      "utterance": "Di ko siya babantaan. Tatanungin ko lang kung nasan yung bag ko.",
+      "conversational_context": "A student tells a friend they intend to ask about a missing bag without threatening anyone.",
+      "expected_intent": "NEGATED_THREAT",
+      "expected_level": "NORMAL",
+      "expected_review_required": false,
+      "is_friendly_teasing": false,
+      "is_serious_threat": false,
+      "tags": [
+        "category:negated_threat",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-039",
+      "split": "held_out",
+      "mode": "text",
+      "language": "tl",
+      "utterance": "Di kita tutulak. Makikiraan lang ako.",
+      "conversational_context": "A student reassures a classmate while passing in a cramped aisle.",
+      "expected_intent": "NEGATED_THREAT",
+      "expected_level": "NORMAL",
+      "expected_review_required": false,
+      "is_friendly_teasing": false,
+      "is_serious_threat": false,
+      "tags": [
+        "category:negated_threat",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-040",
+      "split": "held_out",
+      "mode": "text",
+      "language": "tl",
+      "utterance": "Di ka namin sasaktan. Gusto lang namin malaman ba't ka umalis kanina.",
+      "conversational_context": "A group reassures a classmate who worries they are being confronted over leaving a game.",
+      "expected_intent": "NEGATED_THREAT",
+      "expected_level": "NORMAL",
+      "expected_review_required": false,
+      "is_friendly_teasing": false,
+      "is_serious_threat": false,
+      "tags": [
+        "category:negated_threat",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-041",
+      "split": "held_out",
+      "mode": "text",
+      "language": "en",
+      "utterance": "I wasn't saying I'd fight him. I said I'd talk to him.",
+      "conversational_context": "A student clarifies an earlier statement to a classmate.",
+      "expected_intent": "NEGATED_THREAT",
+      "expected_level": "NORMAL",
+      "expected_review_required": false,
+      "is_friendly_teasing": false,
+      "is_serious_threat": false,
+      "tags": [
+        "category:negated_threat",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-042",
+      "split": "held_out",
+      "mode": "text",
+      "language": "en",
+      "utterance": "Nobody's going to hit you. You can sit with us.",
+      "conversational_context": "A student reassures a worried peer at lunch.",
+      "expected_intent": "NEGATED_THREAT",
+      "expected_level": "NORMAL",
+      "expected_review_required": false,
+      "is_friendly_teasing": false,
+      "is_serious_threat": false,
+      "tags": [
+        "category:negated_threat",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-043",
+      "split": "held_out",
+      "mode": "text",
+      "language": "en",
+      "utterance": "I'm not gonna hit you. I just want my notebook back.",
+      "conversational_context": "A student denies an intention to hit a classmate while asking for a borrowed notebook.",
+      "expected_intent": "NEGATED_THREAT",
+      "expected_level": "NORMAL",
+      "expected_review_required": false,
+      "is_friendly_teasing": false,
+      "is_serious_threat": false,
+      "tags": [
+        "category:negated_threat",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-044",
+      "split": "held_out",
+      "mode": "text",
+      "language": "en",
+      "utterance": "I won't shove you. I'm just trying to get my bag out.",
+      "conversational_context": "A student reassures someone in a crowded classroom.",
+      "expected_intent": "NEGATED_THREAT",
+      "expected_level": "NORMAL",
+      "expected_review_required": false,
+      "is_friendly_teasing": false,
+      "is_serious_threat": false,
+      "tags": [
+        "category:negated_threat",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-045",
+      "split": "held_out",
+      "mode": "text",
+      "language": "taglish",
+      "utterance": "Fist bump lang. Di kita susuntukin.",
+      "conversational_context": "A student explains a friendly gesture that another student misread.",
+      "expected_intent": "NEGATED_THREAT",
+      "expected_level": "NORMAL",
+      "expected_review_required": false,
+      "is_friendly_teasing": false,
+      "is_serious_threat": false,
+      "tags": [
+        "category:negated_threat",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-046",
+      "split": "held_out",
+      "mode": "text",
+      "language": "taglish",
+      "utterance": "Relax, no one's gonna hurt you. Dito ka muna sa tabi ko.",
+      "conversational_context": "A student offers reassurance to a worried peer.",
+      "expected_intent": "NEGATED_THREAT",
+      "expected_level": "NORMAL",
+      "expected_review_required": false,
+      "is_friendly_teasing": false,
+      "is_serious_threat": false,
+      "tags": [
+        "category:negated_threat",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-047",
+      "split": "held_out",
+      "mode": "text",
+      "language": "taglish",
+      "utterance": "Di ko sinabing sasaktan ko siya. Sabi ko I'll report it kay ma'am.",
+      "conversational_context": "A student corrects a classmate who mistook a plan to report an incident for a threat of harm.",
+      "expected_intent": "NEGATED_THREAT",
+      "expected_level": "NORMAL",
+      "expected_review_required": false,
+      "is_friendly_teasing": false,
+      "is_serious_threat": false,
+      "tags": [
+        "category:negated_threat",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-048",
+      "split": "held_out",
+      "mode": "text",
+      "language": "taglish",
+      "utterance": "Di kita sisipain. Move ka lang saglit, kukunin ko yung bola sa ilalim ng upuan mo.",
+      "conversational_context": "A student reassures a classmate while reaching for a ball under their chair.",
+      "expected_intent": "NEGATED_THREAT",
+      "expected_level": "NORMAL",
+      "expected_review_required": false,
+      "is_friendly_teasing": false,
+      "is_serious_threat": false,
+      "tags": [
+        "category:negated_threat",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-049",
+      "split": "held_out",
+      "mode": "text",
+      "language": "tl",
+      "utterance": "Penge ako niyan.",
+      "conversational_context": "A classmate asks to share a snack.",
+      "expected_intent": "ORDINARY_CONVERSATION",
+      "expected_level": "NORMAL",
+      "expected_review_required": false,
+      "is_friendly_teasing": false,
+      "is_serious_threat": false,
+      "tags": [
+        "category:normal_conversation",
+        "synthetic_provisional",
+        "annotation:pending_human_review",
+        "source:user_example"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-050",
+      "split": "held_out",
+      "mode": "text",
+      "language": "tl",
+      "utterance": "Pakuha nga non.",
+      "conversational_context": "A student asks a nearby friend to pass an item.",
+      "expected_intent": "ORDINARY_CONVERSATION",
+      "expected_level": "NORMAL",
+      "expected_review_required": false,
+      "is_friendly_teasing": false,
+      "is_serious_threat": false,
+      "tags": [
+        "category:normal_conversation",
+        "synthetic_provisional",
+        "annotation:pending_human_review",
+        "source:user_example"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-051",
+      "split": "held_out",
+      "mode": "text",
+      "language": "tl",
+      "utterance": "Punta tayo mamaya sa library.",
+      "conversational_context": "Friends arrange where to study.",
+      "expected_intent": "ORDINARY_CONVERSATION",
+      "expected_level": "NORMAL",
+      "expected_review_required": false,
+      "is_friendly_teasing": false,
+      "is_serious_threat": false,
+      "tags": [
+        "category:normal_conversation",
+        "synthetic_provisional",
+        "annotation:pending_human_review",
+        "source:user_example"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-052",
+      "split": "held_out",
+      "mode": "text",
+      "language": "tl",
+      "utterance": "Nagbayad ka na ba?",
+      "conversational_context": "A classmate asks about an ordinary payment for a class expense.",
+      "expected_intent": "ORDINARY_CONVERSATION",
+      "expected_level": "NORMAL",
+      "expected_review_required": false,
+      "is_friendly_teasing": false,
+      "is_serious_threat": false,
+      "tags": [
+        "category:normal_conversation",
+        "synthetic_provisional",
+        "annotation:pending_human_review",
+        "source:user_example"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-053",
+      "split": "held_out",
+      "mode": "text",
+      "language": "en",
+      "utterance": "Can you save me a seat by the window?",
+      "conversational_context": "A classmate asks a friend to hold a seat.",
+      "expected_intent": "ORDINARY_CONVERSATION",
+      "expected_level": "NORMAL",
+      "expected_review_required": false,
+      "is_friendly_teasing": false,
+      "is_serious_threat": false,
+      "tags": [
+        "category:normal_conversation",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-054",
+      "split": "held_out",
+      "mode": "text",
+      "language": "en",
+      "utterance": "Did you get a copy of the worksheet?",
+      "conversational_context": "Two students check whether they both received the handout.",
+      "expected_intent": "ORDINARY_CONVERSATION",
+      "expected_level": "NORMAL",
+      "expected_review_required": false,
+      "is_friendly_teasing": false,
+      "is_serious_threat": false,
+      "tags": [
+        "category:normal_conversation",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-055",
+      "split": "held_out",
+      "mode": "text",
+      "language": "en",
+      "utterance": "Wait, which room are we in for the next class?",
+      "conversational_context": "A student asks about the timetable.",
+      "expected_intent": "ORDINARY_CONVERSATION",
+      "expected_level": "NORMAL",
+      "expected_review_required": false,
+      "is_friendly_teasing": false,
+      "is_serious_threat": false,
+      "tags": [
+        "category:normal_conversation",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-056",
+      "split": "held_out",
+      "mode": "text",
+      "language": "en",
+      "utterance": "Your notebook's in my bag. I'll give it back after class.",
+      "conversational_context": "A classmate explains where a borrowed notebook is and when they will return it.",
+      "expected_intent": "ORDINARY_CONVERSATION",
+      "expected_level": "NORMAL",
+      "expected_review_required": false,
+      "is_friendly_teasing": false,
+      "is_serious_threat": false,
+      "tags": [
+        "category:normal_conversation",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-057",
+      "split": "held_out",
+      "mode": "text",
+      "language": "taglish",
+      "utterance": "Pa-send nga nung slides, wala akong copy.",
+      "conversational_context": "A student asks for class slides.",
+      "expected_intent": "ORDINARY_CONVERSATION",
+      "expected_level": "NORMAL",
+      "expected_review_required": false,
+      "is_friendly_teasing": false,
+      "is_serious_threat": false,
+      "tags": [
+        "category:normal_conversation",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-058",
+      "split": "held_out",
+      "mode": "text",
+      "language": "taglish",
+      "utterance": "May extra kang bond paper? Need ko isang sheet.",
+      "conversational_context": "A student asks a classmate for a single sheet of paper.",
+      "expected_intent": "ORDINARY_CONVERSATION",
+      "expected_level": "NORMAL",
+      "expected_review_required": false,
+      "is_friendly_teasing": false,
+      "is_serious_threat": false,
+      "tags": [
+        "category:normal_conversation",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-059",
+      "split": "held_out",
+      "mode": "text",
+      "language": "taglish",
+      "utterance": "Break na ba? Kain tayo sa canteen.",
+      "conversational_context": "Friends make a plan for the break.",
+      "expected_intent": "ORDINARY_CONVERSATION",
+      "expected_level": "NORMAL",
+      "expected_review_required": false,
+      "is_friendly_teasing": false,
+      "is_serious_threat": false,
+      "tags": [
+        "category:normal_conversation",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    },
+    {
+      "id": "V4-SCHOOL-HO-060",
+      "split": "held_out",
+      "mode": "text",
+      "language": "taglish",
+      "utterance": "Ako na sa first slide. Ikaw sa intro, okay?",
+      "conversational_context": "Classmates divide presentation work.",
+      "expected_intent": "ORDINARY_CONVERSATION",
+      "expected_level": "NORMAL",
+      "expected_review_required": false,
+      "is_friendly_teasing": false,
+      "is_serious_threat": false,
+      "tags": [
+        "category:normal_conversation",
+        "synthetic_provisional",
+        "annotation:pending_human_review"
+      ]
+    }
+  ]
+}

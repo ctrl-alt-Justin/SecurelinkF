@@ -3,8 +3,10 @@ from collections import deque
 from contextlib import ExitStack, redirect_stdout
 import io
 import json
+import os
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -14,6 +16,7 @@ server_dir = str(Path(__file__).resolve().parents[1])
 if server_dir not in sys.path:
     sys.path.insert(0, server_dir)
 
+from incident_store import IncidentStore
 import server
 from ordinary_speech_preview import OrdinarySpeechPreview, PREVIEW_PORT, SUBSCRIBE
 
@@ -34,6 +37,12 @@ class TestOrdinarySpeechPreview(unittest.IsolatedAsyncioTestCase):
     def pipeline(self, score, category):
         stack = ExitStack()
         self.addCleanup(stack.close)
+        tmpdir = tempfile.TemporaryDirectory()
+        stack.callback(tmpdir.cleanup)
+        iso_store = IncidentStore(os.path.join(tmpdir.name, "incidents.db"))
+        stack.callback(iso_store.close)
+        self.incident_store = iso_store
+        stack.enter_context(patch.object(server, "incident_store", iso_store))
         stack.enter_context(patch.object(server, "ordinary_speech_preview", self.preview))
         stack.enter_context(patch.object(server, "usb_audio_diagnostics", Mock(enabled=False)))
         stack.enter_context(patch.object(server, "registered_devices", {}))
@@ -74,6 +83,7 @@ class TestOrdinarySpeechPreview(unittest.IsolatedAsyncioTestCase):
             })
         self.assertNotIn(self.phrase, log.getvalue())
         self.assertEqual(list(self.incidents), [])
+        self.assertEqual(self.incident_store.count_incidents(), 0)
         self.save.assert_not_called()
         self.broadcast.assert_not_called()
 
